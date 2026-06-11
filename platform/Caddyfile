@@ -1,0 +1,24 @@
+{
+	email {$ACME_EMAIL}
+}
+
+auth.{$DOMAIN} {
+	reverse_proxy keycloak:8080
+}
+
+erp.{$DOMAIN} {
+	reverse_proxy odoo:8069
+}
+
+bi.{$DOMAIN} {
+	reverse_proxy metabase:3000
+}
+
+s3.{$DOMAIN} {
+	reverse_proxy minio:9000
+}
+
+s3c.{$DOMAIN} {
+	# MinIO console — restrict to Tailscale/VPN network in staging & prod.
+	reverse_proxy minio:9001
+}
