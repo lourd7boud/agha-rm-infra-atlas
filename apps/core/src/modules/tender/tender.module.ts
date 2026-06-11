@@ -113,5 +113,6 @@ const tenderRepositoryProvider = {
 @Module({
   controllers: [TenderController],
   providers: [tenderRepositoryProvider],
+  exports: [tenderRepositoryProvider],
 })
 export class TenderModule {}

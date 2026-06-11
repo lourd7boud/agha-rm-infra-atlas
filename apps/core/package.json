@@ -16,6 +16,8 @@
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
+    "bullmq": "^5.78.0",
+    "cheerio": "^1.2.0",
     "drizzle-orm": "^0.44.0",
     "jose": "^6.2.3",
     "pg": "^8.13.0",
