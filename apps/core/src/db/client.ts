@@ -8,3 +8,11 @@ export function createDb(databaseUrl: string) {
 }
 
 export type Db = ReturnType<typeof createDb>;
+
+let cached: Db | null = null;
+
+/** Process-wide singleton so every module shares one connection pool. */
+export function getDb(databaseUrl: string): Db {
+  cached ??= createDb(databaseUrl);
+  return cached;
+}

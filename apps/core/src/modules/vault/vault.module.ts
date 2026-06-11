@@ -9,7 +9,7 @@ import {
   Post,
 } from '@nestjs/common';
 import { vaultDocumentInputSchema } from '@atlas/contracts';
-import { createDb } from '../../db/client';
+import { getDb } from '../../db/client';
 import { computeReadiness, computeStatus, dueAlerts } from './validity';
 import {
   DrizzleVaultRepository,
@@ -61,7 +61,7 @@ const vaultRepositoryProvider = {
   provide: VAULT_REPOSITORY,
   useFactory: (): VaultRepository => {
     const url = process.env.DATABASE_URL;
-    if (url) return new DrizzleVaultRepository(createDb(url));
+    if (url) return new DrizzleVaultRepository(getDb(url));
     new Logger('VaultModule').warn(
       'DATABASE_URL not set — vault uses a non-persistent in-memory repository',
     );

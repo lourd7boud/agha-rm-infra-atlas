@@ -1,4 +1,5 @@
 import { Controller, Get, Module } from '@nestjs/common';
+import { TenderModule } from './modules/tender/tender.module';
 import { VaultModule } from './modules/vault/vault.module';
 
 const STARTED_AT = Date.now();
@@ -18,7 +19,7 @@ export class HealthController {
 }
 
 @Module({
-  imports: [VaultModule],
+  imports: [VaultModule, TenderModule],
   controllers: [HealthController],
 })
 export class AppModule {}
