@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+:root {
+  /* ATLAS palette — warm Moroccan ochre accent on calm editorial surfaces */
+  --atlas-accent: oklch(72% 0.16 65);
+}
+
+body {
+  font-feature-settings: "tnum";
+}

@@ -4,6 +4,11 @@ dist/
 build/
 coverage/
 .turbo/
+.next/
+
+# Test/browser artifacts
+.playwright-mcp/
+atlas-web-*.png
 
 # Environment & secrets — only templates are committed
 .env

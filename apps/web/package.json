@@ -1,0 +1,27 @@
+{
+  "name": "@atlas/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ATLAS Web — staff portal (deadline wall, vault readiness)",
+  "scripts": {
+    "dev": "next dev -p 3001",
+    "build": "next build",
+    "start": "next start -p 3001",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@atlas/contracts": "workspace:*",
+    "next": "^15.3.0",
+    "next-auth": "5.0.0-beta.29",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.7.0"
+  }
+}
