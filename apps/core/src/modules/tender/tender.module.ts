@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { pipelineStateSchema, tenderInputSchema } from '@atlas/contracts';
+import { Roles } from '../auth/auth.module';
 import { getDb } from '../../db/client';
 import { daysUntil } from '../../lib/dates';
 import { buildBackPlan, canTransition } from './tender.domain';
@@ -74,6 +75,7 @@ export class TenderController {
   }
 
   /** Pipeline gate transition (G0–G3 actions land here). */
+  @Roles('direction', 'marches')
   @Post('tenders/:id/transition')
   async transition(@Param('id') id: string, @Body() body: unknown) {
     const parsed = transitionBodySchema.safeParse(body);

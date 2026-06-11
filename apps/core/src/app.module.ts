@@ -1,4 +1,6 @@
 import { Controller, Get, Module } from '@nestjs/common';
+import { AuditModule } from './modules/audit/audit.module';
+import { AuthModule, Public } from './modules/auth/auth.module';
 import { TenderModule } from './modules/tender/tender.module';
 import { VaultModule } from './modules/vault/vault.module';
 
@@ -6,6 +8,7 @@ const STARTED_AT = Date.now();
 
 @Controller('health')
 export class HealthController {
+  @Public()
   @Get()
   get() {
     return {
@@ -19,7 +22,7 @@ export class HealthController {
 }
 
 @Module({
-  imports: [VaultModule, TenderModule],
+  imports: [AuthModule, AuditModule, VaultModule, TenderModule],
   controllers: [HealthController],
 })
 export class AppModule {}

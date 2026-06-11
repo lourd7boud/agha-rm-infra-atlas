@@ -11,6 +11,18 @@ import {
 // Each ATLAS module owns its PostgreSQL schema (enterprise-architecture §3).
 export const vault = pgSchema('vault');
 export const tender = pgSchema('tender');
+export const audit = pgSchema('audit');
+
+// Append-only: no update/delete path exists in application code.
+export const auditLog = audit.table('log', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  actor: text('actor').notNull(),
+  method: text('method').notNull(),
+  path: text('path').notNull(),
+  outcome: text('outcome').notNull(),
+  payload: jsonb('payload'),
+});
 
 export const vaultDocuments = vault.table('document', {
   id: uuid('id').primaryKey().defaultRandom(),
