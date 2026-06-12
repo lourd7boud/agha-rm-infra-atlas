@@ -12,16 +12,34 @@ AI-native enterprise — thinking in decades, not weeks.
 
 ---
 
+## What is LIVE today (working software, all live-verified)
+
+| Division | Surface |
+|----------|---------|
+| **Tender Intelligence** — 12 agents (Sentinel, Extractor, Qualifier, Strategist, Compliance, Bid Writer, Estimator, Financial Modeler, Result Miner, Competitor Profiler, Risk Assessor, Chef d'Orchestre) + human gates G0–G3 | `/api/tender`, `/api/brain`, `/api/intel`, `/api/watch` |
+| **Construction ops** — chantiers, situations de travaux (CCAG-T décompte engine: retenue 10% capped 7%), avenants moving the ceiling | `/api/project` |
+| **Finance** — cautions register (locked cash), receivables aging from validated décomptes | `/api/finance` |
+| **Field** — journal de chantier (terrain role writes daily reports) | `/api/field` |
+| **Comms** — morning digest + outbox delivery (pluggable transports) | `/api/digest` |
+| **Staff portal** — dashboard, deadline wall, dossier/G1, chantiers, trésorerie, vault, concurrence (9 screens) | `apps/web` (Next 15) |
+| **Ops** — Keycloak OIDC + roles, audit trail, rate limits, Prometheus/Grafana, daily pg backups + restore drill, production Dockerfiles | `platform/` |
+
+Monorepo: `apps/core` (NestJS 11 + Drizzle/PostgreSQL 16, migrations 0000–0008,
+130+ unit tests), `apps/web` (Next.js 15), `packages/contracts` (Zod).
+
 ## Repository Map
 
 | Path | Content |
 |------|---------|
+| [apps/core/](apps/core/) | ATLAS Core — API, agents, domain engines (NestJS) |
+| [apps/web/](apps/web/) | Staff portal (Next.js 15 + Auth.js) |
+| [packages/contracts/](packages/contracts/) | Shared Zod schemas |
 | [00-foundation/](00-foundation/) | Vision, business architecture, operating model |
 | [10-architecture/](10-architecture/) | Enterprise, technology, data, security and AI architecture |
 | [20-tender-division/](20-tender-division/) | The Tender Intelligence Division — agents, workflows, market intelligence (Moroccan public procurement) |
 | [30-modules/](30-modules/) | Functional module specifications (ERP, projects, field, HR, finance, CRM…) |
 | [40-execution/](40-execution/) | Roadmap, governance model, build sequence |
-| [platform/](platform/) | Deployable infrastructure foundation (Docker Compose, environment) |
+| [platform/](platform/) | Deployable infrastructure + backups + observability (Docker Compose) |
 
 ## Reading Order
 
