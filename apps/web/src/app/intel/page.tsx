@@ -1,6 +1,8 @@
+import Link from 'next/link';
 import { apiGet } from '@/lib/api';
 
 interface CompetitorStats {
+  id: string;
   canonicalName: string;
   wins: number;
   totalMad: number;
@@ -40,20 +42,22 @@ export default async function IntelPage() {
           </h2>
           <ul className="divide-y divide-slate-100">
             {competitors.map((competitor) => (
-              <li
-                key={competitor.canonicalName}
-                className="flex items-baseline justify-between gap-3 px-5 py-3"
-              >
-                <div>
-                  <p className="text-sm font-semibold">{competitor.canonicalName}</p>
-                  <p className="text-xs text-slate-400">
-                    {competitor.wins} marché{competitor.wins > 1 ? 's' : ''} remporté
-                    {competitor.wins > 1 ? 's' : ''}
-                  </p>
-                </div>
-                <span className="font-mono text-sm tabular-nums text-slate-700">
-                  {competitor.totalMad.toLocaleString('fr-MA')} MAD
-                </span>
+              <li key={competitor.id}>
+                <Link
+                  href={`/intel/${competitor.id}`}
+                  className="flex items-baseline justify-between gap-3 px-5 py-3 transition hover:bg-slate-50"
+                >
+                  <div>
+                    <p className="text-sm font-semibold">{competitor.canonicalName}</p>
+                    <p className="text-xs text-slate-400">
+                      {competitor.wins} marché{competitor.wins > 1 ? 's' : ''} remporté
+                      {competitor.wins > 1 ? 's' : ''} — voir le profil
+                    </p>
+                  </div>
+                  <span className="font-mono text-sm tabular-nums text-slate-700">
+                    {competitor.totalMad.toLocaleString('fr-MA')} MAD
+                  </span>
+                </Link>
               </li>
             ))}
           </ul>

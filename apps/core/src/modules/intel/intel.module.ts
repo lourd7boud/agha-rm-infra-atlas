@@ -5,6 +5,8 @@ import {
   Inject,
   Logger,
   Module,
+  NotFoundException,
+  Param,
   Post,
   Query,
 } from '@nestjs/common';
@@ -43,6 +45,15 @@ export class IntelController {
   @Get('competitors')
   async competitors() {
     return this.repository.listCompetitorStats();
+  }
+
+  /** Competitor Profiler (C2): full dossier for one competitor. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Get('competitors/:id/profile')
+  async profile(@Param('id') id: string) {
+    const profile = await this.repository.getProfile(id);
+    if (!profile) throw new NotFoundException(`Competitor not found: ${id}`);
+    return profile;
   }
 
   /** Recent published results (price observatory seed). */
