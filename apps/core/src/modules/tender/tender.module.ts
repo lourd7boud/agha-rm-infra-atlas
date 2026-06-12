@@ -26,6 +26,7 @@ import {
 import { IntelModule } from '../intel/intel.module';
 import { buildComplianceChecklist } from './compliance.domain';
 import { EnrichmentService } from './enrichment.service';
+import { nextActions } from './orchestrator.domain';
 import { PricingService } from './pricing.service';
 import { QualifierService } from './qualifier.service';
 import { buildBackPlan, canTransition } from './tender.domain';
@@ -124,6 +125,33 @@ export class TenderController {
       }
       throw error;
     }
+  }
+
+  /** Chef d'Orchestre: the next concrete step for every active tender. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Get('orchestrator')
+  async orchestrator() {
+    const now = new Date();
+    const [records, documents] = await Promise.all([
+      this.repository.findAll(),
+      this.vault.findAll(),
+    ]);
+    return records
+      .map((record) => {
+        const checklist = buildComplianceChecklist(record, documents, now);
+        return {
+          tenderId: record.id,
+          reference: record.reference,
+          etat: record.pipelineState,
+          daysLeft: daysUntil(record.deadlineAt, now),
+          actions: nextActions(
+            { ...record, checklistReady: checklist.ready },
+            now,
+          ),
+        };
+      })
+      .filter((entry) => entry.actions.length > 0)
+      .sort((a, b) => a.daysLeft - b.daysLeft);
   }
 
   /** Deadline wall: every tender ordered by urgency. */
