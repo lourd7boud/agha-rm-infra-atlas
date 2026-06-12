@@ -6,10 +6,25 @@ import {
   Inject,
   Logger,
   Module,
+  NotFoundException,
+  OnModuleInit,
+  Param,
   Post,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { vaultDocumentInputSchema } from '@atlas/contracts';
 import { getDb } from '../../db/client';
+import {
+  InMemoryObjectStorage,
+  MAX_UPLOAD_BYTES,
+  OBJECT_STORAGE,
+  S3ObjectStorage,
+  sanitizeFilename,
+  validateUpload,
+  type ObjectStorage,
+} from './storage';
 import { computeReadiness, computeStatus, dueAlerts } from './validity';
 import {
   DrizzleVaultRepository,
@@ -32,6 +47,7 @@ function present(doc: VaultDocumentRecord) {
 export class VaultController {
   constructor(
     @Inject(VAULT_REPOSITORY) private readonly repository: VaultRepository,
+    @Inject(OBJECT_STORAGE) private readonly storage: ObjectStorage,
   ) {}
 
   @Post('documents')
@@ -55,6 +71,46 @@ export class VaultController {
     const docs = await this.repository.findAll();
     return computeReadiness(docs, new Date());
   }
+
+  /** Attach the physical file to a vault document (hash-verified, MinIO). */
+  @Post('documents/:id/file')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  async uploadFile(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+  ) {
+    if (!file) throw new BadRequestException('Champ multipart "file" requis');
+    const validation = validateUpload(file.mimetype, file.size);
+    if (!validation.ok) throw new BadRequestException(validation.reason);
+
+    const doc = await this.repository.findById(id);
+    if (!doc) throw new NotFoundException(`Document introuvable: ${id}`);
+
+    const key = `${doc.kind}/${doc.id}/${sanitizeFilename(file.originalname)}`;
+    const stored = await this.storage.put(key, file.buffer, file.mimetype);
+    const updated = await this.repository.updateFile(id, {
+      bucket: stored.bucket,
+      objectKey: stored.key,
+      sha256: stored.sha256,
+      mime: stored.mime,
+    });
+    if (!updated) throw new NotFoundException(`Document introuvable: ${id}`);
+    return present(updated);
+  }
+
+  /** Short-lived presigned download URL for the attached file. */
+  @Get('documents/:id/file')
+  async fileUrl(@Param('id') id: string) {
+    const doc = await this.repository.findById(id);
+    if (!doc) throw new NotFoundException(`Document introuvable: ${id}`);
+    if (!doc.objectKey) throw new NotFoundException('Aucun fichier attaché à ce document');
+    const expiresInSeconds = 600;
+    return {
+      url: await this.storage.presignedGetUrl(doc.objectKey, expiresInSeconds),
+      sha256: doc.sha256,
+      expiresInSeconds,
+    };
+  }
 }
 
 const vaultRepositoryProvider = {
@@ -69,8 +125,33 @@ const vaultRepositoryProvider = {
   },
 };
 
+const objectStorageProvider = {
+  provide: OBJECT_STORAGE,
+  useFactory: (): ObjectStorage => {
+    const endpoint = process.env.S3_ENDPOINT;
+    const accessKey = process.env.S3_ACCESS_KEY;
+    const secretKey = process.env.S3_SECRET_KEY;
+    const bucket = process.env.VAULT_BUCKET ?? 'atlas-vault';
+    if (endpoint && accessKey && secretKey) {
+      return new S3ObjectStorage(bucket, { endpoint, accessKey, secretKey });
+    }
+    new Logger('VaultModule').warn(
+      'S3_* not configured — vault files use non-persistent in-memory storage',
+    );
+    return new InMemoryObjectStorage(bucket);
+  },
+};
+
 @Module({
   controllers: [VaultController],
-  providers: [vaultRepositoryProvider],
+  providers: [vaultRepositoryProvider, objectStorageProvider],
 })
-export class VaultModule {}
+export class VaultModule implements OnModuleInit {
+  constructor(
+    @Inject(OBJECT_STORAGE) private readonly storage: ObjectStorage,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.storage.ensureBucket();
+  }
+}

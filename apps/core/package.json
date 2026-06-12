@@ -13,6 +13,8 @@
   },
   "dependencies": {
     "@atlas/contracts": "workspace:*",
+    "@aws-sdk/client-s3": "^3.1067.0",
+    "@aws-sdk/s3-request-presigner": "^3.1067.0",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
@@ -26,6 +28,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@types/multer": "^2.1.0",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
     "drizzle-kit": "^0.31.0",
