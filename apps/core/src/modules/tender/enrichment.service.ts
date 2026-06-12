@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Inject,
   Injectable,
   Logger,
@@ -6,6 +7,7 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { generateBidDraft, type DraftOutcome } from '../brain/bidwriter';
 import { extractAvis, type AvisExtraction } from '../brain/extractor';
 import { LLM_CLIENT, type LlmClient } from '../brain/llm.client';
 import { generateBrief, type BriefOutcome } from '../brain/strategist';
@@ -152,6 +154,54 @@ export class EnrichmentService {
       });
       this.logger.log(
         `gate.G1.brief ${tender.reference} → ${outcome.brief.recommandation} (confiance ${outcome.brief.confiance})`,
+      );
+    }
+    return outcome;
+  }
+
+  /** Bid Writer (B2): note méthodologique skeleton — only after a GO. */
+  async generateBidDraftFor(id: string): Promise<DraftOutcome> {
+    const llm = this.requireLlm();
+    const tender = await this.requireTender(id);
+    if (
+      tender.pipelineState !== 'go_decided' &&
+      tender.pipelineState !== 'preparing'
+    ) {
+      throw new ConflictException(
+        `La rédaction démarre après le GO (état actuel: ${tender.pipelineState})`,
+      );
+    }
+
+    const raw = tender.raw as Record<string, unknown> | null;
+    const dossier = {
+      fiche: {
+        reference: tender.reference,
+        acheteur: tender.buyerName,
+        procedure: tender.procedure,
+        objet: tender.objet,
+        estimationMad: tender.estimationMad ?? null,
+        dateLimite: tender.deadlineAt.toISOString(),
+      },
+      profilEntreprise: {
+        metiers: AGHA_PROFILE.domainKeywords,
+        procedures: AGHA_PROFILE.procedures,
+      },
+      extractionDce: raw?.['extraction'] ?? null,
+      noteGoNoGo: raw?.['g1Brief'] ?? null,
+      retroPlanning: buildBackPlan(tender.deadlineAt, new Date()),
+    };
+
+    const outcome = await generateBidDraft(llm, dossier);
+    if (outcome.ok && outcome.draft) {
+      await this.repository.updateEnrichment(id, {}, {
+        bidDraft: {
+          ...outcome.draft,
+          model: outcome.model,
+          generatedAt: new Date().toISOString(),
+        },
+      });
+      this.logger.log(
+        `bid.draft ${tender.reference} → ${outcome.draft.sections.length} sections`,
       );
     }
     return outcome;

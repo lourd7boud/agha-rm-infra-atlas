@@ -94,6 +94,14 @@ export class TenderController {
     return this.enrichment.generateG1Brief(id);
   }
 
+  /** Bid Writer (B2): note méthodologique skeleton on T2, after GO. */
+  @Roles('marches', 'direction')
+  @Throttle({ default: { ttl: 60_000, limit: 6 } })
+  @Post('tenders/:id/bid-draft')
+  async bidDraft(@Param('id') id: string) {
+    return this.enrichment.generateBidDraftFor(id);
+  }
+
   /** Run the Qualifier (A3) over all detected/parsed tenders. */
   @Roles('marches', 'direction', 'admin-si')
   @Post('tenders/qualify')
