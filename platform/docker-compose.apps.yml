@@ -1,0 +1,35 @@
+# ATLAS applications (staging/prod): Core API + staff portal.
+# Joins the platform stack's network so `postgres`, `redis`, `minio`,
+# `keycloak` and `caddy` resolve by service name:
+#   docker compose -f platform/docker-compose.yml up -d        # platform first
+#   docker compose -f platform/docker-compose.apps.yml up -d --build
+# Secrets live in platform/.env.apps (git-ignored, template alongside).
+name: atlas-apps
+
+services:
+  core:
+    build:
+      context: ..
+      dockerfile: apps/core/Dockerfile
+    restart: unless-stopped
+    env_file: .env.apps
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    # No published port: Caddy reaches core:3000 on the shared network.
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    env_file: .env.apps
+    environment:
+      NODE_ENV: production
+    depends_on:
+      - core
+
+networks:
+  default:
+    name: atlas-platform_default
+    external: true

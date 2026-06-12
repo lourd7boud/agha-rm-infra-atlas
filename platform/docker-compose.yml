@@ -87,6 +87,25 @@ services:
       postgres:
         condition: service_healthy
 
+  backup:
+    # Daily pg_dump of every database + 14-day rotation; restore drill:
+    #   docker compose exec backup /scripts/pg-restore-drill.sh
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    entrypoint:
+      ["sh", "-c", "while true; do /scripts/pg-backup.sh; sleep 86400; done"]
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      RETENTION_DAYS: "14"
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   caddy:
     image: caddy:2
     restart: unless-stopped

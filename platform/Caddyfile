@@ -2,6 +2,25 @@
 	email {$ACME_EMAIL}
 }
 
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}
+
+atlas.{$DOMAIN} {
+	import security_headers
+	reverse_proxy web:3001
+}
+
+api.{$DOMAIN} {
+	import security_headers
+	reverse_proxy core:3000
+}
+
 auth.{$DOMAIN} {
 	reverse_proxy keycloak:8080
 }
