@@ -1,6 +1,7 @@
 import {
   boolean,
   date,
+  integer,
   jsonb,
   numeric,
   pgSchema,
@@ -62,6 +63,43 @@ export const competitorBids = intel.table('competitor_bid', {
   isWinner: boolean('is_winner').notNull().default(false),
   resultDate: date('result_date', { mode: 'date' }),
   sourceUrl: text('source_url'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const project = pgSchema('project');
+
+// A chantier — born from a won tender or registered manually.
+export const projects = project.table('project', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  companyId: text('company_id').notNull().default('agha-rm-infra'),
+  tenderId: uuid('tender_id').references(() => tenders.id),
+  reference: text('reference').notNull(),
+  name: text('name').notNull(),
+  buyerName: text('buyer_name').notNull(),
+  montantMarcheMad: numeric('montant_marche_mad', { precision: 14, scale: 2 }).notNull(),
+  ordreServiceDate: date('ordre_service_date', { mode: 'date' }),
+  delaiMois: numeric('delai_mois', { precision: 4, scale: 1 }),
+  status: text('status').notNull().default('preparation'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Situation de travaux / décompte provisoire (CCAG-T): cumulative amounts;
+// the period delta + retenue de garantie are derived in the domain layer.
+export const situations = project.table('situation', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id')
+    .notNull()
+    .references(() => projects.id),
+  numero: integer('numero').notNull(),
+  periodEnd: date('period_end', { mode: 'date' }).notNull(),
+  montantCumuleMad: numeric('montant_cumule_mad', { precision: 14, scale: 2 }).notNull(),
+  montantPeriodeMad: numeric('montant_periode_mad', { precision: 14, scale: 2 }).notNull(),
+  retenueGarantieMad: numeric('retenue_garantie_mad', { precision: 14, scale: 2 }).notNull(),
+  netAPayerMad: numeric('net_a_payer_mad', { precision: 14, scale: 2 }).notNull(),
+  avancementPct: numeric('avancement_pct', { precision: 5, scale: 2 }).notNull(),
+  status: text('status').notNull().default('brouillon'),
+  notes: text('notes'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
