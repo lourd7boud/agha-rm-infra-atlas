@@ -103,6 +103,24 @@ export const situations = project.table('situation', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Journal de chantier — daily site report filed by the terrain role.
+// One report per project per day (enforced in application code).
+export const dailyLogs = project.table('daily_log', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id')
+    .notNull()
+    .references(() => projects.id),
+  reportDate: date('report_date', { mode: 'date' }).notNull(),
+  effectifs: integer('effectifs').notNull(),
+  travauxRealises: text('travaux_realises').notNull(),
+  materiel: text('materiel'),
+  meteo: text('meteo'),
+  blocages: text('blocages'),
+  incidentsSecurite: integer('incidents_securite').notNull().default(0),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const finance = pgSchema('finance');
 
 // Bank guarantees register — cash locked at banks until release.
