@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build web portal
+        run: pnpm --filter @atlas/web build
+        env:
+          # Build-time placeholders — runtime values come from the deploy env.
+          AUTH_SECRET: ci-build-placeholder-secret
+          AUTH_KEYCLOAK_ID: atlas-portal
+          AUTH_KEYCLOAK_SECRET: ci-build-placeholder
+          AUTH_KEYCLOAK_ISSUER: http://localhost:8081/realms/atlas
+          AUTH_TRUST_HOST: "true"
+          ATLAS_API_URL: http://localhost:3000/api

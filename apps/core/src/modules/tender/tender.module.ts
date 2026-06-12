@@ -16,6 +16,7 @@ import { pipelineStateSchema, tenderInputSchema } from '@atlas/contracts';
 import { Roles } from '../auth/auth.module';
 import { getDb } from '../../db/client';
 import { daysUntil } from '../../lib/dates';
+import { QualifierService } from './qualifier.service';
 import { buildBackPlan, canTransition } from './tender.domain';
 import {
   DrizzleTenderRepository,
@@ -36,7 +37,15 @@ function present(record: TenderRecord) {
 export class TenderController {
   constructor(
     @Inject(TENDER_REPOSITORY) private readonly repository: TenderRepository,
+    @Inject(QualifierService) private readonly qualifier: QualifierService,
   ) {}
+
+  /** Run the Qualifier (A3) over all detected/parsed tenders. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Post('tenders/qualify')
+  async qualifyAll() {
+    return this.qualifier.runOnce();
+  }
 
   /** Register a detected tender (Sentinel agent or manual entry). */
   @Post('tenders')
@@ -112,7 +121,7 @@ const tenderRepositoryProvider = {
 
 @Module({
   controllers: [TenderController],
-  providers: [tenderRepositoryProvider],
+  providers: [tenderRepositoryProvider, QualifierService],
   exports: [tenderRepositoryProvider],
 })
 export class TenderModule {}

@@ -61,6 +61,7 @@ export const tenders = tender.table('tender', {
   cautionProvisoireMad: numeric('caution_provisoire_mad', { precision: 14, scale: 2 }),
   deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
   pipelineState: text('pipeline_state').notNull().default('detected'),
+  qualification: jsonb('qualification'),
   sourceUrl: text('source_url'),
   raw: jsonb('raw'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

@@ -3,6 +3,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import type { Db } from '../../db/client';
 import { tenders } from '../../db/schema';
+import type { QualificationResult } from './qualifier.domain';
 
 export interface CreateTender {
   reference: string;
@@ -18,6 +19,7 @@ export interface CreateTender {
 export interface TenderRecord extends CreateTender {
   id: string;
   pipelineState: PipelineState;
+  qualification: QualificationResult | null;
   createdAt: Date;
 }
 
@@ -35,6 +37,11 @@ export interface TenderRepository {
   findAll(): Promise<TenderRecord[]>;
   findById(id: string): Promise<TenderRecord | null>;
   updateState(id: string, state: PipelineState): Promise<TenderRecord | null>;
+  updateQualification(
+    id: string,
+    state: PipelineState,
+    qualification: QualificationResult,
+  ): Promise<TenderRecord | null>;
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
@@ -50,6 +57,7 @@ export class InMemoryTenderRepository implements TenderRepository {
       ...input,
       id: randomUUID(),
       pipelineState: 'detected',
+      qualification: null,
       createdAt: new Date(),
     };
     this.records = [...this.records, record];
@@ -68,6 +76,18 @@ export class InMemoryTenderRepository implements TenderRepository {
     const existing = await this.findById(id);
     if (!existing) return null;
     const updated: TenderRecord = { ...existing, pipelineState: state };
+    this.records = this.records.map((r) => (r.id === id ? updated : r));
+    return updated;
+  }
+
+  async updateQualification(
+    id: string,
+    state: PipelineState,
+    qualification: QualificationResult,
+  ): Promise<TenderRecord | null> {
+    const existing = await this.findById(id);
+    if (!existing) return null;
+    const updated: TenderRecord = { ...existing, pipelineState: state, qualification };
     this.records = this.records.map((r) => (r.id === id ? updated : r));
     return updated;
   }
@@ -133,6 +153,19 @@ export class DrizzleTenderRepository implements TenderRepository {
       .returning();
     return row ? toRecord(row) : null;
   }
+
+  async updateQualification(
+    id: string,
+    state: PipelineState,
+    qualification: QualificationResult,
+  ): Promise<TenderRecord | null> {
+    const [row] = await this.db
+      .update(tenders)
+      .set({ pipelineState: state, qualification, updatedAt: new Date() })
+      .where(eq(tenders.id, id))
+      .returning();
+    return row ? toRecord(row) : null;
+  }
 }
 
 type TenderRow = typeof tenders.$inferSelect;
@@ -151,6 +184,7 @@ function toRecord(row: TenderRow): TenderRecord {
     deadlineAt: row.deadlineAt,
     sourceUrl: row.sourceUrl ?? undefined,
     pipelineState: row.pipelineState as PipelineState,
+    qualification: (row.qualification as QualificationResult | null) ?? null,
     createdAt: row.createdAt,
   };
 }

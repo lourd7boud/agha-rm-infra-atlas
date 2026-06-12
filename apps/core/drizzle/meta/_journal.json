@@ -15,6 +15,13 @@
       "when": 1781202517469,
       "tag": "0001_quiet_ikaris",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781222578073,
+      "tag": "0002_soft_kulan_gath",
+      "breakpoints": true
     }
   ]
 }

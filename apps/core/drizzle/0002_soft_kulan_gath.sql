@@ -1,0 +1,1 @@
+ALTER TABLE "tender"."tender" ADD COLUMN "qualification" jsonb;
