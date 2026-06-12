@@ -31,6 +31,9 @@ export default async function RootLayout({
                 <Link href="/tenders" className="hover:text-slate-900">
                   Mur des échéances
                 </Link>
+                <Link href="/projects" className="hover:text-slate-900">
+                  Chantiers
+                </Link>
                 <Link href="/vault" className="hover:text-slate-900">
                   Coffre-fort
                 </Link>
