@@ -85,6 +85,28 @@ export interface JournalResponse {
   items: DailyLog[];
 }
 
+export interface Employee {
+  id: string;
+  fullName: string;
+  metier: string;
+  status: 'actif' | 'inactif';
+}
+
+export interface TeamMember {
+  id: string;
+  employeeId: string;
+  fullName: string;
+  metier: string;
+  startDate: string;
+  endDate?: string;
+  actif: boolean;
+}
+
+export interface TeamResponse {
+  effectifActif: number;
+  membres: TeamMember[];
+}
+
 export function fmtMad(value: number): string {
   return `${Math.round(value).toLocaleString('fr-MA')} MAD`;
 }

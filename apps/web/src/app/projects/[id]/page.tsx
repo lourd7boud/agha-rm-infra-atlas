@@ -6,9 +6,11 @@ import {
   PROJECT_STATUS_BADGES,
   SITUATION_NEXT,
   SITUATION_STATUS_BADGES,
+  type Employee,
   type JournalResponse,
   type ProjectSummary,
   type Situation,
+  type TeamResponse,
 } from '@/lib/projects';
 
 interface ProjectDetail extends ProjectSummary {
@@ -59,10 +61,18 @@ export default async function ProjectDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [project, journal] = await Promise.all([
+  const [project, journal, team, employees] = await Promise.all([
     apiGet<ProjectDetail>(`/project/projects/${id}`),
     apiGet<JournalResponse>(`/field/projects/${id}/logs`),
+    apiGet<TeamResponse>(`/people/projects/${id}/team`),
+    apiGet<Employee[]>('/people/employees'),
   ]);
+  const assignedIds = new Set(
+    team.membres.filter((m) => m.actif).map((m) => m.employeeId),
+  );
+  const assignable = employees.filter(
+    (e) => e.status === 'actif' && !assignedIds.has(e.id),
+  );
   const badge = PROJECT_STATUS_BADGES[project.status];
   const actions = NEXT_PROJECT_ACTIONS[project.status] ?? [];
 
@@ -87,6 +97,27 @@ export default async function ProjectDetailPage({
       revalidatePath(`/projects/${id}`);
       revalidatePath('/projects');
     }
+  }
+
+  async function assignEmployee(formData: FormData) {
+    'use server';
+    const employeeId = String(formData.get('employeeId'));
+    const startDate = String(formData.get('startDate'));
+    if (employeeId && startDate) {
+      await apiPost(`/people/employees/${employeeId}/assign`, {
+        projectId: id,
+        startDate,
+      });
+      revalidatePath(`/projects/${id}`);
+    }
+  }
+
+  async function endAssignment(formData: FormData) {
+    'use server';
+    await apiPost(
+      `/people/assignments/${String(formData.get('aid'))}/end`,
+    );
+    revalidatePath(`/projects/${id}`);
   }
 
   async function createDailyLog(formData: FormData) {
@@ -250,6 +281,83 @@ export default async function ProjectDetailPage({
             Aucune situation — la première apparaît après le démarrage des travaux.
           </p>
         )}
+      </section>
+
+      <section className="mb-6 rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+            Équipe ({team.effectifActif} actif{team.effectifActif > 1 ? 's' : ''})
+          </h2>
+        </div>
+        <ul className="divide-y divide-slate-100">
+          {team.membres.map((member) => (
+            <li
+              key={member.id}
+              className="flex flex-wrap items-center justify-between gap-3 px-5 py-3"
+            >
+              <div>
+                <p className="text-sm font-semibold">{member.fullName}</p>
+                <p className="text-xs text-slate-400">
+                  {member.metier} · depuis{' '}
+                  {new Date(member.startDate).toLocaleDateString('fr-MA')}
+                  {member.endDate &&
+                    ` → ${new Date(member.endDate).toLocaleDateString('fr-MA')}`}
+                </p>
+              </div>
+              {member.actif ? (
+                <form action={endAssignment}>
+                  <input type="hidden" name="aid" value={member.id} />
+                  <button className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:bg-slate-100">
+                    Clôturer l&apos;affectation
+                  </button>
+                </form>
+              ) : (
+                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs text-slate-500">
+                  Terminée
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+        {team.membres.length === 0 && (
+          <p className="p-8 text-center text-sm text-slate-400">
+            Aucune affectation — composer l&apos;équipe ci-dessous.
+          </p>
+        )}
+        {assignable.length > 0 &&
+          (project.status === 'en_cours' || project.status === 'preparation') && (
+            <form
+              action={assignEmployee}
+              className="flex flex-wrap items-end gap-3 border-t border-slate-100 px-5 py-4"
+            >
+              <label className="text-sm">
+                <span className="mb-1 block text-xs text-slate-500">Employé</span>
+                <select
+                  name="employeeId"
+                  required
+                  className="rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                >
+                  {assignable.map((employee) => (
+                    <option key={employee.id} value={employee.id}>
+                      {employee.fullName} — {employee.metier}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-xs text-slate-500">Début</span>
+                <input
+                  type="date"
+                  name="startDate"
+                  required
+                  className="rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                />
+              </label>
+              <button className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
+                Affecter au chantier
+              </button>
+            </form>
+          )}
       </section>
 
       <section className="mb-6 rounded-xl border border-slate-200 bg-white shadow-sm">
