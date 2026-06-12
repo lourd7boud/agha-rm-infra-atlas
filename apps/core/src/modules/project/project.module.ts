@@ -125,10 +125,15 @@ export class ProjectController {
 
     const existing = await this.repository.listSituations(id);
     const last = existing[existing.length - 1];
+    // The décompte ceiling includes approved avenants (contract amendments).
+    const avenants = await this.repository.listAvenants(id);
+    const plafond =
+      record.montantMarcheMad +
+      avenants.reduce((sum, a) => sum + a.montantDeltaMad, 0);
     let decompte;
     try {
       decompte = buildDecompte({
-        montantMarcheMad: record.montantMarcheMad,
+        montantMarcheMad: plafond,
         montantCumuleMad: parsed.data.montantCumuleMad,
         previousCumuleMad: last?.montantCumuleMad ?? 0,
         previousRetenueCumuleMad: existing.reduce(
@@ -154,6 +159,38 @@ export class ProjectController {
       `situation.created ${record.reference} n°${created.numero} net=${created.netAPayerMad}`,
     );
     return created;
+  }
+
+  /** Avenant: contract amendment — direction approves, ceiling moves. */
+  @Roles('direction')
+  @Post('projects/:id/avenants')
+  async createAvenant(@Param('id') id: string, @Body() body: unknown) {
+    const schema = z.object({
+      objet: z.string().min(5).max(500),
+      montantDeltaMad: z.number().min(-1_000_000_000).max(1_000_000_000),
+      delaiDeltaMois: z.number().min(-120).max(120).default(0),
+      approvedAt: z.coerce.date(),
+    });
+    const parsed = schema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    await this.findOr404(id);
+    const existing = await this.repository.listAvenants(id);
+    const created = await this.repository.createAvenant({
+      projectId: id,
+      numero: (existing[existing.length - 1]?.numero ?? 0) + 1,
+      ...parsed.data,
+    });
+    new Logger('Project').log(
+      `avenant.approved n°${created.numero} delta=${created.montantDeltaMad} MAD`,
+    );
+    return created;
+  }
+
+  @Roles('travaux', 'direction', 'finance', 'marches', 'admin-si')
+  @Get('projects/:id/avenants')
+  async listAvenants(@Param('id') id: string) {
+    await this.findOr404(id);
+    return this.repository.listAvenants(id);
   }
 
   /** Décompte workflow — legal order enforced (brouillon→soumis→valide→paye). */

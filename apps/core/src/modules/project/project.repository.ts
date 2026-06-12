@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { asc, desc, eq } from 'drizzle-orm';
 import type { Db } from '../../db/client';
-import { projects, situations } from '../../db/schema';
+import { avenants, projects, situations } from '../../db/schema';
 
 export type ProjectStatus =
   | 'preparation'
@@ -46,6 +46,20 @@ export interface SituationRecord extends CreateSituation {
   createdAt: Date;
 }
 
+export interface CreateAvenant {
+  projectId: string;
+  numero: number;
+  objet: string;
+  montantDeltaMad: number;
+  delaiDeltaMois: number;
+  approvedAt: Date;
+}
+
+export interface AvenantRecord extends CreateAvenant {
+  id: string;
+  createdAt: Date;
+}
+
 export const PROJECT_REPOSITORY = Symbol('PROJECT_REPOSITORY');
 
 export interface ProjectRepository {
@@ -55,6 +69,8 @@ export interface ProjectRepository {
   updateStatus(id: string, status: ProjectStatus): Promise<ProjectRecord | null>;
   listSituations(projectId: string): Promise<SituationRecord[]>;
   createSituation(input: CreateSituation): Promise<SituationRecord>;
+  listAvenants(projectId: string): Promise<AvenantRecord[]>;
+  createAvenant(input: CreateAvenant): Promise<AvenantRecord>;
   findSituationById(id: string): Promise<SituationRecord | null>;
   updateSituationStatus(
     id: string,
@@ -111,6 +127,24 @@ export class InMemoryProjectRepository implements ProjectRepository {
       createdAt: new Date(),
     };
     this.situations = [...this.situations, record];
+    return record;
+  }
+
+  private avenants: readonly AvenantRecord[] = [];
+
+  async listAvenants(projectId: string): Promise<AvenantRecord[]> {
+    return this.avenants
+      .filter((a) => a.projectId === projectId)
+      .sort((a, b) => a.numero - b.numero);
+  }
+
+  async createAvenant(input: CreateAvenant): Promise<AvenantRecord> {
+    const record: AvenantRecord = {
+      ...input,
+      id: randomUUID(),
+      createdAt: new Date(),
+    };
+    this.avenants = [...this.avenants, record];
     return record;
   }
 
@@ -205,6 +239,49 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .returning();
     if (!row) throw new Error('Situation insert returned no row');
     return toSituation(row);
+  }
+
+  async listAvenants(projectId: string): Promise<AvenantRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(avenants)
+      .where(eq(avenants.projectId, projectId))
+      .orderBy(asc(avenants.numero));
+    return rows.map((row) => ({
+      id: row.id,
+      projectId: row.projectId,
+      numero: row.numero,
+      objet: row.objet,
+      montantDeltaMad: Number(row.montantDeltaMad),
+      delaiDeltaMois: Number(row.delaiDeltaMois),
+      approvedAt: row.approvedAt,
+      createdAt: row.createdAt,
+    }));
+  }
+
+  async createAvenant(input: CreateAvenant): Promise<AvenantRecord> {
+    const [row] = await this.db
+      .insert(avenants)
+      .values({
+        projectId: input.projectId,
+        numero: input.numero,
+        objet: input.objet,
+        montantDeltaMad: input.montantDeltaMad.toString(),
+        delaiDeltaMois: input.delaiDeltaMois.toString(),
+        approvedAt: input.approvedAt,
+      })
+      .returning();
+    if (!row) throw new Error('Avenant insert returned no row');
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      numero: row.numero,
+      objet: row.objet,
+      montantDeltaMad: Number(row.montantDeltaMad),
+      delaiDeltaMois: Number(row.delaiDeltaMois),
+      approvedAt: row.approvedAt,
+      createdAt: row.createdAt,
+    };
   }
 
   async findSituationById(id: string): Promise<SituationRecord | null> {

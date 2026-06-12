@@ -103,6 +103,25 @@ export const situations = project.table('situation', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Avenant — contract amendment changing amount and/or delay. The décompte
+// ceiling becomes montant marché + sum of approved avenant deltas.
+export const avenants = project.table('avenant', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id')
+    .notNull()
+    .references(() => projects.id),
+  numero: integer('numero').notNull(),
+  objet: text('objet').notNull(),
+  montantDeltaMad: numeric('montant_delta_mad', { precision: 14, scale: 2 })
+    .notNull()
+    .default('0'),
+  delaiDeltaMois: numeric('delai_delta_mois', { precision: 4, scale: 1 })
+    .notNull()
+    .default('0'),
+  approvedAt: date('approved_at', { mode: 'date' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Journal de chantier — daily site report filed by the terrain role.
 // One report per project per day (enforced in application code).
 export const dailyLogs = project.table('daily_log', {
