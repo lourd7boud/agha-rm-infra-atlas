@@ -9,6 +9,23 @@ import {
 } from '@nestjs/common';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
+import {
+  CAUTION_REPOSITORY,
+  type CautionRepository,
+} from '../finance/caution.repository';
+import { FinanceModule } from '../finance/finance.module';
+import { summarizeCautions } from '../finance/finance.domain';
+import {
+  FIELD_REPOSITORY,
+  type FieldRepository,
+} from '../field/field.repository';
+import { FieldModule } from '../field/field.module';
+import { summarizeLogs } from '../field/field.domain';
+import { ProjectModule } from '../project/project.module';
+import {
+  PROJECT_REPOSITORY,
+  type ProjectRepository,
+} from '../project/project.repository';
 import { TenderModule } from '../tender/tender.module';
 import {
   TENDER_REPOSITORY,
@@ -40,6 +57,9 @@ export class DigestController {
     @Inject(VAULT_REPOSITORY) private readonly vault: VaultRepository,
     @Inject(OUTBOX_REPOSITORY) private readonly outbox: OutboxRepository,
     @Inject(DELIVERY_TRANSPORT) private readonly transport: DeliveryTransport,
+    @Inject(CAUTION_REPOSITORY) private readonly cautions: CautionRepository,
+    @Inject(PROJECT_REPOSITORY) private readonly projects: ProjectRepository,
+    @Inject(FIELD_REPOSITORY) private readonly field: FieldRepository,
   ) {}
 
   /** The 07:30 brief — JSON + rendered French text (email/WhatsApp body). */
@@ -102,14 +122,47 @@ export class DigestController {
     return this.outbox.listRecent(capped);
   }
 
+  /** v2: the tender brief + treasury + chantiers in one unified text. */
   private async buildToday() {
     const now = new Date();
-    const [tenders, documents] = await Promise.all([
+    const [tenders, documents, allCautions, allProjects] = await Promise.all([
       this.tenders.findAll(),
       this.vault.findAll(),
+      this.cautions.findAll(),
+      this.projects.findAll(),
     ]);
     const data = buildDigest(tenders, computeReadiness(documents, now), now);
-    return { data, texte: renderDigestFr(data) };
+
+    const lines: string[] = [renderDigestFr(data)];
+
+    const tresorerie = summarizeCautions(allCautions, now);
+    lines.push(
+      '',
+      '— TRÉSORERIE —',
+      `Cautions actives: ${tresorerie.activeCount} (${Math.round(tresorerie.activeTotalMad).toLocaleString('fr-MA')} MAD bloqués)`,
+    );
+
+    const enCours = allProjects.filter((p) => p.status === 'en_cours');
+    if (enCours.length > 0) {
+      lines.push('', '— CHANTIERS —');
+      for (const project of enCours) {
+        const [situations, logs] = await Promise.all([
+          this.projects.listSituations(project.id),
+          this.field.listLogs(project.id),
+        ]);
+        const last = situations[situations.length - 1];
+        const journal = summarizeLogs(logs);
+        const alerte =
+          journal.blocagesOuverts > 0
+            ? ` ⚠ ${journal.blocagesOuverts} blocage(s)`
+            : '';
+        lines.push(
+          `${project.reference}: ${last?.avancementPct ?? 0}% — effectif moyen ${journal.effectifMoyen}${alerte}`,
+        );
+      }
+    }
+
+    return { data, texte: lines.join('\n') };
   }
 }
 
@@ -131,7 +184,7 @@ const transportProvider = {
 };
 
 @Module({
-  imports: [TenderModule, VaultModule],
+  imports: [TenderModule, VaultModule, FinanceModule, FieldModule, ProjectModule],
   controllers: [DigestController],
   providers: [outboxRepositoryProvider, transportProvider],
 })

@@ -117,5 +117,6 @@ const fieldRepositoryProvider = {
   imports: [ProjectModule],
   controllers: [FieldController],
   providers: [fieldRepositoryProvider],
+  exports: [fieldRepositoryProvider],
 })
 export class FieldModule {}

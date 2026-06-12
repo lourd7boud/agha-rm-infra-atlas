@@ -119,5 +119,6 @@ const cautionRepositoryProvider = {
   imports: [ProjectModule],
   controllers: [FinanceController],
   providers: [cautionRepositoryProvider],
+  exports: [cautionRepositoryProvider],
 })
 export class FinanceModule {}
