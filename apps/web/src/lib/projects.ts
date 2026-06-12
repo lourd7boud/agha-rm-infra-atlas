@@ -62,6 +62,29 @@ export const SITUATION_NEXT: Partial<Record<SituationStatus, SituationStatus>> =
   valide: 'paye',
 };
 
+export interface DailyLog {
+  id: string;
+  reportDate: string;
+  effectifs: number;
+  travauxRealises: string;
+  materiel?: string;
+  meteo?: string;
+  blocages?: string;
+  incidentsSecurite: number;
+  createdBy: string;
+}
+
+export interface JournalResponse {
+  summary: {
+    jours: number;
+    effectifMoyen: number;
+    totalIncidents: number;
+    blocagesOuverts: number;
+    dernierRapport: string | null;
+  };
+  items: DailyLog[];
+}
+
 export function fmtMad(value: number): string {
   return `${Math.round(value).toLocaleString('fr-MA')} MAD`;
 }
