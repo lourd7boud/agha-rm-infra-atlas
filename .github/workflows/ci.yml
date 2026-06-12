@@ -34,8 +34,30 @@ jobs:
         env:
           # Build-time placeholders — runtime values come from the deploy env.
           AUTH_SECRET: ci-build-placeholder-secret
-          AUTH_KEYCLOAK_ID: atlas-portal
+          AUTH_KEYCLOAK_ID: atlas-web
           AUTH_KEYCLOAK_SECRET: ci-build-placeholder
           AUTH_KEYCLOAK_ISSUER: http://localhost:8081/realms/atlas
           AUTH_TRUST_HOST: "true"
           ATLAS_API_URL: http://localhost:3000/api
+
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.2
+          channel: stable
+
+      - name: Resolve dependencies
+        run: flutter pub get
+        working-directory: apps/mobile
+
+      - name: Analyze
+        run: flutter analyze
+        working-directory: apps/mobile
+
+      - name: Widget + unit tests
+        run: flutter test
+        working-directory: apps/mobile
