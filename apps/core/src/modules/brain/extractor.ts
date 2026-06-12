@@ -56,7 +56,52 @@ export function parseJsonLoose(text: string): unknown {
   const trimmed = text.trim();
   const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/m.exec(trimmed);
   const candidate = fenced?.[1] ?? trimmed;
-  return JSON.parse(candidate);
+  try {
+    return JSON.parse(candidate);
+  } catch (error) {
+    const embedded = extractFirstJsonObject(candidate);
+    if (embedded !== null) return JSON.parse(embedded);
+    throw error;
+  }
+}
+
+/**
+ * Parses model output that may or may not include the request prefill:
+ * providers that ignore prefill return complete JSON (parse text alone);
+ * providers that honor it return a continuation (parse prefill + text).
+ */
+export function parseModelJson(text: string, prefill?: string): unknown {
+  try {
+    return parseJsonLoose(text);
+  } catch (error) {
+    if (prefill) return parseJsonLoose(prefill + text);
+    throw error;
+  }
+}
+
+/** Balanced-brace scan: recovers the first JSON object embedded in prose. */
+export function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 export async function extractAvis(

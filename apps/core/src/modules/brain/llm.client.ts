@@ -17,7 +17,10 @@ export const DEFAULT_TIER_MODELS: Record<LlmTier, string> = {
 };
 
 export interface LlmCompletion {
+  /** Raw completion text as returned by the provider (prefill NOT included). */
   text: string;
+  /** Echo of the request prefill, for parse-time reassembly. */
+  prefill?: string;
   model: string;
   inputTokens: number;
   outputTokens: number;
@@ -28,6 +31,8 @@ export interface LlmRequest {
   prompt: string;
   system?: string;
   maxTokens?: number;
+  /** Assistant prefill — forces the response to start with this text (e.g. "{"). */
+  prefill?: string;
 }
 
 export interface LlmClient {
@@ -56,19 +61,28 @@ export class AnthropicLlmClient implements LlmClient {
 
   async complete(request: LlmRequest): Promise<LlmCompletion> {
     const model = this.tierModels[request.tier];
+    const messages: Anthropic.MessageParam[] = [
+      { role: 'user', content: request.prompt },
+    ];
+    if (request.prefill) {
+      messages.push({ role: 'assistant', content: request.prefill });
+    }
     const response = await this.client.messages.create({
       model,
       max_tokens: request.maxTokens ?? 1024,
       temperature: 0,
       system: request.system,
-      messages: [{ role: 'user', content: request.prompt }],
+      messages,
     });
-    const text = response.content
+    const completionText = response.content
       .filter((block): block is Anthropic.TextBlock => block.type === 'text')
       .map((block) => block.text)
       .join('');
     return {
-      text,
+      // Gateways differ: some honor prefill (text continues it), some return
+      // a complete answer. Callers reassemble via parseModelJson.
+      text: completionText,
+      prefill: request.prefill,
       model: response.model,
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,

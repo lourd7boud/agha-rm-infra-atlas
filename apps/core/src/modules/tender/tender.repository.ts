@@ -20,7 +20,13 @@ export interface TenderRecord extends CreateTender {
   id: string;
   pipelineState: PipelineState;
   qualification: QualificationResult | null;
+  raw: Record<string, unknown> | null;
   createdAt: Date;
+}
+
+export interface EnrichmentAmounts {
+  estimationMad?: number;
+  cautionProvisoireMad?: number;
 }
 
 export class DuplicateTenderError extends Error {
@@ -42,6 +48,11 @@ export interface TenderRepository {
     state: PipelineState,
     qualification: QualificationResult,
   ): Promise<TenderRecord | null>;
+  updateEnrichment(
+    id: string,
+    amounts: EnrichmentAmounts,
+    rawMerge: Record<string, unknown>,
+  ): Promise<TenderRecord | null>;
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
@@ -58,6 +69,7 @@ export class InMemoryTenderRepository implements TenderRepository {
       id: randomUUID(),
       pipelineState: 'detected',
       qualification: null,
+      raw: null,
       createdAt: new Date(),
     };
     this.records = [...this.records, record];
@@ -88,6 +100,27 @@ export class InMemoryTenderRepository implements TenderRepository {
     const existing = await this.findById(id);
     if (!existing) return null;
     const updated: TenderRecord = { ...existing, pipelineState: state, qualification };
+    this.records = this.records.map((r) => (r.id === id ? updated : r));
+    return updated;
+  }
+
+  async updateEnrichment(
+    id: string,
+    amounts: EnrichmentAmounts,
+    rawMerge: Record<string, unknown>,
+  ): Promise<TenderRecord | null> {
+    const existing = await this.findById(id);
+    if (!existing) return null;
+    const updated: TenderRecord = {
+      ...existing,
+      ...(amounts.estimationMad !== undefined
+        ? { estimationMad: amounts.estimationMad }
+        : {}),
+      ...(amounts.cautionProvisoireMad !== undefined
+        ? { cautionProvisoireMad: amounts.cautionProvisoireMad }
+        : {}),
+      raw: { ...(existing.raw ?? {}), ...rawMerge },
+    };
     this.records = this.records.map((r) => (r.id === id ? updated : r));
     return updated;
   }
@@ -166,6 +199,30 @@ export class DrizzleTenderRepository implements TenderRepository {
       .returning();
     return row ? toRecord(row) : null;
   }
+
+  async updateEnrichment(
+    id: string,
+    amounts: EnrichmentAmounts,
+    rawMerge: Record<string, unknown>,
+  ): Promise<TenderRecord | null> {
+    const existing = await this.findById(id);
+    if (!existing) return null;
+    const [row] = await this.db
+      .update(tenders)
+      .set({
+        ...(amounts.estimationMad !== undefined
+          ? { estimationMad: amounts.estimationMad.toString() }
+          : {}),
+        ...(amounts.cautionProvisoireMad !== undefined
+          ? { cautionProvisoireMad: amounts.cautionProvisoireMad.toString() }
+          : {}),
+        raw: { ...(existing.raw ?? {}), ...rawMerge },
+        updatedAt: new Date(),
+      })
+      .where(eq(tenders.id, id))
+      .returning();
+    return row ? toRecord(row) : null;
+  }
 }
 
 type TenderRow = typeof tenders.$inferSelect;
@@ -185,6 +242,7 @@ function toRecord(row: TenderRow): TenderRecord {
     sourceUrl: row.sourceUrl ?? undefined,
     pipelineState: row.pipelineState as PipelineState,
     qualification: (row.qualification as QualificationResult | null) ?? null,
+    raw: (row.raw as Record<string, unknown> | null) ?? null,
     createdAt: row.createdAt,
   };
 }

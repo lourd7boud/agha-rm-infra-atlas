@@ -16,6 +16,8 @@ import { pipelineStateSchema, tenderInputSchema } from '@atlas/contracts';
 import { Roles } from '../auth/auth.module';
 import { getDb } from '../../db/client';
 import { daysUntil } from '../../lib/dates';
+import { BrainModule } from '../brain/brain.module';
+import { EnrichmentService } from './enrichment.service';
 import { QualifierService } from './qualifier.service';
 import { buildBackPlan, canTransition } from './tender.domain';
 import {
@@ -28,6 +30,9 @@ import {
 } from './tender.repository';
 
 const transitionBodySchema = z.object({ to: pipelineStateSchema });
+const enrichBodySchema = z.object({
+  text: z.string().min(20, 'Texte trop court pour une extraction'),
+});
 
 function present(record: TenderRecord) {
   return { ...record, daysLeft: daysUntil(record.deadlineAt, new Date()) };
@@ -38,7 +43,24 @@ export class TenderController {
   constructor(
     @Inject(TENDER_REPOSITORY) private readonly repository: TenderRepository,
     @Inject(QualifierService) private readonly qualifier: QualifierService,
+    @Inject(EnrichmentService) private readonly enrichment: EnrichmentService,
   ) {}
+
+  /** Extractor (A2) over avis/DCE text → fill missing fields → re-qualify. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Post('tenders/:id/enrich')
+  async enrich(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = enrichBodySchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    return this.enrichment.enrichFromText(id, parsed.data.text);
+  }
+
+  /** Strategist (A4): G1 Go/No-Go brief on the T3 model, persisted. */
+  @Roles('marches', 'direction')
+  @Post('tenders/:id/brief')
+  async brief(@Param('id') id: string) {
+    return this.enrichment.generateG1Brief(id);
+  }
 
   /** Run the Qualifier (A3) over all detected/parsed tenders. */
   @Roles('marches', 'direction', 'admin-si')
@@ -120,8 +142,9 @@ const tenderRepositoryProvider = {
 };
 
 @Module({
+  imports: [BrainModule],
   controllers: [TenderController],
-  providers: [tenderRepositoryProvider, QualifierService],
+  providers: [tenderRepositoryProvider, QualifierService, EnrichmentService],
   exports: [tenderRepositoryProvider],
 })
 export class TenderModule {}
