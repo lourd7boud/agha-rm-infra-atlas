@@ -145,6 +145,7 @@ const objectStorageProvider = {
 @Module({
   controllers: [VaultController],
   providers: [vaultRepositoryProvider, objectStorageProvider],
+  exports: [vaultRepositoryProvider],
 })
 export class VaultModule implements OnModuleInit {
   constructor(

@@ -2,6 +2,7 @@ import { Controller, Get, Module } from '@nestjs/common';
 import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule, Public } from './modules/auth/auth.module';
 import { BrainModule } from './modules/brain/brain.module';
+import { DigestModule } from './modules/digest/digest.module';
 import { TenderModule } from './modules/tender/tender.module';
 import { VaultModule } from './modules/vault/vault.module';
 import { WatchModule } from './modules/watch/watch.module';
@@ -28,6 +29,7 @@ export class HealthController {
     AuthModule,
     AuditModule,
     BrainModule,
+    DigestModule,
     VaultModule,
     TenderModule,
     WatchModule,
