@@ -118,6 +118,10 @@ const tokenVerifierProvider = {
       new Logger('AuthModule').log(`OIDC token verification active (${issuer})`);
       return new KeycloakTokenVerifier(issuer);
     }
+    // Fail fast: a production process must never boot with auth disabled.
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('FATAL: OIDC_ISSUER must be set when NODE_ENV=production');
+    }
     new Logger('AuthModule').warn(
       'OIDC_ISSUER not set — AUTHENTICATION DISABLED (dev mode only, never production)',
     );

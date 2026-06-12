@@ -448,6 +448,9 @@ export default async function TenderDetailPage({
             <textarea
               name="text"
               rows={5}
+              required
+              minLength={20}
+              maxLength={50_000}
               placeholder="Coller ici le texte de l'avis ou un extrait du DCE…"
               className="w-full rounded-md border border-slate-300 p-3 text-sm focus:border-amber-500 focus:outline-none"
             />

@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { vaultDocumentInputSchema } from '@atlas/contracts';
+import { Roles } from '../auth/auth.module';
 import { getDb } from '../../db/client';
 import {
   InMemoryObjectStorage,
@@ -43,6 +44,8 @@ function present(doc: VaultDocumentRecord) {
   };
 }
 
+// Company documents are handled by the back-office circle — terrain excluded.
+@Roles('marches', 'direction', 'admin-si', 'finance')
 @Controller('vault')
 export class VaultController {
   constructor(

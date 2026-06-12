@@ -11,6 +11,7 @@ import {
   Param,
   Post,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import { pipelineStateSchema, tenderInputSchema } from '@atlas/contracts';
 import { Roles } from '../auth/auth.module';
@@ -37,7 +38,10 @@ import {
 
 const transitionBodySchema = z.object({ to: pipelineStateSchema });
 const enrichBodySchema = z.object({
-  text: z.string().min(20, 'Texte trop court pour une extraction'),
+  text: z
+    .string()
+    .min(20, 'Texte trop court pour une extraction')
+    .max(50_000, 'Texte trop long (50 000 caractères max)'),
 });
 
 function present(record: TenderRecord) {
@@ -64,6 +68,7 @@ export class TenderController {
 
   /** Extractor (A2) over avis/DCE text → fill missing fields → re-qualify. */
   @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('tenders/:id/enrich')
   async enrich(@Param('id') id: string, @Body() body: unknown) {
     const parsed = enrichBodySchema.safeParse(body);
@@ -73,6 +78,7 @@ export class TenderController {
 
   /** Strategist (A4): G1 Go/No-Go brief on the T3 model, persisted. */
   @Roles('marches', 'direction')
+  @Throttle({ default: { ttl: 60_000, limit: 6 } })
   @Post('tenders/:id/brief')
   async brief(@Param('id') id: string) {
     return this.enrichment.generateG1Brief(id);
@@ -86,6 +92,7 @@ export class TenderController {
   }
 
   /** Register a detected tender (Sentinel agent or manual entry). */
+  @Roles('marches', 'direction', 'admin-si')
   @Post('tenders')
   async create(@Body() body: unknown) {
     const parsed = tenderInputSchema.safeParse(body);
@@ -102,6 +109,7 @@ export class TenderController {
   }
 
   /** Deadline wall: every tender ordered by urgency. */
+  @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
   @Get('tenders')
   async list() {
     const records = await this.repository.findAll();
@@ -110,7 +118,8 @@ export class TenderController {
       .map(present);
   }
 
-  /** Full dossier for one tender — the G0/G1 review screen payload. */
+  /** Full dossier (incl. G1 brief) — restricted to the decision circle. */
+  @Roles('marches', 'direction', 'admin-si')
   @Get('tenders/:id')
   async detail(@Param('id') id: string) {
     const record = await this.findOr404(id);

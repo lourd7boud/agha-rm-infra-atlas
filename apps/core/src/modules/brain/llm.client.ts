@@ -1,3 +1,4 @@
+import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
 
 /**
@@ -67,13 +68,25 @@ export class AnthropicLlmClient implements LlmClient {
     if (request.prefill) {
       messages.push({ role: 'assistant', content: request.prefill });
     }
-    const response = await this.client.messages.create({
-      model,
-      max_tokens: request.maxTokens ?? 1024,
-      temperature: 0,
-      system: request.system,
-      messages,
-    });
+    let response: Anthropic.Message;
+    try {
+      response = await this.client.messages.create({
+        model,
+        max_tokens: request.maxTokens ?? 1024,
+        temperature: 0,
+        system: request.system,
+        messages,
+      });
+    } catch (error) {
+      // Full provider error stays server-side; the client gets a clean 503.
+      const status = error instanceof Anthropic.APIError ? error.status : undefined;
+      new Logger('LlmClient').error(
+        `LLM call failed (${model}): ${(error as Error).message}`,
+      );
+      throw new ServiceUnavailableException(
+        `Service IA momentanément indisponible${status ? ` (HTTP ${status})` : ''} — réessayer dans quelques instants`,
+      );
+    }
     const completionText = response.content
       .filter((block): block is Anthropic.TextBlock => block.type === 'text')
       .map((block) => block.text)

@@ -9,6 +9,7 @@ import {
   Post,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import { Roles } from '../auth/auth.module';
 import { extractAvis } from './extractor';
@@ -19,7 +20,10 @@ import {
 } from './llm.client';
 
 const extractBodySchema = z.object({
-  text: z.string().min(20, 'Texte trop court pour une extraction'),
+  text: z
+    .string()
+    .min(20, 'Texte trop court pour une extraction')
+    .max(50_000, 'Texte trop long (50 000 caractères max)'),
 });
 
 @Controller('brain')
@@ -30,6 +34,7 @@ export class BrainController {
 
   /** Extractor (A2): structured fields from raw avis/DCE text. */
   @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('extract-avis')
   async extractAvisEndpoint(@Body() body: unknown) {
     if (!this.llm) {

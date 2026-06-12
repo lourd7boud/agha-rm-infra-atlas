@@ -1,8 +1,11 @@
 import { Controller, Get, Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule, Public } from './modules/auth/auth.module';
 import { BrainModule } from './modules/brain/brain.module';
 import { DigestModule } from './modules/digest/digest.module';
+import { IntelModule } from './modules/intel/intel.module';
 import { TenderModule } from './modules/tender/tender.module';
 import { VaultModule } from './modules/vault/vault.module';
 import { WatchModule } from './modules/watch/watch.module';
@@ -26,14 +29,19 @@ export class HealthController {
 
 @Module({
   imports: [
+    // Global rate limit: 120 req/min per client; LLM routes are tighter
+    // via @Throttle (security-compliance §5).
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     AuthModule,
     AuditModule,
     BrainModule,
     DigestModule,
+    IntelModule,
     VaultModule,
     TenderModule,
     WatchModule,
   ],
   controllers: [HealthController],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}

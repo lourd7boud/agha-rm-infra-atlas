@@ -1,4 +1,5 @@
 import {
+  boolean,
   date,
   jsonb,
   numeric,
@@ -40,6 +41,28 @@ export const vaultDocuments = vault.table('document', {
   archivedAt: timestamp('archived_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const intel = pgSchema('intel');
+
+export const competitors = intel.table('competitor', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  canonicalName: text('canonical_name').notNull(),
+  normalizedName: text('normalized_name').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const competitorBids = intel.table('competitor_bid', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  reference: text('reference').notNull(),
+  buyerName: text('buyer_name').notNull(),
+  bidderName: text('bidder_name').notNull(),
+  competitorId: uuid('competitor_id').references(() => competitors.id),
+  amountMad: numeric('amount_mad', { precision: 14, scale: 2 }),
+  isWinner: boolean('is_winner').notNull().default(false),
+  resultDate: date('result_date', { mode: 'date' }),
+  sourceUrl: text('source_url'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const buyers = tender.table('buyer', {
