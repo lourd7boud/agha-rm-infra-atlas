@@ -160,6 +160,34 @@ export const cautions = finance.table('caution', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const people = pgSchema('people');
+
+// Workforce register — employees and their chantier assignments.
+export const employees = people.table('employee', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  companyId: text('company_id').notNull().default('agha-rm-infra'),
+  fullName: text('full_name').notNull(),
+  cin: text('cin'),
+  metier: text('metier').notNull(),
+  phone: text('phone'),
+  status: text('status').notNull().default('actif'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// One active assignment per employee (enforced in application code).
+export const assignments = people.table('assignment', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  employeeId: uuid('employee_id')
+    .notNull()
+    .references(() => employees.id),
+  projectId: uuid('project_id')
+    .notNull()
+    .references(() => projects.id),
+  startDate: date('start_date', { mode: 'date' }).notNull(),
+  endDate: date('end_date', { mode: 'date' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const comms = pgSchema('comms');
 
 // Delivery outbox — every outbound message is recorded before sending.

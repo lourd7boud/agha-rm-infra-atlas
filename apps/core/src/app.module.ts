@@ -9,6 +9,7 @@ import { FieldModule } from './modules/field/field.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { IntelModule } from './modules/intel/intel.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
+import { PeopleModule } from './modules/people/people.module';
 import { ProjectModule } from './modules/project/project.module';
 import { TenderModule } from './modules/tender/tender.module';
 import { VaultModule } from './modules/vault/vault.module';
@@ -44,6 +45,7 @@ export class HealthController {
     FinanceModule,
     IntelModule,
     MetricsModule,
+    PeopleModule,
     ProjectModule,
     VaultModule,
     TenderModule,
