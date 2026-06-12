@@ -33,6 +33,35 @@ interface PlanMilestone {
   dueAt: string;
 }
 
+type ChecklistStatus = 'ok' | 'a_renouveler' | 'manquant' | 'a_faire' | 'a_verifier';
+
+interface ChecklistItem {
+  code: string;
+  label: string;
+  status: ChecklistStatus;
+  detail?: string;
+}
+
+interface ComplianceChecklist {
+  ready: boolean;
+  items: ChecklistItem[];
+  counts: {
+    ok: number;
+    aRenouveler: number;
+    manquant: number;
+    aFaire: number;
+    aVerifier: number;
+  };
+}
+
+const CHECKLIST_BADGES: Record<ChecklistStatus, { icon: string; classes: string }> = {
+  ok: { icon: '✓', classes: 'text-emerald-600' },
+  a_renouveler: { icon: '⟳', classes: 'text-amber-600' },
+  manquant: { icon: '✗', classes: 'text-rose-600' },
+  a_faire: { icon: '◻', classes: 'text-slate-500' },
+  a_verifier: { icon: '?', classes: 'text-amber-600' },
+};
+
 interface TenderDetail {
   id: string;
   reference: string;
@@ -132,7 +161,10 @@ export default async function TenderDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const tender = await apiGet<TenderDetail>(`/tender/tenders/${id}`);
+  const [tender, checklist] = await Promise.all([
+    apiGet<TenderDetail>(`/tender/tenders/${id}`),
+    apiGet<ComplianceChecklist>(`/tender/tenders/${id}/checklist`),
+  ]);
   const state = PIPELINE_LABELS[tender.pipelineState];
   const brief = tender.raw?.g1Brief;
   const actions = NEXT_ACTIONS[tender.pipelineState] ?? [];
@@ -278,6 +310,41 @@ export default async function TenderDetailPage({
               Pas encore qualifié — le Qualifier traite les AO détectés/analysés.
             </p>
           )}
+        </section>
+
+        <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm lg:col-span-2">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+              Dossier administratif (B1 — Conformité)
+            </h2>
+            <span
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                checklist.ready
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : 'bg-rose-100 text-rose-800'
+              }`}
+            >
+              {checklist.ready
+                ? 'Aucune pièce bloquante'
+                : `${checklist.counts.manquant} pièce(s) bloquante(s)`}
+            </span>
+          </div>
+          <ul className="grid gap-x-8 gap-y-2 text-sm md:grid-cols-2">
+            {checklist.items.map((item) => {
+              const badge = CHECKLIST_BADGES[item.status];
+              return (
+                <li key={item.code} className="flex gap-2">
+                  <span className={`font-bold ${badge.classes}`}>{badge.icon}</span>
+                  <span>
+                    <span className="text-slate-800">{item.label}</span>
+                    {item.detail && (
+                      <span className="block text-xs text-slate-400">{item.detail}</span>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
         </section>
 
         <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm lg:col-span-2">

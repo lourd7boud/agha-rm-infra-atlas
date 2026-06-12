@@ -17,6 +17,12 @@ import { Roles } from '../auth/auth.module';
 import { getDb } from '../../db/client';
 import { daysUntil } from '../../lib/dates';
 import { BrainModule } from '../brain/brain.module';
+import { VaultModule } from '../vault/vault.module';
+import {
+  VAULT_REPOSITORY,
+  type VaultRepository,
+} from '../vault/vault.repository';
+import { buildComplianceChecklist } from './compliance.domain';
 import { EnrichmentService } from './enrichment.service';
 import { QualifierService } from './qualifier.service';
 import { buildBackPlan, canTransition } from './tender.domain';
@@ -44,7 +50,17 @@ export class TenderController {
     @Inject(TENDER_REPOSITORY) private readonly repository: TenderRepository,
     @Inject(QualifierService) private readonly qualifier: QualifierService,
     @Inject(EnrichmentService) private readonly enrichment: EnrichmentService,
+    @Inject(VAULT_REPOSITORY) private readonly vault: VaultRepository,
   ) {}
+
+  /** Compliance Officer (B1): administrative checklist for this tender. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Get('tenders/:id/checklist')
+  async checklist(@Param('id') id: string) {
+    const record = await this.findOr404(id);
+    const documents = await this.vault.findAll();
+    return buildComplianceChecklist(record, documents, new Date());
+  }
 
   /** Extractor (A2) over avis/DCE text → fill missing fields → re-qualify. */
   @Roles('marches', 'direction', 'admin-si')
@@ -152,7 +168,7 @@ const tenderRepositoryProvider = {
 };
 
 @Module({
-  imports: [BrainModule],
+  imports: [BrainModule, VaultModule],
   controllers: [TenderController],
   providers: [tenderRepositoryProvider, QualifierService, EnrichmentService],
   exports: [tenderRepositoryProvider],
