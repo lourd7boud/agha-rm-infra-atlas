@@ -88,5 +88,6 @@ const intelRepositoryProvider = {
 @Module({
   controllers: [IntelController],
   providers: [intelSourceProvider, intelRepositoryProvider, IntelService],
+  exports: [intelRepositoryProvider],
 })
 export class IntelModule {}

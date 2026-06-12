@@ -23,8 +23,10 @@ import {
   VAULT_REPOSITORY,
   type VaultRepository,
 } from '../vault/vault.repository';
+import { IntelModule } from '../intel/intel.module';
 import { buildComplianceChecklist } from './compliance.domain';
 import { EnrichmentService } from './enrichment.service';
+import { PricingService } from './pricing.service';
 import { QualifierService } from './qualifier.service';
 import { buildBackPlan, canTransition } from './tender.domain';
 import {
@@ -54,8 +56,16 @@ export class TenderController {
     @Inject(TENDER_REPOSITORY) private readonly repository: TenderRepository,
     @Inject(QualifierService) private readonly qualifier: QualifierService,
     @Inject(EnrichmentService) private readonly enrichment: EnrichmentService,
+    @Inject(PricingService) private readonly pricing: PricingService,
     @Inject(VAULT_REPOSITORY) private readonly vault: VaultRepository,
   ) {}
+
+  /** Financial Modeler (B4): G2 pricing scenarios grounded in C1 intel. */
+  @Roles('marches', 'direction')
+  @Post('tenders/:id/scenarios')
+  async scenarios(@Param('id') id: string) {
+    return this.pricing.generateScenarios(id);
+  }
 
   /** Compliance Officer (B1): administrative checklist for this tender. */
   @Roles('marches', 'direction', 'admin-si')
@@ -177,9 +187,14 @@ const tenderRepositoryProvider = {
 };
 
 @Module({
-  imports: [BrainModule, VaultModule],
+  imports: [BrainModule, IntelModule, VaultModule],
   controllers: [TenderController],
-  providers: [tenderRepositoryProvider, QualifierService, EnrichmentService],
+  providers: [
+    tenderRepositoryProvider,
+    QualifierService,
+    EnrichmentService,
+    PricingService,
+  ],
   exports: [tenderRepositoryProvider],
 })
 export class TenderModule {}

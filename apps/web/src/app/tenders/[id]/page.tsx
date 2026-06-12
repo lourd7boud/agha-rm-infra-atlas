@@ -27,6 +27,24 @@ interface G1Brief {
   generatedAt?: string;
 }
 
+interface PricingScenario {
+  nom: 'prudent' | 'equilibre' | 'agressif';
+  rabaisPct: number;
+  prixMad: number;
+  margeMad: number;
+  probabiliteGain: number;
+  esperanceMad: number;
+  statutReglementaire: 'conforme' | 'proche_seuil_bas';
+  commentaire: string;
+}
+
+interface G2Scenarios {
+  generatedAt: string;
+  hypotheses: { costRatio: number; concurrentsConnus: number; methode: string };
+  scenarios: PricingScenario[];
+  recommandation: { nom: string; raison: string };
+}
+
 interface PlanMilestone {
   code: string;
   label: string;
@@ -74,7 +92,7 @@ interface TenderDetail {
   sourceUrl?: string;
   pipelineState: PipelineState;
   qualification: Qualification | null;
-  raw: { g1Brief?: G1Brief } | null;
+  raw: { g1Brief?: G1Brief; g2Scenarios?: G2Scenarios } | null;
   daysLeft: number;
   plan: {
     feasible: boolean;
@@ -167,6 +185,7 @@ export default async function TenderDetailPage({
   ]);
   const state = PIPELINE_LABELS[tender.pipelineState];
   const brief = tender.raw?.g1Brief;
+  const pricing = tender.raw?.g2Scenarios;
   const actions = NEXT_ACTIONS[tender.pipelineState] ?? [];
 
   async function transitionTo(formData: FormData) {
@@ -180,6 +199,12 @@ export default async function TenderDetailPage({
   async function generateBrief() {
     'use server';
     await apiPost(`/tender/tenders/${id}/brief`);
+    revalidatePath(`/tenders/${id}`);
+  }
+
+  async function generateScenarios() {
+    'use server';
+    await apiPost(`/tender/tenders/${id}/scenarios`);
     revalidatePath(`/tenders/${id}`);
   }
 
@@ -413,6 +438,93 @@ export default async function TenderDetailPage({
           ) : (
             <p className="text-sm text-slate-400">
               Aucune note générée pour cet appel d&apos;offres.
+            </p>
+          )}
+        </section>
+
+        <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm lg:col-span-2">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+              Chiffrage (B4 — Modélisation financière)
+            </h2>
+            {tender.estimationMad ? (
+              <form action={generateScenarios}>
+                <button className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100">
+                  {pricing ? 'Recalculer les scénarios' : 'Générer les scénarios G2'}
+                </button>
+              </form>
+            ) : (
+              <span className="text-xs text-slate-400">
+                Estimation requise — enrichir la fiche d&apos;abord
+              </span>
+            )}
+          </div>
+
+          {pricing ? (
+            <div>
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="py-2 pr-4">Scénario</th>
+                    <th className="py-2 pr-4 text-right">Rabais</th>
+                    <th className="py-2 pr-4 text-right">Prix offert</th>
+                    <th className="py-2 pr-4 text-right">Marge</th>
+                    <th className="py-2 pr-4 text-right">P(gain)</th>
+                    <th className="py-2 pr-4 text-right">Espérance</th>
+                    <th className="py-2">Lecture</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {pricing.scenarios.map((scenario) => {
+                    const isBest = scenario.nom === pricing.recommandation.nom;
+                    return (
+                      <tr key={scenario.nom} className={isBest ? 'bg-emerald-50' : ''}>
+                        <td className="py-2.5 pr-4 font-semibold capitalize">
+                          {scenario.nom}
+                          {isBest && (
+                            <span className="ml-2 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
+                              Recommandé
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 pr-4 text-right font-mono tabular-nums">
+                          {scenario.rabaisPct}%
+                        </td>
+                        <td className="py-2.5 pr-4 text-right font-mono tabular-nums">
+                          {fmtMad(scenario.prixMad)}
+                        </td>
+                        <td
+                          className={`py-2.5 pr-4 text-right font-mono tabular-nums ${
+                            scenario.margeMad <= 0 ? 'text-rose-600' : ''
+                          }`}
+                        >
+                          {fmtMad(scenario.margeMad)}
+                        </td>
+                        <td className="py-2.5 pr-4 text-right font-mono tabular-nums">
+                          {Math.round(scenario.probabiliteGain * 100)}%
+                        </td>
+                        <td className="py-2.5 pr-4 text-right font-mono tabular-nums">
+                          {fmtMad(scenario.esperanceMad)}
+                        </td>
+                        <td className="py-2.5 text-xs text-slate-500">
+                          {scenario.commentaire}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <p className="mt-4 text-sm text-slate-700">{pricing.recommandation.raison}</p>
+              <p className="mt-2 text-xs text-slate-400">
+                Hypothèses : coûts ≈ {Math.round(pricing.hypotheses.costRatio * 100)}% de
+                l&apos;estimation · {pricing.hypotheses.concurrentsConnus} concurrent(s)
+                connu(s) via C1 · {pricing.hypotheses.methode} · Généré le{' '}
+                {new Date(pricing.generatedAt).toLocaleString('fr-MA')}
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-400">
+              Aucun scénario calculé — le chiffrage alimente la décision de prix (G2).
             </p>
           )}
         </section>
