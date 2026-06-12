@@ -6,6 +6,8 @@ export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,
   retries: 0,
+  // Serial: parallel first-compiles on the dev server caused flaky timeouts.
+  workers: 1,
   use: {
     baseURL: 'http://localhost:3001',
     screenshot: 'only-on-failure',
