@@ -10,6 +10,8 @@ coverage/
 # Test/browser artifacts
 .playwright-mcp/
 atlas-web-*.png
+test-results/
+playwright-report/
 
 # Environment & secrets — only templates are committed
 .env
