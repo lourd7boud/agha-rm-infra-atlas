@@ -103,6 +103,22 @@ export class TenderController {
     return this.enrichment.generateBidDraftFor(id);
   }
 
+  /** Risk Assessor (C3): structured risk matrix on T2. */
+  @Roles('marches', 'direction')
+  @Throttle({ default: { ttl: 60_000, limit: 6 } })
+  @Post('tenders/:id/risks')
+  async risks(@Param('id') id: string) {
+    return this.enrichment.generateRiskAssessmentFor(id);
+  }
+
+  /** Estimator (B3): détail estimatif skeleton on T2 — structure only. */
+  @Roles('marches', 'direction')
+  @Throttle({ default: { ttl: 60_000, limit: 6 } })
+  @Post('tenders/:id/estimate')
+  async estimate(@Param('id') id: string) {
+    return this.enrichment.generateEstimateSkeletonFor(id);
+  }
+
   /** Run the Qualifier (A3) over all detected/parsed tenders. */
   @Roles('marches', 'direction', 'admin-si')
   @Post('tenders/qualify')

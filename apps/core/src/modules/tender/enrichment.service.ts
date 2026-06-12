@@ -8,7 +8,12 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { generateBidDraft, type DraftOutcome } from '../brain/bidwriter';
+import {
+  generateEstimateSkeleton,
+  type EstimateOutcome,
+} from '../brain/estimator';
 import { extractAvis, type AvisExtraction } from '../brain/extractor';
+import { assessRisks, type RiskOutcome } from '../brain/riskassessor';
 import { LLM_CLIENT, type LlmClient } from '../brain/llm.client';
 import { generateBrief, type BriefOutcome } from '../brain/strategist';
 import { AGHA_PROFILE } from './company-profile';
@@ -154,6 +159,89 @@ export class EnrichmentService {
       });
       this.logger.log(
         `gate.G1.brief ${tender.reference} → ${outcome.brief.recommandation} (confiance ${outcome.brief.confiance})`,
+      );
+    }
+    return outcome;
+  }
+
+  /** Shared dossier serialization for the drafting/analysis agents. */
+  private buildAgentDossier(tender: TenderRecord): Record<string, unknown> {
+    const raw = tender.raw as Record<string, unknown> | null;
+    return {
+      fiche: {
+        reference: tender.reference,
+        acheteur: tender.buyerName,
+        procedure: tender.procedure,
+        objet: tender.objet,
+        estimationMad: tender.estimationMad ?? null,
+        cautionProvisoireMad: tender.cautionProvisoireMad ?? null,
+        dateLimite: tender.deadlineAt.toISOString(),
+        etatPipeline: tender.pipelineState,
+      },
+      profilEntreprise: {
+        metiers: AGHA_PROFILE.domainKeywords,
+        procedures: AGHA_PROFILE.procedures,
+        plafondEstimationMad: AGHA_PROFILE.maxEstimationMad,
+        plafondCautionMad: AGHA_PROFILE.maxCautionMad,
+      },
+      extractionDce: raw?.['extraction'] ?? null,
+      noteGoNoGo: raw?.['g1Brief'] ?? null,
+      retroPlanning: buildBackPlan(tender.deadlineAt, new Date()),
+    };
+  }
+
+  /** Risk Assessor (C3): structured risk matrix from qualified onward. */
+  async generateRiskAssessmentFor(id: string): Promise<RiskOutcome> {
+    const llm = this.requireLlm();
+    const tender = await this.requireTender(id);
+    const allowed = ['qualified', 'go_decided', 'preparing'];
+    if (!allowed.includes(tender.pipelineState)) {
+      throw new ConflictException(
+        `Analyse des risques après qualification (état actuel: ${tender.pipelineState})`,
+      );
+    }
+
+    const outcome = await assessRisks(llm, this.buildAgentDossier(tender));
+    if (outcome.ok && outcome.assessment) {
+      await this.repository.updateEnrichment(id, {}, {
+        riskAssessment: {
+          ...outcome.assessment,
+          model: outcome.model,
+          generatedAt: new Date().toISOString(),
+        },
+      });
+      this.logger.log(
+        `risk.assessment ${tender.reference} → ${outcome.assessment.niveauGlobal} (${outcome.assessment.risques.length} risques)`,
+      );
+    }
+    return outcome;
+  }
+
+  /** Estimator (B3): détail estimatif skeleton — no prices, ever. */
+  async generateEstimateSkeletonFor(id: string): Promise<EstimateOutcome> {
+    const llm = this.requireLlm();
+    const tender = await this.requireTender(id);
+    const allowed = ['qualified', 'go_decided', 'preparing'];
+    if (!allowed.includes(tender.pipelineState)) {
+      throw new ConflictException(
+        `Le métré démarre après qualification (état actuel: ${tender.pipelineState})`,
+      );
+    }
+
+    const outcome = await generateEstimateSkeleton(
+      llm,
+      this.buildAgentDossier(tender),
+    );
+    if (outcome.ok && outcome.skeleton) {
+      await this.repository.updateEnrichment(id, {}, {
+        estimateSkeleton: {
+          ...outcome.skeleton,
+          model: outcome.model,
+          generatedAt: new Date().toISOString(),
+        },
+      });
+      this.logger.log(
+        `estimate.skeleton ${tender.reference} → ${outcome.skeleton.postes.length} postes`,
       );
     }
     return outcome;
