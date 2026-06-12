@@ -27,6 +27,15 @@ interface ReceivablesResponse {
   aging: Record<'0-30' | '31-60' | '61-90' | '90+', number>;
 }
 
+interface SourceCoverage {
+  source: string;
+  fetches: number;
+  changes: number;
+  itemsExtracted: number;
+  lastFetchAt: string | null;
+  lastParseOk: boolean | null;
+}
+
 const URGENCE_TONES: Record<OrchestratorAction['urgence'], string> = {
   critique: 'bg-rose-100 text-rose-800',
   haute: 'bg-amber-100 text-amber-800',
@@ -43,12 +52,14 @@ async function tryGet<T>(path: string): Promise<T | null> {
 }
 
 export default async function DashboardPage() {
-  const [orchestrator, cautions, receivables, projects] = await Promise.all([
-    tryGet<OrchestratorEntry[]>('/tender/orchestrator'),
-    tryGet<CautionsResponse>('/finance/cautions'),
-    tryGet<ReceivablesResponse>('/finance/receivables'),
-    tryGet<ProjectSummary[]>('/project/projects'),
-  ]);
+  const [orchestrator, cautions, receivables, projects, coverage] =
+    await Promise.all([
+      tryGet<OrchestratorEntry[]>('/tender/orchestrator'),
+      tryGet<CautionsResponse>('/finance/cautions'),
+      tryGet<ReceivablesResponse>('/finance/receivables'),
+      tryGet<ProjectSummary[]>('/project/projects'),
+      tryGet<SourceCoverage[]>('/watch/coverage'),
+    ]);
 
   const enCours = (projects ?? []).filter((p) => p.status === 'en_cours');
   const urgent = (orchestrator ?? []).flatMap((entry) =>
@@ -141,6 +152,41 @@ export default async function DashboardPage() {
                     ))}
                   </span>
                 </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {coverage && coverage.length > 0 && (
+        <section className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <h2 className="border-b border-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-widest text-slate-400">
+            Couverture du portail (veille)
+          </h2>
+          <ul className="divide-y divide-slate-100">
+            {coverage.map((entry) => (
+              <li
+                key={entry.source}
+                className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 text-sm"
+              >
+                <span className="font-semibold uppercase">{entry.source}</span>
+                <span className="flex gap-4 font-mono text-xs tabular-nums text-slate-500">
+                  <span>{entry.fetches} relevé(s)</span>
+                  <span>{entry.changes} changement(s)</span>
+                  <span>{entry.itemsExtracted} avis extraits</span>
+                  <span
+                    className={
+                      entry.lastParseOk === false ? 'text-rose-600' : 'text-emerald-600'
+                    }
+                  >
+                    {entry.lastParseOk === false ? 'analyse KO' : 'analyse OK'}
+                  </span>
+                  {entry.lastFetchAt && (
+                    <span>
+                      {new Date(entry.lastFetchAt).toLocaleString('fr-MA')}
+                    </span>
+                  )}
+                </span>
               </li>
             ))}
           </ul>
