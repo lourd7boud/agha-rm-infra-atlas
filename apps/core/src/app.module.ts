@@ -6,6 +6,7 @@ import { AuthModule, Public } from './modules/auth/auth.module';
 import { BrainModule } from './modules/brain/brain.module';
 import { DigestModule } from './modules/digest/digest.module';
 import { IntelModule } from './modules/intel/intel.module';
+import { MetricsModule } from './modules/metrics/metrics.module';
 import { TenderModule } from './modules/tender/tender.module';
 import { VaultModule } from './modules/vault/vault.module';
 import { WatchModule } from './modules/watch/watch.module';
@@ -37,6 +38,7 @@ export class HealthController {
     BrainModule,
     DigestModule,
     IntelModule,
+    MetricsModule,
     VaultModule,
     TenderModule,
     WatchModule,
