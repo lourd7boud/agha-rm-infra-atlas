@@ -34,6 +34,9 @@ export default async function RootLayout({
                 <Link href="/vault" className="hover:text-slate-900">
                   Coffre-fort
                 </Link>
+                <Link href="/intel" className="hover:text-slate-900">
+                  Concurrence
+                </Link>
               </nav>
             </div>
             {session?.user && (
