@@ -1,6 +1,7 @@
 import { Controller, Get, Module } from '@nestjs/common';
 import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule, Public } from './modules/auth/auth.module';
+import { BrainModule } from './modules/brain/brain.module';
 import { TenderModule } from './modules/tender/tender.module';
 import { VaultModule } from './modules/vault/vault.module';
 import { WatchModule } from './modules/watch/watch.module';
@@ -23,7 +24,14 @@ export class HealthController {
 }
 
 @Module({
-  imports: [AuthModule, AuditModule, VaultModule, TenderModule, WatchModule],
+  imports: [
+    AuthModule,
+    AuditModule,
+    BrainModule,
+    VaultModule,
+    TenderModule,
+    WatchModule,
+  ],
   controllers: [HealthController],
 })
 export class AppModule {}
