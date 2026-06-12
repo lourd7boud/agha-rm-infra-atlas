@@ -42,10 +42,24 @@ export interface ParseOutcome {
   skippedRows: number;
 }
 
-/** Pulls "DD/MM/YYYY HH:mm" out of a noisy cell (real PMMP appends markup). */
+/**
+ * Pulls a deadline out of a noisy cell. The live Atexo portal concatenates
+ * the date and time with no separator ("15/07/202910:00"); the recorded
+ * fixture uses a space. Both normalize to "DD/MM/YYYY HH:mm".
+ */
 function firstPmmpDate(text: string): Date | null {
-  const match = /(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2})/.exec(text);
-  return match?.[1] ? parsePmmpDate(match[1]) : null;
+  const match = /(\d{2}\/\d{2}\/\d{4})\s*(\d{2}:\d{2})/.exec(text);
+  return match?.[1] && match[2]
+    ? parsePmmpDate(`${match[1]} ${match[2]}`)
+    : null;
+}
+
+/** Cleans an Atexo cell: collapse whitespace, drop leading dashes/dots. */
+function cleanCell(text: string): string {
+  return text
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s. -]+/, '')
+    .trim();
 }
 
 /**
@@ -91,9 +105,11 @@ function parseFixtureLayout(
 }
 
 /**
- * Live PMMP layout (table.table-results, Atexo MPE): columns are
- * procédure / référence+objet / acheteur / date limite. The reference
- * is the <a> in the objet cell; the objet text follows "Objet :".
+ * Live PMMP layout (table.table-results, Atexo MPE), column order verified
+ * against the live portal: [0] checkbox, [1] procédure, [2] référence +
+ * "Objet :"objet, [3] acheteur, [4] date+heure (often concatenated),
+ * [5..] noise. Reference is the anchor in the objet cell, falling back to
+ * the leading token before " - " or "Objet".
  */
 function parseLiveLayout($: cheerio.CheerioAPI, baseUrl: string): ParseOutcome {
   const tenders: CreateTender[] = [];
@@ -101,25 +117,22 @@ function parseLiveLayout($: cheerio.CheerioAPI, baseUrl: string): ParseOutcome {
 
   $('table.table-results tbody tr').each((_, row) => {
     const cells = $(row).find('td');
-    if (cells.length < 4) {
+    if (cells.length < 5) {
       skippedRows += 1;
       return;
     }
-    const procedure = mapProcedure(cells.eq(0).text());
-    const refCell = cells.eq(1);
-    const reference = refCell.find('a').first().text().trim();
-    const href = refCell.find('a').first().attr('href');
-    const objetMatch = /objet\s*:\s*(.+)/is.exec(refCell.text());
-    const objet = objetMatch?.[1]
-      ? objetMatch[1].replace(/\s+/g, ' ').trim()
-      : '';
-    const buyerName = cells
-      .eq(2)
-      .text()
-      .replace(/ /g, ' ')
-      .replace(/^[\s-]+/, '')
-      .trim();
-    const deadlineAt = firstPmmpDate(cells.eq(3).text());
+    const procedure = mapProcedure(cells.eq(1).text());
+    const refCell = cells.eq(2);
+    const refText = refCell.text();
+    const anchor = refCell.find('a').first();
+    const reference =
+      anchor.text().trim() ||
+      cleanCell(refText.split(/ - |objet\s*:/i)[0] ?? '');
+    const href = anchor.attr('href');
+    const objetMatch = /objet\s*:\s*(.+)/is.exec(refText);
+    const objet = objetMatch?.[1] ? cleanCell(objetMatch[1]) : '';
+    const buyerName = cleanCell(cells.eq(3).text());
+    const deadlineAt = firstPmmpDate(cells.eq(4).text());
 
     if (!reference || !procedure || !objet || !buyerName || !deadlineAt) {
       skippedRows += 1;
