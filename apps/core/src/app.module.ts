@@ -5,6 +5,7 @@ import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule, Public } from './modules/auth/auth.module';
 import { BrainModule } from './modules/brain/brain.module';
 import { DigestModule } from './modules/digest/digest.module';
+import { FinanceModule } from './modules/finance/finance.module';
 import { IntelModule } from './modules/intel/intel.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { ProjectModule } from './modules/project/project.module';
@@ -38,6 +39,7 @@ export class HealthController {
     AuditModule,
     BrainModule,
     DigestModule,
+    FinanceModule,
     IntelModule,
     MetricsModule,
     ProjectModule,

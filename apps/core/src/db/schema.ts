@@ -103,6 +103,26 @@ export const situations = project.table('situation', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const finance = pgSchema('finance');
+
+// Bank guarantees register — cash locked at banks until release.
+// kind: provisoire (per tender) | definitive | retenue_remplacee (per project).
+export const cautions = finance.table('caution', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  companyId: text('company_id').notNull().default('agha-rm-infra'),
+  kind: text('kind').notNull(),
+  reference: text('reference').notNull(),
+  tenderId: uuid('tender_id').references(() => tenders.id),
+  projectId: uuid('project_id').references(() => projects.id),
+  amountMad: numeric('amount_mad', { precision: 14, scale: 2 }).notNull(),
+  bankName: text('bank_name'),
+  issuedAt: date('issued_at', { mode: 'date' }).notNull(),
+  releasedAt: date('released_at', { mode: 'date' }),
+  status: text('status').notNull().default('active'),
+  notes: text('notes'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const buyers = tender.table('buyer', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
