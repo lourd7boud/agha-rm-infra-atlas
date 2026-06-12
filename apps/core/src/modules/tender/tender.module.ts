@@ -94,6 +94,16 @@ export class TenderController {
       .map(present);
   }
 
+  /** Full dossier for one tender — the G0/G1 review screen payload. */
+  @Get('tenders/:id')
+  async detail(@Param('id') id: string) {
+    const record = await this.findOr404(id);
+    return {
+      ...present(record),
+      plan: buildBackPlan(record.deadlineAt, new Date()),
+    };
+  }
+
   /** J-X preparation back-plan for one tender (orchestrator view). */
   @Get('tenders/:id/plan')
   async plan(@Param('id') id: string) {

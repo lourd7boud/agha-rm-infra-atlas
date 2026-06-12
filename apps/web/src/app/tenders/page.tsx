@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import { apiGet } from '@/lib/api';
 import { PIPELINE_LABELS, urgencyClasses } from '@/lib/labels';
@@ -55,7 +56,14 @@ export default async function TendersPage() {
                       {new Date(tender.deadlineAt).toLocaleDateString('fr-MA')}
                     </div>
                   </td>
-                  <td className="px-4 py-3 font-semibold">{tender.reference}</td>
+                  <td className="px-4 py-3 font-semibold">
+                    <Link
+                      href={`/tenders/${tender.id}`}
+                      className="underline-offset-2 hover:text-amber-700 hover:underline"
+                    >
+                      {tender.reference}
+                    </Link>
+                  </td>
                   <td className="max-w-md px-4 py-3 text-slate-600">
                     {tender.objet}
                   </td>
