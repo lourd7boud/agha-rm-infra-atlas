@@ -8,6 +8,8 @@ export default defineConfig({
   retries: 0,
   // Serial: parallel first-compiles on the dev server caused flaky timeouts.
   workers: 1,
+  // Dev-server first compiles exceed the 5s default; still a deterministic wait.
+  expect: { timeout: 20_000 },
   use: {
     baseURL: 'http://localhost:3001',
     screenshot: 'only-on-failure',
