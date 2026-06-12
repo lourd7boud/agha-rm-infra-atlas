@@ -12,8 +12,15 @@ import {
   Post,
 } from '@nestjs/common';
 import { Queue, Worker } from 'bullmq';
+import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
 import { TenderModule } from '../tender/tender.module';
+import {
+  DrizzleSnapshotRepository,
+  InMemorySnapshotRepository,
+  SNAPSHOT_REPOSITORY,
+  type SnapshotRepository,
+} from './snapshot.repository';
 import { WatchService } from './watch.service';
 import {
   FixturePortalSource,
@@ -32,7 +39,18 @@ function redisConnection() {
 
 @Controller('watch')
 export class WatchController {
-  constructor(@Inject(WATCH_QUEUE) private readonly queue: Queue) {}
+  constructor(
+    @Inject(WATCH_QUEUE) private readonly queue: Queue,
+    @Inject(SNAPSHOT_REPOSITORY)
+    private readonly snapshots: SnapshotRepository,
+  ) {}
+
+  /** Live-portal coverage report: fetches, changes, items per source. */
+  @Roles('admin-si', 'marches', 'direction')
+  @Get('coverage')
+  async coverage() {
+    return this.snapshots.coverage();
+  }
 
   /** Enqueue a Sentinel run (manual trigger; cron covers the schedule). */
   @Roles('admin-si', 'marches', 'direction')
@@ -79,10 +97,27 @@ const watchQueueProvider = {
     new Queue(QUEUE_NAME, { connection: redisConnection() }),
 };
 
+const snapshotRepositoryProvider = {
+  provide: SNAPSHOT_REPOSITORY,
+  useFactory: (): SnapshotRepository => {
+    const url = process.env.DATABASE_URL;
+    if (url) return new DrizzleSnapshotRepository(getDb(url));
+    new Logger('WatchModule').warn(
+      'DATABASE_URL not set — snapshots use a non-persistent in-memory repository',
+    );
+    return new InMemorySnapshotRepository();
+  },
+};
+
 @Module({
   imports: [TenderModule],
   controllers: [WatchController],
-  providers: [portalSourceProvider, watchQueueProvider, WatchService],
+  providers: [
+    portalSourceProvider,
+    watchQueueProvider,
+    snapshotRepositoryProvider,
+    WatchService,
+  ],
 })
 export class WatchModule implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('WatchModule');
