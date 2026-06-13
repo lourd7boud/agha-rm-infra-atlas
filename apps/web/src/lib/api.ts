@@ -1,16 +1,24 @@
+import { redirect } from 'next/navigation';
 import { auth } from '@/auth';
 
 const API_URL = process.env.ATLAS_API_URL ?? 'http://localhost:3000/api';
 
+const SIGNIN = '/api/auth/signin?callbackUrl=/';
+
 /** Server-side fetch against ATLAS Core with the session's bearer token. */
 export async function apiGet<T>(path: string): Promise<T> {
   const session = await auth();
+  // Missing/expired-and-unrefreshable session: send to sign-in, don't 500.
+  if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
+    redirect(SIGNIN);
+  }
   const response = await fetch(`${API_URL}${path}`, {
-    headers: session?.accessToken
-      ? { Authorization: `Bearer ${session.accessToken}` }
-      : {},
+    headers: { Authorization: `Bearer ${session.accessToken}` },
     cache: 'no-store',
   });
+  if (response.status === 401) {
+    redirect(SIGNIN);
+  }
   if (!response.ok) {
     throw new Error(`ATLAS API ${path} a répondu HTTP ${response.status}`);
   }
@@ -20,17 +28,21 @@ export async function apiGet<T>(path: string): Promise<T> {
 /** Server-side POST against ATLAS Core (gate actions, agent triggers). */
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   const session = await auth();
+  if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
+    redirect(SIGNIN);
+  }
   const response = await fetch(`${API_URL}${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(session?.accessToken
-        ? { Authorization: `Bearer ${session.accessToken}` }
-        : {}),
+      Authorization: `Bearer ${session.accessToken}`,
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     cache: 'no-store',
   });
+  if (response.status === 401) {
+    redirect(SIGNIN);
+  }
   if (!response.ok) {
     throw new Error(`ATLAS API ${path} a répondu HTTP ${response.status}`);
   }

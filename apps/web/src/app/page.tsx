@@ -42,10 +42,22 @@ const URGENCE_TONES: Record<OrchestratorAction['urgence'], string> = {
   normale: 'bg-slate-100 text-slate-600',
 };
 
+function isRedirectError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'digest' in error &&
+    typeof (error as { digest: unknown }).digest === 'string' &&
+    (error as { digest: string }).digest.startsWith('NEXT_REDIRECT')
+  );
+}
+
 async function tryGet<T>(path: string): Promise<T | null> {
   try {
     return await apiGet<T>(path);
-  } catch {
+  } catch (error) {
+    // A sign-in redirect must propagate; only role/availability errors degrade.
+    if (isRedirectError(error)) throw error;
     // Role-restricted or unavailable section — the dashboard renders without it.
     return null;
   }
