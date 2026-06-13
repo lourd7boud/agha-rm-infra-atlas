@@ -66,6 +66,51 @@ export const competitorBids = intel.table('competitor_bid', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Native procurement (Odoo-replacement slice 1): suppliers, bons de
+// commande, factures fournisseurs — our roles, our audit, no external ERP.
+export const supply = pgSchema('supply');
+
+export const suppliers = supply.table('supplier', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  companyId: text('company_id').notNull().default('agha-rm-infra'),
+  name: text('name').notNull(),
+  /** Identifiant Commun de l'Entreprise — Moroccan business id. */
+  ice: text('ice'),
+  phone: text('phone'),
+  email: text('email'),
+  status: text('status').notNull().default('actif'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const purchaseOrders = supply.table('purchase_order', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  supplierId: uuid('supplier_id')
+    .notNull()
+    .references(() => suppliers.id),
+  projectId: uuid('project_id').references(() => projects.id),
+  reference: text('reference').notNull(),
+  objet: text('objet').notNull(),
+  amountMad: numeric('amount_mad', { precision: 14, scale: 2 }).notNull(),
+  status: text('status').notNull().default('brouillon'),
+  orderedAt: date('ordered_at', { mode: 'date' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const supplierInvoices = supply.table('supplier_invoice', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  supplierId: uuid('supplier_id')
+    .notNull()
+    .references(() => suppliers.id),
+  purchaseOrderId: uuid('purchase_order_id').references(() => purchaseOrders.id),
+  reference: text('reference').notNull(),
+  amountMad: numeric('amount_mad', { precision: 14, scale: 2 }).notNull(),
+  invoiceDate: date('invoice_date', { mode: 'date' }).notNull(),
+  dueDate: date('due_date', { mode: 'date' }).notNull(),
+  status: text('status').notNull().default('recue'),
+  paidAt: date('paid_at', { mode: 'date' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const project = pgSchema('project');
 
 // A chantier — born from a won tender or registered manually.
