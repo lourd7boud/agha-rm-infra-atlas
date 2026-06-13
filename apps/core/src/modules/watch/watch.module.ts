@@ -21,13 +21,29 @@ import {
   SNAPSHOT_REPOSITORY,
   type SnapshotRepository,
 } from './snapshot.repository';
-import { WatchService } from './watch.service';
+import {
+  WATCH_OPTIONS,
+  WatchService,
+  type WatchRunOptions,
+} from './watch.service';
 import {
   FixturePortalSource,
   HttpPortalSource,
   PORTAL_SOURCE,
+  type HttpPortalOptions,
   type PortalSource,
 } from './watch.source';
+
+/** Default ceiling on pages walked per run; ~25 pages covers a full day. */
+const DEFAULT_MAX_PAGES = 25;
+/** Default polite delay between page fetches. */
+const DEFAULT_PAGE_DELAY_MS = 800;
+
+/** Parses an env integer, falling back to a default on NaN/below-min values. */
+function intEnv(value: string | undefined, fallback: number, min: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= min ? Math.floor(n) : fallback;
+}
 
 const QUEUE_NAME = 'watch';
 const WATCH_QUEUE = Symbol('WATCH_QUEUE');
@@ -74,13 +90,42 @@ export class WatchController {
   }
 }
 
+/** Reads the optional Atexo pagination knobs from the environment. */
+function paginationOptions(): HttpPortalOptions {
+  const logger = new Logger('WatchModule');
+  const firstPageIndex = Number(process.env.WATCH_FIRST_PAGE_INDEX);
+  const pageSize = Number(process.env.WATCH_PAGE_SIZE);
+  if (process.env.WATCH_FIRST_PAGE_INDEX && !Number.isInteger(firstPageIndex)) {
+    logger.warn('WATCH_FIRST_PAGE_INDEX is not an integer — ignored (default 1)');
+  }
+  if (process.env.WATCH_PAGE_SIZE && !Number.isInteger(pageSize)) {
+    logger.warn('WATCH_PAGE_SIZE is not an integer — ignored');
+  }
+  const hasPageSize =
+    Boolean(process.env.WATCH_PAGE_SIZE_PARAM) &&
+    Number.isInteger(pageSize) &&
+    pageSize > 0;
+  return {
+    ...(process.env.WATCH_PAGE_PARAM
+      ? { pageParam: process.env.WATCH_PAGE_PARAM }
+      : {}),
+    ...(Number.isInteger(firstPageIndex) ? { firstPageIndex } : {}),
+    ...(hasPageSize
+      ? { pageSizeParam: process.env.WATCH_PAGE_SIZE_PARAM, pageSize }
+      : {}),
+  };
+}
+
 const portalSourceProvider = {
   provide: PORTAL_SOURCE,
   useFactory: (): PortalSource => {
     const logger = new Logger('WatchModule');
     if (process.env.WATCH_SOURCE === 'live' && process.env.WATCH_PMMP_URL) {
       logger.log(`Sentinel source: LIVE ${process.env.WATCH_PMMP_URL}`);
-      return new HttpPortalSource(process.env.WATCH_PMMP_URL);
+      return new HttpPortalSource(
+        process.env.WATCH_PMMP_URL,
+        paginationOptions(),
+      );
     }
     logger.warn(
       'Sentinel source: recorded fixture (set WATCH_SOURCE=live + WATCH_PMMP_URL for production)',
@@ -89,6 +134,14 @@ const portalSourceProvider = {
       join(process.cwd(), 'src/modules/watch/fixtures/pmmp-results.html'),
     );
   },
+};
+
+const watchOptionsProvider = {
+  provide: WATCH_OPTIONS,
+  useFactory: (): WatchRunOptions => ({
+    maxPages: intEnv(process.env.WATCH_MAX_PAGES, DEFAULT_MAX_PAGES, 1),
+    delayMs: intEnv(process.env.WATCH_PAGE_DELAY_MS, DEFAULT_PAGE_DELAY_MS, 0),
+  }),
 };
 
 const watchQueueProvider = {
@@ -115,6 +168,7 @@ const snapshotRepositoryProvider = {
   providers: [
     portalSourceProvider,
     watchQueueProvider,
+    watchOptionsProvider,
     snapshotRepositoryProvider,
     WatchService,
   ],

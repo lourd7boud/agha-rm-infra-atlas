@@ -5,21 +5,26 @@ export interface PortalPage {
   sourceUrl: string;
 }
 
-/** Abstraction over where portal HTML comes from (live HTTP vs recorded fixture). */
+/**
+ * Abstraction over where portal HTML comes from (live HTTP vs recorded
+ * fixture). `page` is 1-based; sources that cannot paginate ignore it and
+ * return the same content, which the Sentinel detects (repeated fingerprint)
+ * and treats as the end of the result set.
+ */
 export interface PortalSource {
-  fetch(): Promise<PortalPage>;
+  fetch(page?: number): Promise<PortalPage>;
 }
 
 export const PORTAL_SOURCE = Symbol('PORTAL_SOURCE');
 
-/** Dev/test source reading a recorded snapshot from disk. */
+/** Dev/test source reading a recorded snapshot from disk (single page). */
 export class FixturePortalSource implements PortalSource {
   constructor(
     private readonly filePath: string,
     private readonly sourceUrl = 'https://www.marchespublics.gov.ma/',
   ) {}
 
-  async fetch(): Promise<PortalPage> {
+  async fetch(_page = 1): Promise<PortalPage> {
     const html = await readFile(this.filePath, 'utf8');
     return { html, sourceUrl: this.sourceUrl };
   }
@@ -35,6 +40,18 @@ export interface HttpPortalOptions {
   fetchImpl?: typeof fetch;
   /** Injectable sleep for tests. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Query parameter that carries the 1-based page index (Atexo MPE). When
+   * unset the source is single-page: every page request returns the base URL,
+   * so the Sentinel stops after one fetch. Confirm the live name against the
+   * portal before enabling deep crawling.
+   */
+  pageParam?: string;
+  /** Page index the portal uses for the first page (default 1). */
+  firstPageIndex?: number;
+  /** Optional results-per-page parameter and value, appended once. */
+  pageSizeParam?: string;
+  pageSize?: number;
 }
 
 const defaultSleep = (ms: number): Promise<void> =>
@@ -45,6 +62,10 @@ const defaultSleep = (ms: number): Promise<void> =>
  * bounded retry with exponential backoff. Government portals drop requests;
  * a transient failure should not abort the whole Sentinel run. After the
  * final attempt the error propagates so coverage records the miss.
+ *
+ * Pagination is opt-in via `pageParam`/`pageSize`: the URL is rebuilt per
+ * page so the Sentinel can walk the full result set instead of the portal's
+ * small default first page.
  */
 export class HttpPortalSource implements PortalSource {
   private readonly attempts: number;
@@ -52,23 +73,55 @@ export class HttpPortalSource implements PortalSource {
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly pageParam?: string;
+  private readonly firstPageIndex: number;
+  private readonly pageSizeParam?: string;
+  private readonly pageSize?: number;
 
   constructor(
     private readonly url: string,
     options: HttpPortalOptions = {},
   ) {
+    // Fail fast on a misconfigured portal URL instead of at first fetch.
+    const protocol = new URL(url).protocol;
+    if (protocol !== 'http:' && protocol !== 'https:') {
+      throw new Error(`Portal URL must be http(s): ${url}`);
+    }
     this.attempts = Math.max(1, options.attempts ?? 3);
     this.backoffMs = options.backoffMs ?? 1500;
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? defaultSleep;
+    this.pageParam = options.pageParam;
+    this.firstPageIndex = Number.isFinite(options.firstPageIndex)
+      ? (options.firstPageIndex as number)
+      : 1;
+    this.pageSizeParam = options.pageSizeParam;
+    this.pageSize = options.pageSize;
   }
 
-  async fetch(): Promise<PortalPage> {
+  /** Builds the per-page URL, preserving the portal's existing query string. */
+  buildPageUrl(page: number): string {
+    if (!this.pageParam && !this.pageSizeParam) return this.url;
+    const target = new URL(this.url);
+    if (this.pageSizeParam && this.pageSize && Number.isFinite(this.pageSize)) {
+      target.searchParams.set(this.pageSizeParam, String(this.pageSize));
+    }
+    if (this.pageParam) {
+      const index = this.firstPageIndex + (page - 1);
+      // Never emit "=NaN" to the portal on a misconfiguration.
+      if (!Number.isFinite(index)) return this.url;
+      target.searchParams.set(this.pageParam, String(index));
+    }
+    return target.toString();
+  }
+
+  async fetch(page = 1): Promise<PortalPage> {
+    const url = this.buildPageUrl(page);
     let lastError: unknown;
     for (let attempt = 1; attempt <= this.attempts; attempt += 1) {
       try {
-        return await this.fetchOnce();
+        return await this.fetchOnce(url);
       } catch (error) {
         lastError = error;
         if (attempt < this.attempts) {
@@ -81,8 +134,8 @@ export class HttpPortalSource implements PortalSource {
       : new Error('Portal fetch failed');
   }
 
-  private async fetchOnce(): Promise<PortalPage> {
-    const response = await this.fetchImpl(this.url, {
+  private async fetchOnce(url: string): Promise<PortalPage> {
+    const response = await this.fetchImpl(url, {
       headers: {
         'User-Agent': 'ATLAS-Sentinel/0.1 (AGHA RM INFRA; veille marchés publics)',
         Accept: 'text/html',
@@ -92,6 +145,6 @@ export class HttpPortalSource implements PortalSource {
     if (!response.ok) {
       throw new Error(`Portal fetch failed: HTTP ${response.status}`);
     }
-    return { html: await response.text(), sourceUrl: this.url };
+    return { html: await response.text(), sourceUrl: url };
   }
 }

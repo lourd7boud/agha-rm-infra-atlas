@@ -10,10 +10,15 @@ import {
   NotFoundException,
   Param,
   Post,
+  Query,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
-import { pipelineStateSchema, tenderInputSchema } from '@atlas/contracts';
+import {
+  pipelineStateSchema,
+  tenderInputSchema,
+  tenderProcedureSchema,
+} from '@atlas/contracts';
 import { Roles } from '../auth/auth.module';
 import { getDb } from '../../db/client';
 import { daysUntil } from '../../lib/dates';
@@ -26,6 +31,7 @@ import {
 import { IntelModule } from '../intel/intel.module';
 import { buildComplianceChecklist } from './compliance.domain';
 import { EnrichmentService } from './enrichment.service';
+import { buildInventory } from './inventory.domain';
 import { nextActions } from './orchestrator.domain';
 import { PricingService } from './pricing.service';
 import { QualifierService } from './qualifier.service';
@@ -40,6 +46,15 @@ import {
 } from './tender.repository';
 
 const transitionBodySchema = z.object({ to: pipelineStateSchema });
+const inventoryQuerySchema = z.object({
+  procedure: tenderProcedureSchema.optional(),
+  buyer: z.string().max(200).optional(),
+  region: z.string().max(100).optional(),
+  state: pipelineStateSchema.optional(),
+  q: z.string().max(200).optional(),
+  limit: z.coerce.number().int().positive().max(1000).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
+});
 const enrichBodySchema = z.object({
   text: z
     .string()
@@ -178,6 +193,20 @@ export class TenderController {
     return [...records]
       .sort((a, b) => a.deadlineAt.getTime() - b.deadlineAt.getTime())
       .map(present);
+  }
+
+  /**
+   * Inventory (جرد): faceted catalogue of every detected tender — counts by
+   * procedure, buyer (jhat) and region — plus the filtered result rows.
+   */
+  @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
+  @Get('inventory')
+  async inventory(@Query() query: unknown) {
+    const parsed = inventoryQuerySchema.safeParse(query);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const { limit, offset, ...filters } = parsed.data;
+    const records = await this.repository.findAll();
+    return buildInventory(records, filters, new Date(), { limit, offset });
   }
 
   /** Full dossier (incl. G1 brief) — restricted to the decision circle. */

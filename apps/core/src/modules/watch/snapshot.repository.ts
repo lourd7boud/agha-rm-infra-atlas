@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { portalSnapshots } from '../../db/schema';
 
@@ -78,7 +78,12 @@ export class DrizzleSnapshotRepository implements SnapshotRepository {
     const [row] = await this.db
       .select({ sha256: portalSnapshots.sha256 })
       .from(portalSnapshots)
-      .where(eq(portalSnapshots.url, url))
+      .where(
+        and(
+          eq(portalSnapshots.source, source),
+          eq(portalSnapshots.url, url),
+        ),
+      )
       .orderBy(desc(portalSnapshots.fetchedAt))
       .limit(1);
     return row?.sha256 ?? null;

@@ -234,10 +234,12 @@ function toRecord(row: TenderRow): TenderRecord {
     buyerName: row.buyerName,
     procedure: row.procedure as TenderProcedure,
     objet: row.objet,
-    estimationMad: row.estimationMad ? Number(row.estimationMad) : undefined,
-    cautionProvisoireMad: row.cautionProvisoireMad
-      ? Number(row.cautionProvisoireMad)
-      : undefined,
+    // != null (not truthiness) so a legitimate stored 0 is preserved.
+    estimationMad: row.estimationMad != null ? Number(row.estimationMad) : undefined,
+    cautionProvisoireMad:
+      row.cautionProvisoireMad != null
+        ? Number(row.cautionProvisoireMad)
+        : undefined,
     deadlineAt: row.deadlineAt,
     sourceUrl: row.sourceUrl ?? undefined,
     pipelineState: row.pipelineState as PipelineState,

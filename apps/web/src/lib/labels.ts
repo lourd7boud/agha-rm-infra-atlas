@@ -1,4 +1,26 @@
-import type { DocumentKind, PipelineState, ValidityStatus } from '@atlas/contracts';
+import type {
+  DocumentKind,
+  PipelineState,
+  TenderProcedure,
+  ValidityStatus,
+} from '@atlas/contracts';
+
+export const PROCEDURE_LABELS: Record<TenderProcedure, string> = {
+  AOO: "Appel d'offres ouvert",
+  AOR: "Appel d'offres restreint",
+  concours: 'Concours',
+  negocie: 'Marché négocié',
+  bons_de_commande: 'Bons de commande',
+};
+
+/** Procedure chip tones — open tenders (our core business) read warm. */
+export const PROCEDURE_TONES: Record<TenderProcedure, string> = {
+  AOO: 'bg-amber-100 text-amber-900',
+  AOR: 'bg-orange-100 text-orange-900',
+  concours: 'bg-violet-100 text-violet-800',
+  negocie: 'bg-sky-100 text-sky-800',
+  bons_de_commande: 'bg-slate-100 text-slate-700',
+};
 
 export const PIPELINE_LABELS: Record<PipelineState, { label: string; classes: string }> = {
   detected: { label: 'Détecté', classes: 'bg-sky-100 text-sky-800' },
