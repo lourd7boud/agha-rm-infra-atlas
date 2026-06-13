@@ -38,21 +38,21 @@ export const PROJECT_STATUS_BADGES: Record<
   ProjectStatus,
   { label: string; classes: string }
 > = {
-  preparation: { label: 'Préparation', classes: 'bg-slate-100 text-slate-700' },
-  en_cours: { label: 'En cours', classes: 'bg-emerald-100 text-emerald-800' },
-  suspendu: { label: 'Suspendu', classes: 'bg-amber-100 text-amber-800' },
-  receptionne: { label: 'Réceptionné', classes: 'bg-violet-100 text-violet-800' },
-  clos: { label: 'Clos', classes: 'bg-slate-200 text-slate-500' },
+  preparation: { label: 'Préparation', classes: 'bg-sand text-muted' },
+  en_cours: { label: 'En cours', classes: 'bg-emerald-soft text-emerald' },
+  suspendu: { label: 'Suspendu', classes: 'bg-ochre-soft text-ochre' },
+  receptionne: { label: 'Réceptionné', classes: 'bg-cyan-soft text-cyan' },
+  clos: { label: 'Clos', classes: 'bg-sand text-faint' },
 };
 
 export const SITUATION_STATUS_BADGES: Record<
   SituationStatus,
   { label: string; classes: string }
 > = {
-  brouillon: { label: 'Brouillon', classes: 'bg-slate-100 text-slate-600' },
-  soumis: { label: 'Soumis', classes: 'bg-amber-100 text-amber-800' },
-  valide: { label: 'Validé', classes: 'bg-emerald-100 text-emerald-800' },
-  paye: { label: 'Payé', classes: 'bg-violet-100 text-violet-800' },
+  brouillon: { label: 'Brouillon', classes: 'bg-sand text-muted' },
+  soumis: { label: 'Soumis', classes: 'bg-ochre-soft text-ochre' },
+  valide: { label: 'Validé', classes: 'bg-emerald-soft text-emerald' },
+  paye: { label: 'Payé', classes: 'bg-cyan-soft text-cyan' },
 };
 
 /** Décompte workflow order — used to render the next-step button. */

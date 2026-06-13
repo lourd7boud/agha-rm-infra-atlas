@@ -1,15 +1,24 @@
 import type { ReactNode } from 'react';
 
 export type IconName =
+  | 'command'
   | 'dashboard'
   | 'tenders'
   | 'chantiers'
+  | 'terrain'
   | 'personnel'
   | 'tresorerie'
+  | 'supply'
+  | 'documents'
   | 'vault'
+  | 'crm'
+  | 'analytics'
+  | 'agents'
   | 'intel'
+  | 'settings'
   | 'search'
   | 'filter'
+  | 'bell'
   | 'chevronRight'
   | 'logout'
   | 'alert'
@@ -19,6 +28,12 @@ export type IconName =
 
 /** Hand-drawn ATLAS icon set — 24px grid, 1.6 stroke, rounded, currentColor. */
 const PATHS: Record<IconName, ReactNode> = {
+  command: (
+    <>
+      <path d="M12 3v3M12 18v3M3 12h3M18 12h3" />
+      <path d="M12 8l1.6 2.4L16 12l-2.4 1.6L12 16l-1.6-2.4L8 12l2.4-1.6z" />
+    </>
+  ),
   dashboard: (
     <>
       <rect x="3" y="3" width="7" height="8" rx="1.4" />
@@ -42,6 +57,13 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M12 5V3" />
     </>
   ),
+  terrain: (
+    <>
+      <path d="M3 20h18" />
+      <path d="M9 20l3-13 3 13" />
+      <path d="M8.5 13.5h7M7.5 16.5h9" />
+    </>
+  ),
   personnel: (
     <>
       <circle cx="9" cy="8" r="3" />
@@ -57,12 +79,47 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M6 9.5h.01M18 14.5h.01" />
     </>
   ),
+  supply: (
+    <>
+      <path d="M21 8l-9-5-9 5v8l9 5 9-5z" />
+      <path d="M3.4 7.5L12 12.5l8.6-5M12 12.5V22" />
+    </>
+  ),
+  documents: (
+    <>
+      <path d="M9 3h6l4 4v12a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
+      <path d="M15 3v4h4" />
+      <path d="M5 7v12a2 2 0 0 0 2 2h9" />
+    </>
+  ),
   vault: (
     <>
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <circle cx="11" cy="12" r="3.4" />
       <path d="M11 12l2.4-2.4" />
       <path d="M18 8.5v7" />
+    </>
+  ),
+  crm: (
+    <>
+      <circle cx="9" cy="9" r="3" />
+      <circle cx="17" cy="10.5" r="2.4" />
+      <path d="M3.5 20c0-3 2.6-5 5.5-5s5.5 2 5.5 5" />
+      <path d="M15 20c.2-2.1 1.5-3.6 4-3.6" />
+    </>
+  ),
+  analytics: (
+    <>
+      <path d="M3 3v18h18" />
+      <path d="M7 15l3.5-4 3 3L21 7" />
+    </>
+  ),
+  agents: (
+    <>
+      <rect x="5" y="7" width="14" height="11" rx="2.5" />
+      <path d="M9 7V4M15 7V4M5 12H3M5 15H3M21 12h-2M21 15h-2" />
+      <circle cx="9.5" cy="12.5" r="1" />
+      <circle cx="14.5" cy="12.5" r="1" />
     </>
   ),
   intel: (
@@ -72,6 +129,12 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3" />
     </>
   ),
+  settings: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 2.5v3M12 18.5v3M4 6.5l2 1.2M18 16.3l2 1.2M20 6.5l-2 1.2M6 16.3l-2 1.2" />
+    </>
+  ),
   search: (
     <>
       <circle cx="11" cy="11" r="7" />
@@ -79,6 +142,12 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   filter: <path d="M3 5h18l-7 8.2V20l-4 1.5v-9.3z" />,
+  bell: (
+    <>
+      <path d="M6 9a6 6 0 1 1 12 0c0 4.5 1.8 5.6 2 6H4c.2-.4 2-1.5 2-6z" />
+      <path d="M10 20a2 2 0 0 0 4 0" />
+    </>
+  ),
   chevronRight: <path d="M9 5.5l6.5 6.5L9 18.5" />,
   logout: (
     <>

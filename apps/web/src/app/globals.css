@@ -1,57 +1,59 @@
 @import "tailwindcss";
 
 /*
-  ATLAS — "Atlas Survey" design language.
-  Editorial-engineering: warm limestone canvas, bitume ink rail, Moroccan
-  ochre accent, hydraulic teal, with a faint topographic atmosphere.
+  ATLAS — "Command Center" dark design language.
+  Deep navy command surfaces, electric-cyan intelligence accent, glow and a
+  faint engineering grid. Tokens keep their original names so existing pages
+  re-theme automatically.
 */
 @theme {
-  /* Surfaces — warm limestone / engineering paper */
-  --color-paper: oklch(96.2% 0.012 83);
-  --color-paper-2: oklch(98.6% 0.008 83);
-  --color-sand: oklch(93% 0.018 80);
-
-  /* Ink — warm bitume near-black */
-  --color-ink: oklch(24% 0.014 60);
-  --color-ink-2: oklch(30% 0.016 58);
-  --color-rail: oklch(21% 0.018 55);
-  --color-rail-2: oklch(26% 0.02 52);
+  /* Surfaces — deep space navy */
+  --color-paper: oklch(17% 0.022 256);
+  --color-paper-2: oklch(21% 0.026 256);
+  --color-sand: oklch(26% 0.03 256);
+  --color-rail: oklch(15% 0.022 258);
+  --color-rail-2: oklch(24% 0.03 256);
 
   /* Text */
-  --color-muted: oklch(50% 0.012 65);
-  --color-faint: oklch(63% 0.01 70);
-  --color-line: oklch(89.5% 0.012 78);
-  --color-line-2: oklch(85% 0.014 76);
+  --color-ink: oklch(96% 0.01 250);
+  --color-ink-2: oklch(88% 0.015 250);
+  --color-muted: oklch(72% 0.02 252);
+  --color-faint: oklch(58% 0.022 254);
+  --color-line: oklch(31% 0.028 256);
+  --color-line-2: oklch(40% 0.032 256);
 
-  /* Brand + semantic */
-  --color-ochre: oklch(66% 0.135 62);
-  --color-ochre-deep: oklch(55% 0.135 56);
-  --color-ochre-soft: oklch(92% 0.05 72);
-  --color-teal: oklch(56% 0.072 205);
-  --color-teal-soft: oklch(93% 0.03 200);
-  --color-emerald: oklch(60% 0.12 158);
-  --color-emerald-soft: oklch(93% 0.05 158);
-  --color-clay: oklch(57% 0.16 32);
-  --color-clay-soft: oklch(92% 0.05 36);
+  /* Primary — electric cyan intelligence accent */
+  --color-cyan: oklch(78% 0.13 220);
+  --color-cyan-deep: oklch(66% 0.15 230);
+  --color-cyan-soft: oklch(32% 0.07 232);
 
-  /* Radii — slightly architectural */
+  /* Secondary + semantic (tuned for dark) */
+  --color-ochre: oklch(78% 0.13 70);
+  --color-ochre-deep: oklch(72% 0.14 65);
+  --color-ochre-soft: oklch(33% 0.06 70);
+  --color-teal: oklch(76% 0.1 195);
+  --color-teal-soft: oklch(31% 0.06 200);
+  --color-emerald: oklch(78% 0.15 160);
+  --color-emerald-soft: oklch(32% 0.07 162);
+  --color-clay: oklch(70% 0.16 28);
+  --color-clay-soft: oklch(33% 0.09 30);
+
   --radius-xs: 0.25rem;
   --radius-sm: 0.4rem;
   --radius-md: 0.6rem;
-  --radius-lg: 0.9rem;
-  --radius-xl: 1.25rem;
+  --radius-lg: 0.85rem;
+  --radius-xl: 1.1rem;
 
-  /* Warm, layered shadows */
-  --shadow-card: 0 1px 2px oklch(24% 0.02 60 / 0.04), 0 6px 20px -8px oklch(24% 0.03 60 / 0.10);
-  --shadow-raised: 0 2px 4px oklch(24% 0.02 60 / 0.05), 0 18px 40px -16px oklch(24% 0.03 60 / 0.18);
-  --shadow-rail: 2px 0 24px -12px oklch(20% 0.02 55 / 0.5);
+  /* Dark, layered shadows + cyan glow for emphasis */
+  --shadow-card: 0 1px 2px oklch(0% 0 0 / 0.3), 0 8px 24px -12px oklch(0% 0 0 / 0.5);
+  --shadow-raised: 0 2px 6px oklch(0% 0 0 / 0.35), 0 24px 48px -20px oklch(0% 0 0 / 0.6);
+  --shadow-rail: 1px 0 0 oklch(31% 0.028 256);
+  --shadow-glow: 0 0 0 1px oklch(66% 0.15 230 / 0.35), 0 0 22px -4px oklch(66% 0.15 230 / 0.45);
 }
 
-/* Map Tailwind font utilities onto the next/font CSS variables. Emitted to
-   :root so both the `font-*` utilities and raw var(--font-sans) resolve. */
 @theme {
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-  --font-display: var(--font-fraunces), Georgia, "Times New Roman", serif;
+  --font-display: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-plex), ui-monospace, "SFMono-Regular", monospace;
 }
 
@@ -59,39 +61,49 @@
   html {
     -webkit-text-size-adjust: 100%;
     text-rendering: optimizeLegibility;
+    color-scheme: dark;
   }
   body {
     background-color: var(--color-paper);
     color: var(--color-ink);
     font-family: var(--font-sans);
     font-feature-settings: "cv11", "ss01";
+    /* Faint command grid + cyan corner glow */
+    background-image:
+      radial-gradient(900px 500px at 100% 0%, oklch(66% 0.15 230 / 0.06), transparent 70%),
+      radial-gradient(700px 500px at 0% 100%, oklch(76% 0.1 195 / 0.05), transparent 70%),
+      linear-gradient(oklch(100% 0 0 / 0.022) 1px, transparent 1px),
+      linear-gradient(90deg, oklch(100% 0 0 / 0.022) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 32px 32px, 32px 32px;
+    background-attachment: fixed;
   }
-  /* Display face carries the brand "soul" — titles, KPI numerals. */
   .font-display {
-    font-optical-sizing: auto;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.015em;
   }
-  /* Tabular figures everywhere numbers are compared. */
   .tabular-nums,
   .font-mono {
     font-variant-numeric: tabular-nums;
   }
   ::selection {
-    background: oklch(66% 0.135 62 / 0.25);
+    background: oklch(66% 0.15 230 / 0.35);
   }
-  /* Quiet, warm scrollbars */
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--color-line-2) transparent;
   }
 }
 
-/* Thin ochre top progress seam used on the rail + key surfaces */
+/* Brand seam / accent gradient */
 .brand-seam {
   background-image: linear-gradient(
     90deg,
-    var(--color-ochre) 0%,
-    var(--color-ochre-deep) 50%,
+    var(--color-cyan) 0%,
+    var(--color-cyan-deep) 45%,
     var(--color-teal) 100%
   );
+}
+
+/* Cyan glow for live/intelligence emphasis */
+.glow-cyan {
+  box-shadow: var(--shadow-glow);
 }

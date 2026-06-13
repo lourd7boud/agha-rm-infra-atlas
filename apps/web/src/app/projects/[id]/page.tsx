@@ -24,33 +24,33 @@ const NEXT_PROJECT_ACTIONS: Partial<
     {
       to: 'en_cours',
       label: 'Démarrer les travaux (OS)',
-      tone: 'bg-emerald-600 text-white hover:bg-emerald-700',
+      tone: 'bg-emerald-600 text-paper hover:bg-emerald-700',
     },
   ],
   en_cours: [
     {
       to: 'suspendu',
       label: 'Suspendre',
-      tone: 'bg-amber-600 text-white hover:bg-amber-700',
+      tone: 'bg-amber-600 text-paper hover:bg-amber-700',
     },
     {
       to: 'receptionne',
       label: 'Réception provisoire',
-      tone: 'bg-violet-600 text-white hover:bg-violet-700',
+      tone: 'bg-violet-600 text-paper hover:bg-violet-700',
     },
   ],
   suspendu: [
     {
       to: 'en_cours',
       label: 'Reprendre les travaux',
-      tone: 'bg-emerald-600 text-white hover:bg-emerald-700',
+      tone: 'bg-emerald-600 text-paper hover:bg-emerald-700',
     },
   ],
   receptionne: [
     {
       to: 'clos',
       label: 'Clôturer le marché',
-      tone: 'bg-slate-700 text-white hover:bg-slate-800',
+      tone: 'bg-slate-700 text-paper hover:bg-slate-800',
     },
   ],
 };
@@ -148,7 +148,7 @@ export default async function ProjectDetailPage({
 
   return (
     <div>
-      <Link href="/projects" className="text-sm text-slate-500 hover:text-slate-900">
+      <Link href="/projects" className="text-sm text-muted hover:text-ink">
         ← Chantiers
       </Link>
 
@@ -158,37 +158,37 @@ export default async function ProjectDetailPage({
           {badge.label}
         </span>
       </div>
-      <p className="mb-8 max-w-3xl text-sm text-slate-600">
+      <p className="mb-8 max-w-3xl text-sm text-muted">
         {project.name} — {project.buyerName}
       </p>
 
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+        <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-widest text-faint">
             Montant du marché
           </p>
           <p className="mt-2 font-mono text-lg font-bold tabular-nums">
             {fmtMad(project.montantMarcheMad)}
           </p>
         </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+        <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-widest text-faint">
             Travaux réalisés
           </p>
           <p className="mt-2 font-mono text-lg font-bold tabular-nums">
             {fmtMad(project.montantCumuleMad)}
           </p>
         </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+        <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-widest text-faint">
             Avancement
           </p>
           <p className="mt-2 font-mono text-lg font-bold tabular-nums">
             {project.avancementPct.toFixed(1)}%
           </p>
         </div>
-        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+        <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-widest text-faint">
             Retenue de garantie
           </p>
           <p className="mt-2 font-mono text-lg font-bold tabular-nums">
@@ -212,12 +212,12 @@ export default async function ProjectDetailPage({
         </div>
       )}
 
-      <section className="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <h2 className="border-b border-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-widest text-slate-400">
+      <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
+        <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
           Situations de travaux ({project.situations.length})
         </h2>
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
+          <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
             <tr>
               <th className="px-4 py-3">N°</th>
               <th className="px-4 py-3">Période</th>
@@ -229,7 +229,7 @@ export default async function ProjectDetailPage({
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody className="divide-y divide-line">
             {project.situations.map((situation) => {
               const sBadge = SITUATION_STATUS_BADGES[situation.status];
               const next = SITUATION_NEXT[situation.status];
@@ -238,7 +238,7 @@ export default async function ProjectDetailPage({
                   <td className="px-4 py-3 font-mono font-bold">
                     {situation.numero}
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs tabular-nums text-slate-500">
+                  <td className="px-4 py-3 font-mono text-xs tabular-nums text-muted">
                     {new Date(situation.periodEnd).toLocaleDateString('fr-MA')}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums">
@@ -247,7 +247,7 @@ export default async function ProjectDetailPage({
                   <td className="px-4 py-3 text-right font-mono tabular-nums">
                     {fmtMad(situation.montantPeriodeMad)}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums text-amber-700">
+                  <td className="px-4 py-3 text-right font-mono tabular-nums text-cyan">
                     {fmtMad(situation.retenueGarantieMad)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono font-semibold tabular-nums">
@@ -265,7 +265,7 @@ export default async function ProjectDetailPage({
                       <form action={transitionSituation}>
                         <input type="hidden" name="sid" value={situation.id} />
                         <input type="hidden" name="to" value={next} />
-                        <button className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:bg-slate-100">
+                        <button className="rounded-md border border-line-2 px-2.5 py-1 text-xs font-medium text-muted transition hover:bg-sand">
                           → {SITUATION_STATUS_BADGES[next].label}
                         </button>
                       </form>
@@ -277,19 +277,19 @@ export default async function ProjectDetailPage({
           </tbody>
         </table>
         {project.situations.length === 0 && (
-          <p className="p-8 text-center text-sm text-slate-400">
+          <p className="p-8 text-center text-sm text-faint">
             Aucune situation — la première apparaît après le démarrage des travaux.
           </p>
         )}
       </section>
 
-      <section className="mb-6 rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+      <section className="mb-6 rounded-xl border border-line bg-paper-2 shadow-sm">
+        <div className="flex items-center justify-between border-b border-line px-5 py-4">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-faint">
             Équipe ({team.effectifActif} actif{team.effectifActif > 1 ? 's' : ''})
           </h2>
         </div>
-        <ul className="divide-y divide-slate-100">
+        <ul className="divide-y divide-line">
           {team.membres.map((member) => (
             <li
               key={member.id}
@@ -297,7 +297,7 @@ export default async function ProjectDetailPage({
             >
               <div>
                 <p className="text-sm font-semibold">{member.fullName}</p>
-                <p className="text-xs text-slate-400">
+                <p className="text-xs text-faint">
                   {member.metier} · depuis{' '}
                   {new Date(member.startDate).toLocaleDateString('fr-MA')}
                   {member.endDate &&
@@ -307,12 +307,12 @@ export default async function ProjectDetailPage({
               {member.actif ? (
                 <form action={endAssignment}>
                   <input type="hidden" name="aid" value={member.id} />
-                  <button className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:bg-slate-100">
+                  <button className="rounded-md border border-line-2 px-2.5 py-1 text-xs font-medium text-muted transition hover:bg-sand">
                     Clôturer l&apos;affectation
                   </button>
                 </form>
               ) : (
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs text-slate-500">
+                <span className="rounded-full bg-sand px-2.5 py-0.5 text-xs text-muted">
                   Terminée
                 </span>
               )}
@@ -320,7 +320,7 @@ export default async function ProjectDetailPage({
           ))}
         </ul>
         {team.membres.length === 0 && (
-          <p className="p-8 text-center text-sm text-slate-400">
+          <p className="p-8 text-center text-sm text-faint">
             Aucune affectation — composer l&apos;équipe ci-dessous.
           </p>
         )}
@@ -328,14 +328,14 @@ export default async function ProjectDetailPage({
           (project.status === 'en_cours' || project.status === 'preparation') && (
             <form
               action={assignEmployee}
-              className="flex flex-wrap items-end gap-3 border-t border-slate-100 px-5 py-4"
+              className="flex flex-wrap items-end gap-3 border-t border-line px-5 py-4"
             >
               <label className="text-sm">
-                <span className="mb-1 block text-xs text-slate-500">Employé</span>
+                <span className="mb-1 block text-xs text-muted">Employé</span>
                 <select
                   name="employeeId"
                   required
-                  className="rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                  className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
                 >
                   {assignable.map((employee) => (
                     <option key={employee.id} value={employee.id}>
@@ -345,28 +345,28 @@ export default async function ProjectDetailPage({
                 </select>
               </label>
               <label className="text-sm">
-                <span className="mb-1 block text-xs text-slate-500">Début</span>
+                <span className="mb-1 block text-xs text-muted">Début</span>
                 <input
                   type="date"
                   name="startDate"
                   required
-                  className="rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                  className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
                 />
               </label>
-              <button className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
+              <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
                 Affecter au chantier
               </button>
             </form>
           )}
       </section>
 
-      <section className="mb-6 rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+      <section className="mb-6 rounded-xl border border-line bg-paper-2 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-faint">
             Journal de chantier ({journal.summary.jours} jour
             {journal.summary.jours > 1 ? 's' : ''})
           </h2>
-          <div className="flex gap-4 text-xs text-slate-500">
+          <div className="flex gap-4 text-xs text-muted">
             <span>
               Effectif moyen{' '}
               <strong className="font-mono tabular-nums">
@@ -376,7 +376,7 @@ export default async function ProjectDetailPage({
             <span>
               Incidents{' '}
               <strong
-                className={`font-mono tabular-nums ${journal.summary.totalIncidents > 0 ? 'text-rose-600' : ''}`}
+                className={`font-mono tabular-nums ${journal.summary.totalIncidents > 0 ? 'text-clay' : ''}`}
               >
                 {journal.summary.totalIncidents}
               </strong>
@@ -391,26 +391,26 @@ export default async function ProjectDetailPage({
             </span>
           </div>
         </div>
-        <ul className="divide-y divide-slate-100">
+        <ul className="divide-y divide-line">
           {journal.items.map((log) => (
             <li key={log.id} className="px-5 py-3">
-              <div className="mb-1 flex flex-wrap items-center gap-3 text-xs text-slate-400">
-                <span className="font-mono font-semibold tabular-nums text-slate-600">
+              <div className="mb-1 flex flex-wrap items-center gap-3 text-xs text-faint">
+                <span className="font-mono font-semibold tabular-nums text-muted">
                   {new Date(log.reportDate).toLocaleDateString('fr-MA')}
                 </span>
                 <span>{log.effectifs} ouvriers</span>
                 {log.meteo && <span>{log.meteo}</span>}
                 <span>par {log.createdBy}</span>
                 {log.incidentsSecurite > 0 && (
-                  <span className="rounded-full bg-rose-100 px-2 py-0.5 font-semibold text-rose-700">
+                  <span className="rounded-full bg-rose-100 px-2 py-0.5 font-semibold text-clay">
                     {log.incidentsSecurite} incident
                     {log.incidentsSecurite > 1 ? 's' : ''}
                   </span>
                 )}
               </div>
-              <p className="text-sm text-slate-700">{log.travauxRealises}</p>
+              <p className="text-sm text-ink-2">{log.travauxRealises}</p>
               {log.blocages && (
-                <p className="mt-1 text-sm font-medium text-amber-700">
+                <p className="mt-1 text-sm font-medium text-cyan">
                   ⚠ {log.blocages}
                 </p>
               )}
@@ -418,46 +418,46 @@ export default async function ProjectDetailPage({
           ))}
         </ul>
         {journal.items.length === 0 && (
-          <p className="p-8 text-center text-sm text-slate-400">
+          <p className="p-8 text-center text-sm text-faint">
             Aucun rapport — le terrain remplit le journal quotidiennement.
           </p>
         )}
         {(project.status === 'en_cours' || project.status === 'suspendu') && (
           <form
             action={createDailyLog}
-            className="flex flex-wrap items-end gap-3 border-t border-slate-100 px-5 py-4"
+            className="flex flex-wrap items-end gap-3 border-t border-line px-5 py-4"
           >
             <label className="text-sm">
-              <span className="mb-1 block text-xs text-slate-500">Date</span>
+              <span className="mb-1 block text-xs text-muted">Date</span>
               <input
                 type="date"
                 name="reportDate"
                 required
-                className="rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
               />
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-xs text-slate-500">Effectifs</span>
+              <span className="mb-1 block text-xs text-muted">Effectifs</span>
               <input
                 type="number"
                 name="effectifs"
                 required
                 min={0}
-                className="w-24 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                className="w-24 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
               />
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-xs text-slate-500">Incidents</span>
+              <span className="mb-1 block text-xs text-muted">Incidents</span>
               <input
                 type="number"
                 name="incidentsSecurite"
                 min={0}
                 defaultValue={0}
-                className="w-20 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                className="w-20 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
               />
             </label>
             <label className="min-w-64 flex-1 text-sm">
-              <span className="mb-1 block text-xs text-slate-500">
+              <span className="mb-1 block text-xs text-muted">
                 Travaux réalisés
               </span>
               <input
@@ -466,21 +466,21 @@ export default async function ProjectDetailPage({
                 required
                 minLength={10}
                 maxLength={5000}
-                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                className="w-full rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
               />
             </label>
             <label className="min-w-48 flex-1 text-sm">
-              <span className="mb-1 block text-xs text-slate-500">
+              <span className="mb-1 block text-xs text-muted">
                 Blocages (optionnel)
               </span>
               <input
                 type="text"
                 name="blocages"
                 maxLength={2000}
-                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                className="w-full rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
               />
             </label>
-            <button className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
+            <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
               Consigner
             </button>
           </form>
@@ -488,24 +488,24 @@ export default async function ProjectDetailPage({
       </section>
 
       {project.status === 'en_cours' && (
-        <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="mb-4 text-xs font-semibold uppercase tracking-widest text-slate-400">
+        <section className="rounded-xl border border-line bg-paper-2 p-6 shadow-sm">
+          <h2 className="mb-4 text-xs font-semibold uppercase tracking-widest text-faint">
             Nouvelle situation de travaux
           </h2>
           <form action={createSituation} className="flex flex-wrap items-end gap-4">
             <label className="text-sm">
-              <span className="mb-1 block text-xs text-slate-500">
+              <span className="mb-1 block text-xs text-muted">
                 Fin de période
               </span>
               <input
                 type="date"
                 name="periodEnd"
                 required
-                className="rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
               />
             </label>
             <label className="text-sm">
-              <span className="mb-1 block text-xs text-slate-500">
+              <span className="mb-1 block text-xs text-muted">
                 Montant cumulé des travaux (MAD)
               </span>
               <input
@@ -514,14 +514,14 @@ export default async function ProjectDetailPage({
                 required
                 min={0}
                 step="0.01"
-                className="w-56 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
+                className="w-56 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
               />
             </label>
-            <button className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
+            <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
               Calculer le décompte
             </button>
           </form>
-          <p className="mt-3 text-xs text-slate-400">
+          <p className="mt-3 text-xs text-faint">
             Retenue de garantie 10% plafonnée à 7% du marché — calcul automatique
             (CCAG-T, hypothèses v1).
           </p>

@@ -31,21 +31,21 @@ export default function TenderDetailError({
   reset: () => void;
 }) {
   return (
-    <div className="mx-auto max-w-lg rounded-xl border border-rose-200 bg-rose-50 p-8 text-center">
-      <h1 className="text-lg font-bold text-rose-800">
+    <div className="mx-auto max-w-lg rounded-xl border border-clay-soft bg-clay-soft/30 p-8 text-center">
+      <h1 className="text-lg font-bold text-clay">
         L&apos;action n&apos;a pas abouti
       </h1>
-      <p className="mt-2 text-sm text-slate-600">{explain(error)}</p>
+      <p className="mt-2 text-sm text-muted">{explain(error)}</p>
       <div className="mt-6 flex justify-center gap-3">
         <button
           onClick={reset}
-          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+          className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan"
         >
           Réessayer
         </button>
         <Link
           href="/tenders"
-          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-white"
+          className="rounded-md border border-line-2 px-4 py-2 text-sm font-medium text-ink-2 transition hover:bg-paper-2"
         >
           Mur des échéances
         </Link>

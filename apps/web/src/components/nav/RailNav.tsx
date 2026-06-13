@@ -11,32 +11,39 @@ interface NavItem {
 }
 
 const ITEMS: readonly NavItem[] = [
-  { href: '/', label: 'Tableau de bord', icon: 'dashboard' },
-  { href: '/tenders', label: 'Marchés', icon: 'tenders' },
-  { href: '/projects', label: 'Chantiers', icon: 'chantiers' },
+  { href: '/', label: 'Command Center', icon: 'command' },
+  { href: '/tenders', label: 'Marchés Publics', icon: 'tenders' },
+  { href: '/projects', label: 'Projets & Chantiers', icon: 'chantiers' },
+  { href: '/finance', label: 'Finance', icon: 'tresorerie' },
   { href: '/people', label: 'Personnel', icon: 'personnel' },
-  { href: '/finance', label: 'Trésorerie', icon: 'tresorerie' },
-  { href: '/vault', label: 'Coffre-fort', icon: 'vault' },
+  { href: '/vault', label: 'Documents & GED', icon: 'documents' },
   { href: '/intel', label: 'Concurrence', icon: 'intel' },
+];
+
+/** Planned modules — shown for breadth, not yet routed. */
+const SOON: readonly { label: string; icon: IconName }[] = [
+  { label: 'Opérations Terrain', icon: 'terrain' },
+  { label: 'Approvisionnements', icon: 'supply' },
+  { label: 'BI & Analytics', icon: 'analytics' },
+  { label: 'Paramètres Système', icon: 'settings' },
 ];
 
 function isActive(path: string, href: string): boolean {
   return href === '/' ? path === '/' : path.startsWith(href);
 }
 
-interface RailNavProps {
+export function RailNav({
+  orientation = 'vertical',
+}: {
   orientation?: 'vertical' | 'horizontal';
-}
-
-export function RailNav({ orientation = 'vertical' }: RailNavProps) {
+}) {
   const path = usePathname();
   const horizontal = orientation === 'horizontal';
+
   return (
     <nav
       className={
-        horizontal
-          ? 'flex flex-row gap-1 overflow-x-auto pb-1'
-          : 'flex flex-col gap-0.5'
+        horizontal ? 'flex flex-row gap-1 overflow-x-auto pb-1' : 'flex flex-col gap-0.5'
       }
     >
       {ITEMS.map((item) => {
@@ -50,13 +57,13 @@ export function RailNav({ orientation = 'vertical' }: RailNavProps) {
               horizontal ? 'shrink-0 px-3 py-1.5' : 'px-3 py-2'
             } ${
               active
-                ? 'bg-rail-2 text-paper'
-                : 'text-paper/55 hover:bg-rail-2/60 hover:text-paper'
+                ? 'bg-cyan-soft/60 text-ink'
+                : 'text-muted hover:bg-rail-2 hover:text-ink'
             }`}
           >
             {!horizontal && (
               <span
-                className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-r-full bg-ochre transition-all ${
+                className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-r-full bg-cyan transition-all ${
                   active ? 'h-5 w-[3px]' : 'h-0 w-0'
                 }`}
               />
@@ -64,14 +71,33 @@ export function RailNav({ orientation = 'vertical' }: RailNavProps) {
             <Icon
               name={item.icon}
               size={18}
-              className={
-                active ? 'text-ochre' : 'text-paper/45 group-hover:text-paper/75'
-              }
+              className={active ? 'text-cyan' : 'text-faint group-hover:text-muted'}
             />
             <span className="whitespace-nowrap font-medium">{item.label}</span>
           </Link>
         );
       })}
+
+      {!horizontal && (
+        <>
+          <p className="mt-5 mb-1 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/70">
+            Modules
+          </p>
+          {SOON.map((item) => (
+            <div
+              key={item.label}
+              className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-faint/50"
+              title="Module à venir"
+            >
+              <Icon name={item.icon} size={18} className="text-faint/40" />
+              <span className="whitespace-nowrap font-medium">{item.label}</span>
+              <span className="ml-auto rounded-full bg-rail-2 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider text-faint/70">
+                bientôt
+              </span>
+            </div>
+          ))}
+        </>
+      )}
     </nav>
   );
 }

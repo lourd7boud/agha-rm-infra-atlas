@@ -45,10 +45,10 @@ const KIND_LABELS: Record<CautionItem['kind'], string> = {
 };
 
 const BUCKET_TONES: Record<ReceivableItem['bucket'], string> = {
-  '0-30': 'bg-emerald-100 text-emerald-800',
-  '31-60': 'bg-amber-100 text-amber-800',
-  '61-90': 'bg-orange-100 text-orange-800',
-  '90+': 'bg-rose-100 text-rose-800',
+  '0-30': 'bg-emerald-soft text-emerald',
+  '31-60': 'bg-ochre-soft text-ochre',
+  '61-90': 'bg-ochre-soft text-ochre-deep',
+  '90+': 'bg-clay-soft text-clay',
 };
 
 export default async function FinancePage() {
@@ -84,7 +84,7 @@ export default async function FinancePage() {
     <div>
       <div className="mb-8">
         <h1 className="text-3xl font-black tracking-tight">Trésorerie</h1>
-        <p className="mt-1 text-sm text-slate-500">
+        <p className="mt-1 text-sm text-muted">
           Cash bloqué en garanties et créances sur décomptes validés
         </p>
       </div>
@@ -93,26 +93,26 @@ export default async function FinancePage() {
         {cards.map((card) => (
           <div
             key={card.label}
-            className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+            className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm"
           >
-            <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+            <p className="text-xs font-semibold uppercase tracking-widest text-faint">
               {card.label}
             </p>
             <p className="mt-2 font-mono text-lg font-bold tabular-nums">
               {card.value}
             </p>
-            <p className="mt-1 text-xs text-slate-400">{card.hint}</p>
+            <p className="mt-1 text-xs text-faint">{card.hint}</p>
           </div>
         ))}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <h2 className="border-b border-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-widest text-slate-400">
+        <section className="overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
+          <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
             Créances — décomptes validés non payés
           </h2>
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
+            <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
               <tr>
                 <th className="px-4 py-3">Marché</th>
                 <th className="px-4 py-3">N°</th>
@@ -120,12 +120,12 @@ export default async function FinancePage() {
                 <th className="px-4 py-3 text-right">Retard</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-line">
               {receivables.items.map((item) => (
                 <tr key={`${item.projectReference}-${item.numero}`}>
                   <td className="px-4 py-3">
                     <span className="font-semibold">{item.projectReference}</span>
-                    <span className="block text-xs text-slate-400">
+                    <span className="block text-xs text-faint">
                       {item.buyerName}
                     </span>
                   </td>
@@ -145,18 +145,18 @@ export default async function FinancePage() {
             </tbody>
           </table>
           {receivables.items.length === 0 && (
-            <p className="p-8 text-center text-sm text-slate-400">
+            <p className="p-8 text-center text-sm text-faint">
               Aucune créance en attente.
             </p>
           )}
         </section>
 
-        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <h2 className="border-b border-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-widest text-slate-400">
+        <section className="overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
+          <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
             Registre des cautions
           </h2>
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
+            <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
               <tr>
                 <th className="px-4 py-3">Référence</th>
                 <th className="px-4 py-3">Type</th>
@@ -164,18 +164,18 @@ export default async function FinancePage() {
                 <th className="px-4 py-3">Statut</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-line">
               {cautions.items.map((item) => (
                 <tr key={item.id}>
                   <td className="px-4 py-3">
                     <span className="font-semibold">{item.reference}</span>
                     {item.bankName && (
-                      <span className="block text-xs text-slate-400">
+                      <span className="block text-xs text-faint">
                         {item.bankName}
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-slate-600">
+                  <td className="px-4 py-3 text-muted">
                     {KIND_LABELS[item.kind]}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums">
@@ -185,8 +185,8 @@ export default async function FinancePage() {
                     <span
                       className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
                         item.status === 'active'
-                          ? 'bg-amber-100 text-amber-800'
-                          : 'bg-emerald-100 text-emerald-800'
+                          ? 'bg-ochre-soft text-ochre'
+                          : 'bg-emerald-soft text-emerald'
                       }`}
                     >
                       {item.status === 'active' ? 'Bloquée' : 'Libérée'}
@@ -197,7 +197,7 @@ export default async function FinancePage() {
             </tbody>
           </table>
           {cautions.items.length === 0 && (
-            <p className="p-8 text-center text-sm text-slate-400">
+            <p className="p-8 text-center text-sm text-faint">
               Aucune caution enregistrée.
             </p>
           )}

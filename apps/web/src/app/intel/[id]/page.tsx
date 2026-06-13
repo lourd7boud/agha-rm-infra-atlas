@@ -59,7 +59,7 @@ export default async function CompetitorProfilePage({
 
   return (
     <div>
-      <Link href="/intel" className="text-sm text-slate-500 hover:text-slate-900">
+      <Link href="/intel" className="text-sm text-muted hover:text-ink">
         ← Intelligence marché
       </Link>
 
@@ -67,7 +67,7 @@ export default async function CompetitorProfilePage({
         <h1 className="text-3xl font-black tracking-tight">
           {profile.canonicalName}
         </h1>
-        <span className="text-sm text-slate-400">
+        <span className="text-sm text-faint">
           {profile.observations} résultat{profile.observations > 1 ? 's' : ''} publié
           {profile.observations > 1 ? 's' : ''}
           {profile.firstSeen &&
@@ -76,7 +76,7 @@ export default async function CompetitorProfilePage({
             ` à ${new Date(profile.lastSeen).toLocaleDateString('fr-MA')}`}
         </span>
       </div>
-      <p className="mb-8 text-xs text-slate-400">
+      <p className="mb-8 text-xs text-faint">
         Profil C2 — construit uniquement sur les résultats publiés par le portail.
       </p>
 
@@ -84,9 +84,9 @@ export default async function CompetitorProfilePage({
         {stats.map((stat) => (
           <div
             key={stat.label}
-            className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+            className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm"
           >
-            <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+            <p className="text-xs font-semibold uppercase tracking-widest text-faint">
               {stat.label}
             </p>
             <p className="mt-2 font-mono text-lg font-bold tabular-nums">
@@ -97,11 +97,11 @@ export default async function CompetitorProfilePage({
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-          <h2 className="border-b border-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-widest text-slate-400">
+        <section className="rounded-xl border border-line bg-paper-2 shadow-sm">
+          <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
             Acheteurs ({profile.buyers.length})
           </h2>
-          <ul className="divide-y divide-slate-100">
+          <ul className="divide-y divide-line">
             {profile.buyers.map((buyer) => (
               <li
                 key={buyer.buyerName}
@@ -109,29 +109,29 @@ export default async function CompetitorProfilePage({
               >
                 <div>
                   <p className="text-sm font-semibold">{buyer.buyerName}</p>
-                  <p className="text-xs text-slate-400">
+                  <p className="text-xs text-faint">
                     {buyer.wins} marché{buyer.wins > 1 ? 's' : ''}
                   </p>
                 </div>
-                <span className="font-mono text-sm tabular-nums text-slate-700">
+                <span className="font-mono text-sm tabular-nums text-ink-2">
                   {fmtMad(buyer.totalMad)}
                 </span>
               </li>
             ))}
           </ul>
           {profile.buyers.length === 0 && (
-            <p className="p-8 text-center text-sm text-slate-400">
+            <p className="p-8 text-center text-sm text-faint">
               Aucun marché remporté observé.
             </p>
           )}
         </section>
 
-        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <h2 className="border-b border-slate-100 px-5 py-4 text-xs font-semibold uppercase tracking-widest text-slate-400">
+        <section className="overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
+          <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
             Derniers résultats publiés
           </h2>
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
+            <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
               <tr>
                 <th className="px-4 py-3">Référence</th>
                 <th className="px-4 py-3">Acheteur</th>
@@ -139,15 +139,15 @@ export default async function CompetitorProfilePage({
                 <th className="px-4 py-3">Date</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-line">
               {profile.recentResults.map((result) => (
                 <tr key={result.id}>
                   <td className="px-4 py-3 font-semibold">{result.reference}</td>
-                  <td className="px-4 py-3 text-slate-600">{result.buyerName}</td>
+                  <td className="px-4 py-3 text-muted">{result.buyerName}</td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums">
                     {fmtMad(result.amountMad)}
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs tabular-nums text-slate-500">
+                  <td className="px-4 py-3 font-mono text-xs tabular-nums text-muted">
                     {result.resultDate
                       ? new Date(result.resultDate).toLocaleDateString('fr-MA')
                       : '—'}
@@ -157,7 +157,7 @@ export default async function CompetitorProfilePage({
             </tbody>
           </table>
           {profile.recentResults.length === 0 && (
-            <p className="p-8 text-center text-sm text-slate-400">
+            <p className="p-8 text-center text-sm text-faint">
               Aucun résultat daté.
             </p>
           )}

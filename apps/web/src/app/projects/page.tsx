@@ -13,7 +13,7 @@ export default async function ProjectsPage() {
     <div>
       <div className="mb-8">
         <h1 className="text-3xl font-black tracking-tight">Chantiers</h1>
-        <p className="mt-1 text-sm text-slate-500">
+        <p className="mt-1 text-sm text-muted">
           Portefeuille des marchés en exécution — avancement et position
           financière
         </p>
@@ -26,10 +26,10 @@ export default async function ProjectsPage() {
             <Link
               key={project.id}
               href={`/projects/${project.id}`}
-              className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm transition hover:border-slate-300 hover:shadow"
+              className="rounded-xl border border-line bg-paper-2 p-6 shadow-sm transition hover:border-line-2 hover:shadow"
             >
               <div className="mb-1 flex items-center justify-between gap-3">
-                <span className="font-mono text-xs text-slate-400">
+                <span className="font-mono text-xs text-faint">
                   {project.reference}
                 </span>
                 <span
@@ -39,23 +39,23 @@ export default async function ProjectsPage() {
                 </span>
               </div>
               <h2 className="mb-1 font-bold">{project.name}</h2>
-              <p className="mb-4 text-sm text-slate-500">{project.buyerName}</p>
+              <p className="mb-4 text-sm text-muted">{project.buyerName}</p>
 
               <div className="mb-2 flex items-baseline justify-between text-sm">
-                <span className="font-mono tabular-nums text-slate-700">
+                <span className="font-mono tabular-nums text-ink-2">
                   {fmtMad(project.montantCumuleMad)}
                 </span>
-                <span className="font-mono tabular-nums text-slate-400">
+                <span className="font-mono tabular-nums text-faint">
                   / {fmtMad(project.montantMarcheMad)}
                 </span>
               </div>
-              <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+              <div className="h-2 overflow-hidden rounded-full bg-sand">
                 <div
                   className="h-full rounded-full bg-emerald-500"
                   style={{ width: `${Math.min(100, project.avancementPct)}%` }}
                 />
               </div>
-              <div className="mt-2 flex justify-between text-xs text-slate-400">
+              <div className="mt-2 flex justify-between text-xs text-faint">
                 <span>
                   {project.situationsCount} situation
                   {project.situationsCount > 1 ? 's' : ''}
@@ -71,7 +71,7 @@ export default async function ProjectsPage() {
       </div>
 
       {projects.length === 0 && (
-        <p className="rounded-xl border border-dashed border-slate-300 p-12 text-center text-sm text-slate-400">
+        <p className="rounded-xl border border-dashed border-line-2 p-12 text-center text-sm text-faint">
           Aucun chantier enregistré — les marchés gagnés apparaissent ici.
         </p>
       )}
