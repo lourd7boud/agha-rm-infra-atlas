@@ -61,16 +61,35 @@ async function tryGet<T>(path: string): Promise<T | null> {
   }
 }
 
-const AGENTS: { name: string; role: string; icon: IconName }[] = [
-  { name: 'Agent Sentinel', role: 'Veille marchés publics', icon: 'intel' },
-  { name: 'Agent Extracteur', role: 'Extraction avis & DCE', icon: 'documents' },
-  { name: 'Agent Qualifier', role: 'Analyse des opportunités', icon: 'check' },
-  { name: 'Agent Stratège', role: 'Note Go/No-Go (G1)', icon: 'command' },
-  { name: 'Agent Compliance', role: 'Dossier administratif', icon: 'vault' },
-  { name: 'Agent Estimateur', role: 'Détail estimatif', icon: 'analytics' },
-  { name: 'Agent Modeleur', role: 'Scénarios de prix (G2)', icon: 'tresorerie' },
-  { name: "Chef d'Orchestre", role: 'Coordination générale', icon: 'agents' },
-];
+type AgentRunStatus = 'operational' | 'degraded' | 'offline';
+interface AgentEntry {
+  key: string;
+  name: string;
+  role: string;
+  desk: string;
+  kind: string;
+  icon: string;
+  status: AgentRunStatus;
+  detail: string;
+}
+interface AgentsResponse {
+  llm: { ready: boolean; model: string };
+  summary: { operational: number; total: number };
+  agents: AgentEntry[];
+}
+
+const AGENT_ICONS = new Set<IconName>([
+  'intel', 'documents', 'check', 'command', 'vault', 'analytics',
+  'tresorerie', 'tenders', 'crm', 'alert', 'agents',
+]);
+function agentIcon(name: string): IconName {
+  return AGENT_ICONS.has(name as IconName) ? (name as IconName) : 'agents';
+}
+const AGENT_STATUS: Record<AgentRunStatus, { label: string; dot: string; text: string }> = {
+  operational: { label: 'Actif', dot: 'bg-emerald', text: 'text-emerald' },
+  degraded: { label: 'Dégradé', dot: 'bg-ochre', text: 'text-ochre' },
+  offline: { label: 'Hors-ligne', dot: 'bg-clay', text: 'text-clay' },
+};
 
 const PIPELINE_ORDER: [key: string, label: string][] = [
   ['detected', 'Détectés'],
@@ -147,16 +166,25 @@ function Panel({
 }
 
 export default async function CommandCenterPage() {
-  const [orchestrator, cautions, receivables, projects, coverage, inventory, employees] =
-    await Promise.all([
-      tryGet<OrchestratorEntry[]>('/tender/orchestrator'),
-      tryGet<CautionsResponse>('/finance/cautions'),
-      tryGet<ReceivablesResponse>('/finance/receivables'),
-      tryGet<ProjectSummary[]>('/project/projects'),
-      tryGet<SourceCoverage[]>('/watch/coverage'),
-      tryGet<InventoryResponse>('/tender/inventory'),
-      tryGet<Employee[]>('/people/employees'),
-    ]);
+  const [
+    orchestrator,
+    cautions,
+    receivables,
+    projects,
+    coverage,
+    inventory,
+    employees,
+    agentsData,
+  ] = await Promise.all([
+    tryGet<OrchestratorEntry[]>('/tender/orchestrator'),
+    tryGet<CautionsResponse>('/finance/cautions'),
+    tryGet<ReceivablesResponse>('/finance/receivables'),
+    tryGet<ProjectSummary[]>('/project/projects'),
+    tryGet<SourceCoverage[]>('/watch/coverage'),
+    tryGet<InventoryResponse>('/tender/inventory'),
+    tryGet<Employee[]>('/people/employees'),
+    tryGet<AgentsResponse>('/agents'),
+  ]);
 
   const enCours = (projects ?? []).filter((p) => p.status === 'en_cours');
   const avancementMoyen =
@@ -329,28 +357,58 @@ export default async function CommandCenterPage() {
           title="AI Agents opérationnels"
           icon="agents"
           className="xl:col-span-4"
-          action={<span className="text-[11px] font-medium text-emerald">12 actifs</span>}
+          action={
+            agentsData ? (
+              <span className="text-[11px] font-medium text-emerald">
+                {agentsData.summary.operational}/{agentsData.summary.total} actifs
+              </span>
+            ) : null
+          }
         >
-          <ul className="space-y-1">
-            {AGENTS.map((a) => (
-              <li
-                key={a.name}
-                className="flex items-center gap-2.5 rounded-md px-2 py-1.5 transition hover:bg-sand/40"
-              >
-                <span className="flex h-7 w-7 items-center justify-center rounded-md bg-cyan-soft/60 text-cyan">
-                  <Icon name={a.icon} size={14} />
-                </span>
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium text-ink-2">{a.name}</span>
-                  <span className="block truncate text-[10px] text-faint">{a.role}</span>
-                </span>
-                <span className="ml-auto inline-flex items-center gap-1.5 text-[10px] font-medium text-emerald">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald" />
-                  Actif
-                </span>
-              </li>
-            ))}
-          </ul>
+          {agentsData ? (
+            <>
+              <ul className="space-y-1">
+                {agentsData.agents.slice(0, 8).map((a) => {
+                  const st = AGENT_STATUS[a.status];
+                  return (
+                    <li
+                      key={a.key}
+                      className="flex items-center gap-2.5 rounded-md px-2 py-1.5 transition hover:bg-sand/40"
+                    >
+                      <span className="flex h-7 w-7 items-center justify-center rounded-md bg-cyan-soft/60 text-cyan">
+                        <Icon name={agentIcon(a.icon)} size={14} />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-ink-2">
+                          {a.name}
+                        </span>
+                        <span className="block truncate text-[10px] text-faint">
+                          {a.detail}
+                        </span>
+                      </span>
+                      <span
+                        className={`ml-auto inline-flex items-center gap-1.5 text-[10px] font-medium ${st.text}`}
+                      >
+                        <span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} />
+                        {st.label}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="mt-2 border-t border-line pt-2 text-[10px] text-faint">
+                Moteur IA :{' '}
+                <span className="font-mono text-cyan">
+                  {agentsData.llm.ready ? agentsData.llm.model : 'non configuré'}
+                </span>{' '}
+                · passerelle qcode
+              </p>
+            </>
+          ) : (
+            <p className="py-8 text-center text-sm text-faint">
+              Statut des agents indisponible.
+            </p>
+          )}
         </Panel>
       </div>
 

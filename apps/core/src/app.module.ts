@@ -1,6 +1,7 @@
 import { Controller, Get, Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { AgentsModule } from './modules/agents/agents.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule, Public } from './modules/auth/auth.module';
 import { BrainModule } from './modules/brain/brain.module';
@@ -39,6 +40,7 @@ export class HealthController {
     // via @Throttle (security-compliance §5).
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     AuthModule,
+    AgentsModule,
     AuditModule,
     BrainModule,
     DigestModule,
