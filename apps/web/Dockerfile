@@ -32,6 +32,10 @@ RUN corepack enable
 WORKDIR /app
 COPY --from=builder /app .
 
+# .next is built as root; the runtime user must be able to write its cache
+# (image/data cache) or Next throws EACCES on first request.
+RUN chown -R node:node /app/apps/web/.next
+
 USER node
 WORKDIR /app/apps/web
 EXPOSE 3001
