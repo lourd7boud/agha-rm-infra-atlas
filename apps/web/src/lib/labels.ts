@@ -13,35 +13,35 @@ export const PROCEDURE_LABELS: Record<TenderProcedure, string> = {
   bons_de_commande: 'Bons de commande',
 };
 
-/** Procedure chip tones — open tenders (our core business) read warm. */
+/** Procedure chip tones — open tenders (our core business) read warm ochre. */
 export const PROCEDURE_TONES: Record<TenderProcedure, string> = {
-  AOO: 'bg-amber-100 text-amber-900',
-  AOR: 'bg-orange-100 text-orange-900',
-  concours: 'bg-violet-100 text-violet-800',
-  negocie: 'bg-sky-100 text-sky-800',
-  bons_de_commande: 'bg-slate-100 text-slate-700',
+  AOO: 'bg-ochre-soft text-ochre-deep',
+  AOR: 'bg-clay-soft text-clay',
+  concours: 'bg-teal-soft text-teal',
+  negocie: 'bg-emerald-soft text-emerald',
+  bons_de_commande: 'bg-sand text-muted',
 };
 
 export const PIPELINE_LABELS: Record<PipelineState, { label: string; classes: string }> = {
-  detected: { label: 'Détecté', classes: 'bg-sky-100 text-sky-800' },
-  parsed: { label: 'Analysé', classes: 'bg-sky-100 text-sky-800' },
-  qualified: { label: 'Qualifié', classes: 'bg-emerald-100 text-emerald-800' },
-  rejected: { label: 'Écarté', classes: 'bg-slate-200 text-slate-600' },
-  go_decided: { label: 'GO décidé', classes: 'bg-emerald-200 text-emerald-900' },
-  no_go: { label: 'No-Go', classes: 'bg-slate-200 text-slate-600' },
-  preparing: { label: 'En préparation', classes: 'bg-amber-100 text-amber-900' },
-  submitted: { label: 'Soumis', classes: 'bg-violet-100 text-violet-800' },
-  opened: { label: 'Plis ouverts', classes: 'bg-violet-100 text-violet-800' },
-  won: { label: 'Gagné', classes: 'bg-yellow-100 text-yellow-900' },
-  lost: { label: 'Perdu', classes: 'bg-rose-100 text-rose-800' },
-  cancelled: { label: 'Annulé', classes: 'bg-slate-200 text-slate-500' },
+  detected: { label: 'Détecté', classes: 'bg-sand text-muted' },
+  parsed: { label: 'Analysé', classes: 'bg-sand text-muted' },
+  qualified: { label: 'Qualifié', classes: 'bg-emerald-soft text-emerald' },
+  rejected: { label: 'Écarté', classes: 'bg-sand text-faint' },
+  go_decided: { label: 'GO décidé', classes: 'bg-emerald-soft text-emerald' },
+  no_go: { label: 'No-Go', classes: 'bg-sand text-faint' },
+  preparing: { label: 'En préparation', classes: 'bg-ochre-soft text-ochre-deep' },
+  submitted: { label: 'Soumis', classes: 'bg-teal-soft text-teal' },
+  opened: { label: 'Plis ouverts', classes: 'bg-teal-soft text-teal' },
+  won: { label: 'Gagné', classes: 'bg-emerald text-paper' },
+  lost: { label: 'Perdu', classes: 'bg-clay-soft text-clay' },
+  cancelled: { label: 'Annulé', classes: 'bg-sand text-faint' },
 };
 
 export const STATUS_BADGES: Record<ValidityStatus, { label: string; classes: string }> = {
-  valid: { label: 'Valide', classes: 'bg-emerald-100 text-emerald-800' },
-  expiring: { label: 'Expire bientôt', classes: 'bg-amber-100 text-amber-900' },
-  expired: { label: 'Expiré', classes: 'bg-rose-100 text-rose-800' },
-  no_expiry: { label: 'Sans échéance', classes: 'bg-slate-100 text-slate-600' },
+  valid: { label: 'Valide', classes: 'bg-emerald-soft text-emerald' },
+  expiring: { label: 'Expire bientôt', classes: 'bg-ochre-soft text-ochre-deep' },
+  expired: { label: 'Expiré', classes: 'bg-clay-soft text-clay' },
+  no_expiry: { label: 'Sans échéance', classes: 'bg-sand text-muted' },
 };
 
 export const DOCUMENT_LABELS: Record<DocumentKind, string> = {
@@ -60,9 +60,9 @@ export const DOCUMENT_LABELS: Record<DocumentKind, string> = {
   autre: 'Autre document',
 };
 
-/** Urgency semantics of the deadline wall: red ≤ 7 days, amber ≤ 15. */
+/** Urgency semantics of the deadline wall: clay ≤ 7 days, ochre ≤ 15. */
 export function urgencyClasses(daysLeft: number): string {
-  if (daysLeft <= 7) return 'bg-rose-600 text-white';
-  if (daysLeft <= 15) return 'bg-amber-500 text-white';
-  return 'bg-slate-700 text-white';
+  if (daysLeft <= 7) return 'bg-clay text-paper';
+  if (daysLeft <= 15) return 'bg-ochre text-paper';
+  return 'bg-ink text-paper';
 }

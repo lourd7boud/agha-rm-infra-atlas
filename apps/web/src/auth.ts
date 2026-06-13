@@ -83,6 +83,7 @@ async function refreshAccessToken(token: AtlasToken): Promise<AtlasToken> {
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [Keycloak],
   session: { strategy: 'jwt' },
+  pages: { signIn: '/login' },
   callbacks: {
     authorized({ auth: session }) {
       return Boolean(session?.user);

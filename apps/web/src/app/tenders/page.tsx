@@ -6,6 +6,7 @@ import {
   type TenderProcedure,
 } from '@atlas/contracts';
 import { apiGet } from '@/lib/api';
+import { Icon } from '@/components/ui/Icon';
 import {
   PIPELINE_LABELS,
   PROCEDURE_LABELS,
@@ -115,10 +116,10 @@ function FacetGroup({
   if (facets.length === 0) return null;
   return (
     <div>
-      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-slate-400">
+      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-faint">
         {title}
       </h3>
-      <ul className="space-y-1">
+      <ul className="space-y-0.5">
         {facets.map((facet) => {
           const isActive = active[filterKey] === facet.key;
           return (
@@ -128,8 +129,8 @@ function FacetGroup({
                 aria-current={isActive ? 'true' : undefined}
                 className={`flex items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-sm transition ${
                   isActive
-                    ? 'bg-slate-900 font-semibold text-white'
-                    : 'text-slate-600 hover:bg-slate-100'
+                    ? 'bg-ink font-semibold text-paper'
+                    : 'text-muted hover:bg-sand'
                 }`}
               >
                 <span className="truncate">
@@ -140,7 +141,7 @@ function FacetGroup({
                 </span>
                 <span
                   className={`shrink-0 rounded-full px-1.5 font-mono text-xs tabular-nums ${
-                    isActive ? 'bg-white/20' : 'bg-slate-100 text-slate-500'
+                    isActive ? 'bg-paper/15 text-paper' : 'bg-sand text-muted'
                   }`}
                 >
                   {facet.count}
@@ -178,12 +179,12 @@ export default async function TendersPage({
     <div>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-black tracking-tight">
+          <h1 className="font-display text-[2rem] font-semibold tracking-tight">
             Inventaire des marchés
           </h1>
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-1 text-sm text-muted">
             {inventory.total} appel(s) d&apos;offres au catalogue ·{' '}
-            <span className="font-semibold text-slate-700">
+            <span className="font-semibold text-ink">
               {inventory.filteredCount}
             </span>{' '}
             résultat(s) — triés par urgence
@@ -201,15 +202,23 @@ export default async function TendersPage({
               <input key={key} type="hidden" name={key} value={active[key]} />
             ) : null,
           )}
-          <input
-            type="search"
-            name="q"
-            defaultValue={active.q ?? ''}
-            aria-label="Rechercher un marché (référence, objet, acheteur)"
-            placeholder="Rechercher (référence, objet, acheteur)…"
-            className="w-72 rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none"
-          />
-          <button className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
+          <div className="relative">
+            <Icon
+              name="search"
+              size={16}
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-faint"
+            />
+            <input
+              type="search"
+              name="q"
+              defaultValue={active.q ?? ''}
+              aria-label="Rechercher un marché (référence, objet, acheteur)"
+              placeholder="Rechercher (référence, objet, acheteur)…"
+              className="w-72 rounded-md border border-line-2 bg-paper-2 py-2 pl-9 pr-3 text-sm text-ink placeholder:text-faint focus:border-ochre focus:outline-none focus:ring-2 focus:ring-ochre/15"
+            />
+          </div>
+          <button className="flex items-center gap-1.5 rounded-md bg-ink px-4 py-2 text-sm font-semibold text-paper transition hover:bg-ink-2">
+            <Icon name="filter" size={15} />
             Filtrer
           </button>
         </form>
@@ -217,18 +226,18 @@ export default async function TendersPage({
 
       {hasFilters && (
         <div className="mb-6 flex flex-wrap items-center gap-2">
-          <span className="text-xs font-semibold uppercase tracking-widest text-slate-400">
+          <span className="text-xs font-semibold uppercase tracking-widest text-faint">
             Filtres actifs
           </span>
           {activeEntries.map(({ key, value }) => (
             <Link
               key={key}
               href={toggleHref(active, key, null)}
-              className="inline-flex items-center gap-1.5 rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white transition hover:bg-slate-700"
+              className="inline-flex items-center gap-1.5 rounded-full bg-ink px-3 py-1 text-xs font-medium text-paper transition hover:bg-ink-2"
             >
-              <span className="opacity-60">{FILTER_CHIP_LABELS[key]}:</span>
+              <span className="text-paper/55">{FILTER_CHIP_LABELS[key]}:</span>
               {activeChipLabel(key, value)}
-              <span aria-hidden className="text-sm leading-none">
+              <span aria-hidden className="text-sm leading-none text-paper/70">
                 ×
               </span>
               <span className="sr-only">retirer ce filtre</span>
@@ -236,7 +245,7 @@ export default async function TendersPage({
           ))}
           <Link
             href="/tenders"
-            className="text-xs font-medium text-amber-700 hover:underline"
+            className="text-xs font-medium text-ochre-deep hover:underline"
           >
             Tout réinitialiser
           </Link>
@@ -244,8 +253,9 @@ export default async function TendersPage({
       )}
 
       <div className="grid gap-6 lg:grid-cols-[18rem_1fr]">
-        <aside className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm lg:sticky lg:top-6 lg:self-start">
-          <span className="text-xs font-bold uppercase tracking-widest text-slate-500">
+        <aside className="space-y-6 rounded-xl border border-line bg-paper-2 p-5 shadow-card lg:sticky lg:top-6 lg:self-start">
+          <span className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted">
+            <Icon name="filter" size={14} className="text-ochre-deep" />
             Filtres
           </span>
           <FacetGroup
@@ -277,53 +287,50 @@ export default async function TendersPage({
           />
         </aside>
 
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-hidden rounded-xl border border-line bg-paper-2 shadow-card">
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
+            <thead className="border-b border-line bg-sand/60 text-xs uppercase tracking-wider text-muted">
               <tr>
-                <th className="px-4 py-3">Échéance</th>
-                <th className="px-4 py-3">Référence</th>
-                <th className="px-4 py-3">Objet</th>
-                <th className="px-4 py-3">Acheteur · Région</th>
-                <th className="px-4 py-3">Procédure</th>
-                <th className="px-4 py-3 text-right">Estimation</th>
-                <th className="px-4 py-3">État</th>
+                <th className="px-4 py-3 font-semibold">Échéance</th>
+                <th className="px-4 py-3 font-semibold">Référence</th>
+                <th className="px-4 py-3 font-semibold">Objet</th>
+                <th className="px-4 py-3 font-semibold">Acheteur · Région</th>
+                <th className="px-4 py-3 font-semibold">Procédure</th>
+                <th className="px-4 py-3 text-right font-semibold">Estimation</th>
+                <th className="px-4 py-3 font-semibold">État</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-line">
               {inventory.items.map((tender) => {
                 const state = PIPELINE_LABELS[tender.pipelineState];
                 const overdue = tender.daysLeft < 0;
                 return (
-                  <tr key={tender.id} className="transition hover:bg-amber-50/50">
+                  <tr key={tender.id} className="transition hover:bg-sand/50">
                     <td className="px-4 py-3">
                       <span
                         className={`inline-block rounded-md px-2.5 py-1 font-mono text-xs font-bold tabular-nums ${
-                          overdue
-                            ? 'bg-slate-200 text-slate-500'
-                            : urgencyClasses(tender.daysLeft)
+                          overdue ? 'bg-sand text-faint' : urgencyClasses(tender.daysLeft)
                         }`}
                       >
                         {overdue ? 'Échu' : `J-${tender.daysLeft}`}
                       </span>
-                      <div className="mt-1 text-xs text-slate-400">
+                      <div className="mt-1 text-xs text-faint">
                         {new Date(tender.deadlineAt).toLocaleDateString('fr-MA')}
                       </div>
                     </td>
-                    <td className="px-4 py-3 font-semibold">
+                    <td className="px-4 py-3 font-mono font-semibold text-ink">
                       <Link
                         href={`/tenders/${tender.id}`}
-                        className="underline-offset-2 hover:text-amber-700 hover:underline"
+                        className="underline-offset-2 hover:text-ochre-deep hover:underline"
                       >
                         {tender.reference}
                       </Link>
                     </td>
-                    <td className="max-w-sm px-4 py-3 text-slate-600">
-                      {tender.objet}
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">
+                    <td className="max-w-sm px-4 py-3 text-muted">{tender.objet}</td>
+                    <td className="px-4 py-3 text-muted">
                       {tender.buyerName}
-                      <div className="mt-0.5 text-xs text-slate-400">
+                      <div className="mt-0.5 flex items-center gap-1 text-xs text-faint">
+                        <Icon name="pin" size={11} />
                         {tender.region}
                       </div>
                     </td>
@@ -334,7 +341,7 @@ export default async function TendersPage({
                         {tender.procedureLabel}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-right font-mono tabular-nums">
+                    <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
                       {tender.estimationMad != null
                         ? `${tender.estimationMad.toLocaleString('fr-MA')} MAD`
                         : '—'}
@@ -352,14 +359,14 @@ export default async function TendersPage({
             </tbody>
           </table>
           {inventory.items.length === 0 && (
-            <p className="p-10 text-center text-slate-400">
+            <p className="p-10 text-center text-muted">
               {hasFilters
                 ? 'Aucun marché ne correspond à ces filtres.'
                 : 'Aucun appel d’offres détecté pour le moment.'}
             </p>
           )}
           {capped && (
-            <p className="border-t border-slate-100 px-4 py-3 text-center text-xs text-slate-400">
+            <p className="border-t border-line px-4 py-3 text-center text-xs text-faint">
               Affichage limité aux {inventory.returnedCount} premiers sur{' '}
               {inventory.filteredCount} — affinez les filtres pour cibler.
             </p>

@@ -3,7 +3,7 @@ import { auth } from '@/auth';
 
 const API_URL = process.env.ATLAS_API_URL ?? 'http://localhost:3000/api';
 
-const SIGNIN = '/api/auth/signin?callbackUrl=/';
+const SIGNIN = '/login';
 
 /**
  * Production Next.js redacts server-error messages before they reach the
