@@ -30,6 +30,7 @@ import {
   FixturePortalSource,
   HttpPortalSource,
   PORTAL_SOURCE,
+  PradoPortalSource,
   type HttpPortalOptions,
   type PortalSource,
 } from './watch.source';
@@ -120,12 +121,16 @@ const portalSourceProvider = {
   provide: PORTAL_SOURCE,
   useFactory: (): PortalSource => {
     const logger = new Logger('WatchModule');
-    if (process.env.WATCH_SOURCE === 'live' && process.env.WATCH_PMMP_URL) {
-      logger.log(`Sentinel source: LIVE ${process.env.WATCH_PMMP_URL}`);
-      return new HttpPortalSource(
-        process.env.WATCH_PMMP_URL,
-        paginationOptions(),
-      );
+    const url = process.env.WATCH_PMMP_URL;
+    if (process.env.WATCH_SOURCE === 'live' && url) {
+      // marchespublics.gov.ma (Atexo MPE) paginates via PRADO POST, not a GET
+      // param — WATCH_PORTAL_MODE=prado drives the stateful next-page crawl.
+      if (process.env.WATCH_PORTAL_MODE === 'prado') {
+        logger.log(`Sentinel source: LIVE PRADO ${url}`);
+        return new PradoPortalSource(url);
+      }
+      logger.log(`Sentinel source: LIVE ${url}`);
+      return new HttpPortalSource(url, paginationOptions());
     }
     logger.warn(
       'Sentinel source: recorded fixture (set WATCH_SOURCE=live + WATCH_PMMP_URL for production)',

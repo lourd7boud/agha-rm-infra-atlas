@@ -137,7 +137,7 @@ export class HttpPortalSource implements PortalSource {
   private async fetchOnce(url: string): Promise<PortalPage> {
     const response = await this.fetchImpl(url, {
       headers: {
-        'User-Agent': 'ATLAS-Sentinel/0.1 (AGHA RM INFRA; veille marchés publics)',
+        'User-Agent': USER_AGENT,
         Accept: 'text/html',
       },
       signal: AbortSignal.timeout(this.timeoutMs),
@@ -146,5 +146,161 @@ export class HttpPortalSource implements PortalSource {
       throw new Error(`Portal fetch failed: HTTP ${response.status}`);
     }
     return { html: await response.text(), sourceUrl: url };
+  }
+}
+
+const USER_AGENT =
+  'ATLAS-Sentinel/0.1 (AGHA RM INFRA; veille marchés publics)';
+
+/** Form `<input>` name→value pairs the PRADO postback must replay. */
+function parseFormInputs(html: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  const re = /<input\b([^>]*)>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    const tag = m[1] ?? '';
+    const type = (/\btype="([^"]*)"/i.exec(tag)?.[1] ?? 'text').toLowerCase();
+    if (type === 'submit' || type === 'image' || type === 'button') continue;
+    const name = /\bname="([^"]*)"/i.exec(tag)?.[1];
+    if (!name) continue;
+    // Unchecked checkboxes/radios are not submitted by a browser.
+    if ((type === 'checkbox' || type === 'radio') && !/\bchecked\b/i.test(tag)) {
+      continue;
+    }
+    fields[name] = /\bvalue="([^"]*)"/i.exec(tag)?.[1] ?? '';
+  }
+  return fields;
+}
+
+/**
+ * Resolves the PRADO postback target for the "next page" pager link. PRADO
+ * client ids replace the control-name "$" separators with "_", which is
+ * ambiguous when a naming-container segment itself contains "_" (CONTENU_PAGE).
+ * We rebuild the target from a known control-name prefix instead of blindly
+ * swapping every "_".
+ */
+function findNextPageTarget(
+  html: string,
+  fields: Record<string, string>,
+): string | null {
+  const id = /<a id="([^"]+)"[^>]*>\s*<img[^>]*Aller à la page suivante/i.exec(
+    html,
+  )?.[1];
+  if (!id) return null;
+  const sample = Object.keys(fields).find((n) => n.includes('$resultSearch$'));
+  const namePrefix = sample
+    ? sample.slice(0, sample.indexOf('$resultSearch$') + '$resultSearch$'.length)
+    : 'ctl0$CONTENU_PAGE$resultSearch$';
+  const clientPrefix = namePrefix.replace(/\$/g, '_');
+  const suffix = id.startsWith(clientPrefix) ? id.slice(clientPrefix.length) : id;
+  return namePrefix + suffix.replace(/_/g, '$');
+}
+
+export interface PradoPortalOptions {
+  attempts?: number;
+  backoffMs?: number;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Live source for Atexo MPE / PRADO portals (marchespublics.gov.ma), whose
+ * result pager is a stateful POST, NOT a GET parameter: the page is advanced
+ * by re-submitting the form with PRADO_PAGESTATE + PRADO_POSTBACK_TARGET set
+ * to the "next page" pager control. State (the ~100 KB PRADO_PAGESTATE and all
+ * form inputs) is captured from each response and carried into the next hop.
+ *
+ * The Sentinel walks pages by calling fetch(1), fetch(2), … in order; this
+ * source treats every call after the first as one postback "next".
+ */
+export class PradoPortalSource implements PortalSource {
+  private readonly attempts: number;
+  private readonly backoffMs: number;
+  private readonly timeoutMs: number;
+  private readonly fetchImpl: typeof fetch;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private fields: Record<string, string> | null = null;
+  private nextTarget: string | null = null;
+
+  constructor(
+    private readonly url: string,
+    options: PradoPortalOptions = {},
+  ) {
+    const protocol = new URL(url).protocol;
+    if (protocol !== 'http:' && protocol !== 'https:') {
+      throw new Error(`Portal URL must be http(s): ${url}`);
+    }
+    this.attempts = Math.max(1, options.attempts ?? 3);
+    this.backoffMs = options.backoffMs ?? 1500;
+    this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.sleep = options.sleep ?? defaultSleep;
+  }
+
+  async fetch(page = 1): Promise<PortalPage> {
+    if (page <= 1 || !this.fields) {
+      const html = await this.requestWithRetry('GET');
+      this.capture(html);
+      return { html, sourceUrl: this.url };
+    }
+    // No "next" link on the last page → an empty page ends the walk cleanly.
+    if (!this.nextTarget) {
+      return { html: '<html><body></body></html>', sourceUrl: this.pageUrl(page) };
+    }
+    const body = new URLSearchParams(this.fields);
+    body.set('PRADO_POSTBACK_TARGET', this.nextTarget);
+    body.set('PRADO_POSTBACK_PARAMETER', '');
+    const html = await this.requestWithRetry('POST', body);
+    this.capture(html);
+    return { html, sourceUrl: this.pageUrl(page) };
+  }
+
+  /** Stable per-page key so cross-run change detection works per page. */
+  private pageUrl(page: number): string {
+    return `${this.url}#page=${page}`;
+  }
+
+  private capture(html: string): void {
+    this.fields = parseFormInputs(html);
+    this.nextTarget = findNextPageTarget(html, this.fields);
+  }
+
+  private async requestWithRetry(
+    method: 'GET' | 'POST',
+    body?: URLSearchParams,
+  ): Promise<string> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.attempts; attempt += 1) {
+      try {
+        const response = await this.fetchImpl(this.url, {
+          method,
+          headers: {
+            'User-Agent': USER_AGENT,
+            Accept: 'text/html',
+            ...(method === 'POST'
+              ? {
+                  'Content-Type': 'application/x-www-form-urlencoded',
+                  Referer: this.url,
+                }
+              : {}),
+          },
+          ...(body ? { body } : {}),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+        if (!response.ok) {
+          throw new Error(`Portal fetch failed: HTTP ${response.status}`);
+        }
+        return await response.text();
+      } catch (error) {
+        lastError = error;
+        if (attempt < this.attempts) {
+          await this.sleep(this.backoffMs * 2 ** (attempt - 1));
+        }
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('Portal fetch failed');
   }
 }
