@@ -5,6 +5,21 @@ const API_URL = process.env.ATLAS_API_URL ?? 'http://localhost:3000/api';
 
 const SIGNIN = '/api/auth/signin?callbackUrl=/';
 
+/**
+ * Production Next.js redacts server-error messages before they reach the
+ * client error boundary, but forwards a pre-set `digest` as-is. Carrying
+ * the upstream HTTP status in the digest lets error.tsx say WHY it failed
+ * (409 transition vs 503 IA indisponible) instead of a generic message.
+ */
+export class AtlasApiError extends Error {
+  readonly digest: string;
+
+  constructor(path: string, status: number) {
+    super(`ATLAS API ${path} a répondu HTTP ${status}`);
+    this.digest = `ATLAS_API_${status}`;
+  }
+}
+
 /** Server-side fetch against ATLAS Core with the session's bearer token. */
 export async function apiGet<T>(path: string): Promise<T> {
   const session = await auth();
@@ -20,7 +35,7 @@ export async function apiGet<T>(path: string): Promise<T> {
     redirect(SIGNIN);
   }
   if (!response.ok) {
-    throw new Error(`ATLAS API ${path} a répondu HTTP ${response.status}`);
+    throw new AtlasApiError(path, response.status);
   }
   return (await response.json()) as T;
 }
@@ -44,7 +59,7 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
     redirect(SIGNIN);
   }
   if (!response.ok) {
-    throw new Error(`ATLAS API ${path} a répondu HTTP ${response.status}`);
+    throw new AtlasApiError(path, response.status);
   }
   return (await response.json()) as T;
 }
