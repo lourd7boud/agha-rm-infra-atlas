@@ -14,7 +14,17 @@ const STATS = [
 
 export default async function LoginPage() {
   const session = await auth();
-  if (session?.user) redirect('/');
+  // Only bounce to the app when the session is actually usable. A stale session
+  // (user present but the access token is gone / refresh failed) must render the
+  // login screen to re-authenticate — otherwise /login ⇄ / loops forever
+  // (apiGet redirects back here on a dead token) → ERR_TOO_MANY_REDIRECTS.
+  if (
+    session?.user &&
+    session.accessToken &&
+    session.error !== 'RefreshAccessTokenError'
+  ) {
+    redirect('/');
+  }
 
   return (
     <div className="grid min-h-screen lg:grid-cols-[1.05fr_0.95fr]">
