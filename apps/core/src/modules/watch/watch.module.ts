@@ -177,6 +177,7 @@ const snapshotRepositoryProvider = {
     snapshotRepositoryProvider,
     WatchService,
   ],
+  exports: [snapshotRepositoryProvider],
 })
 export class WatchModule implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('WatchModule');

@@ -61,20 +61,19 @@ async function tryGet<T>(path: string): Promise<T | null> {
   }
 }
 
-type AgentRunStatus = 'operational' | 'degraded' | 'offline';
+type AgentRunStatus = 'green' | 'orange' | 'red';
 interface AgentEntry {
   key: string;
   name: string;
   role: string;
-  desk: string;
-  kind: string;
   icon: string;
   status: AgentRunStatus;
-  detail: string;
+  statusLabel: string;
+  statusReason: string;
 }
 interface AgentsResponse {
-  llm: { ready: boolean; model: string };
-  summary: { operational: number; total: number };
+  engine: { reachable: boolean; model: string };
+  summary: { green: number; orange: number; red: number; total: number };
   agents: AgentEntry[];
 }
 
@@ -85,10 +84,10 @@ const AGENT_ICONS = new Set<IconName>([
 function agentIcon(name: string): IconName {
   return AGENT_ICONS.has(name as IconName) ? (name as IconName) : 'agents';
 }
-const AGENT_STATUS: Record<AgentRunStatus, { label: string; dot: string; text: string }> = {
-  operational: { label: 'Actif', dot: 'bg-emerald', text: 'text-emerald' },
-  degraded: { label: 'Dégradé', dot: 'bg-ochre', text: 'text-ochre' },
-  offline: { label: 'Hors-ligne', dot: 'bg-clay', text: 'text-clay' },
+const AGENT_STATUS: Record<AgentRunStatus, { dot: string; text: string }> = {
+  green: { dot: 'bg-emerald', text: 'text-emerald' },
+  orange: { dot: 'bg-ochre', text: 'text-ochre' },
+  red: { dot: 'bg-clay', text: 'text-clay' },
 };
 
 const PIPELINE_ORDER: [key: string, label: string][] = [
@@ -359,9 +358,9 @@ export default async function CommandCenterPage() {
           className="xl:col-span-4"
           action={
             agentsData ? (
-              <span className="text-[11px] font-medium text-emerald">
-                {agentsData.summary.operational}/{agentsData.summary.total} actifs
-              </span>
+              <Link href="/agents" className="text-[11px] font-medium text-cyan hover:underline">
+                {agentsData.summary.green}/{agentsData.summary.total} · salle →
+              </Link>
             ) : null
           }
         >
@@ -383,14 +382,14 @@ export default async function CommandCenterPage() {
                           {a.name}
                         </span>
                         <span className="block truncate text-[10px] text-faint">
-                          {a.detail}
+                          {a.statusReason}
                         </span>
                       </span>
                       <span
                         className={`ml-auto inline-flex items-center gap-1.5 text-[10px] font-medium ${st.text}`}
                       >
                         <span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} />
-                        {st.label}
+                        {a.statusLabel}
                       </span>
                     </li>
                   );
@@ -399,9 +398,8 @@ export default async function CommandCenterPage() {
               <p className="mt-2 border-t border-line pt-2 text-[10px] text-faint">
                 Moteur IA :{' '}
                 <span className="font-mono text-cyan">
-                  {agentsData.llm.ready ? agentsData.llm.model : 'non configuré'}
-                </span>{' '}
-                · passerelle qcode
+                  {agentsData.engine.reachable ? agentsData.engine.model : 'injoignable'}
+                </span>
               </p>
             </>
           ) : (
