@@ -31,14 +31,14 @@ export default async function LoginPage() {
       {/* Editorial hero */}
       <div className="relative hidden overflow-hidden bg-rail lg:block">
         <Image
-          src="/brand/atlas-dam.webp"
-          alt="Barrage et canal d'irrigation dans l'Atlas marocain"
+          src="/brand/atlas-hero.webp"
+          alt="Barrage et réseau hydraulique de l'Atlas marocain, vision ATLAS"
           fill
           priority
           sizes="55vw"
           className="object-cover"
         />
-        <div className="absolute inset-0 bg-gradient-to-tr from-rail via-rail/65 to-rail/10" />
+        <div className="absolute inset-0 bg-gradient-to-t from-rail via-rail/55 to-rail/15" />
         <div className="brand-seam absolute inset-x-0 top-0 h-1" />
         <div className="relative flex h-full flex-col justify-between p-12 text-paper">
           <AtlasLogo variant="rail" markSize={42} />

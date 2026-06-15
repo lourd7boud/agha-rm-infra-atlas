@@ -322,8 +322,8 @@ export default async function CommandCenterPage() {
         >
           <div className="relative h-64 overflow-hidden rounded-lg border border-line">
             <Image
-              src="/brand/atlas-dam.webp"
-              alt="Chantiers d'infrastructure AGHA RM INFRA"
+              src="/brand/atlas-vista.webp"
+              alt="Vue d'ensemble des chantiers d'infrastructure AGHA RM INFRA"
               fill
               sizes="40vw"
               className="object-cover"
