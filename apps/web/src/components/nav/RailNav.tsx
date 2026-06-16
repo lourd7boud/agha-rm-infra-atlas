@@ -18,6 +18,7 @@ const ITEMS: readonly NavItem[] = [
   { href: '/people', label: 'Personnel', icon: 'personnel' },
   { href: '/vault', label: 'Documents & GED', icon: 'documents' },
   { href: '/intel', label: 'Concurrence', icon: 'intel' },
+  { href: '/buyers', label: 'Acheteurs', icon: 'analytics' },
   { href: '/agents', label: 'Salle des Agents', icon: 'agents' },
 ];
 
