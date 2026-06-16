@@ -126,3 +126,112 @@ describe('buildPricingScenarios', () => {
     }
   });
 });
+
+describe('buildPricingScenarios with rebate calibration', () => {
+  test('without a benchmark, the ladder and methode stay heuristic', () => {
+    const result = buildPricingScenarios({
+      estimationMad: ESTIMATION,
+      competitorCount: 4,
+    });
+    // The four legacy tests above already pin the exact heuristic values; here
+    // we only assert the calibrated path did not leak in when no benchmark.
+    expect(result.scenarios.map((s) => s.rabaisPct)).toEqual([5, 12, 20]);
+    expect(result.hypotheses.methode.toLowerCase()).toContain('heuristique');
+    expect(result.recommandation.raison).not.toContain('historique');
+  });
+
+  test('a trusted benchmark anchors the ladder to p25/median/p75 (pressure-independent)', () => {
+    const result = buildPricingScenarios({
+      estimationMad: ESTIMATION,
+      competitorCount: 3,
+      rebateBenchmark: {
+        source: 'buyer',
+        key: 'ONEE',
+        count: 6,
+        medianPct: 14,
+        p25Pct: 8,
+        p75Pct: 21,
+      },
+    });
+    expect(result.scenarios.map((s) => s.rabaisPct)).toEqual([8, 14, 21]);
+    expect(result.scenarios[2]!.rabaisPct).toBeLessThan(
+      SEUIL_OFFRE_ANORMALEMENT_BASSE_PCT,
+    );
+    expect(result.hypotheses.methode).toContain('N=6');
+    expect(result.hypotheses.methode.toLowerCase()).toContain('calibr');
+  });
+
+  test('a deep historical rebate is clamped below the legal threshold and flagged', () => {
+    const result = buildPricingScenarios({
+      estimationMad: ESTIMATION,
+      competitorCount: 0,
+      rebateBenchmark: {
+        source: 'segment',
+        key: 'eau_potable',
+        count: 10,
+        medianPct: 30,
+        p25Pct: 20,
+        p75Pct: 40,
+      },
+    });
+    const aggressive = result.scenarios[2]!;
+    expect(aggressive.rabaisPct).toBe(22); // p75 40 → clamped to seuil − marge
+    expect(aggressive.rabaisPct).toBeLessThan(SEUIL_OFFRE_ANORMALEMENT_BASSE_PCT);
+    expect(aggressive.statutReglementaire).toBe('proche_seuil_bas');
+    expect(result.scenarios[1]!.rabaisPct).toBe(22); // median 30 → clamped
+    expect(result.scenarios[0]!.rabaisPct).toBe(20); // p25 20 within band
+  });
+
+  test('a non-positive learned rebate floors at zero', () => {
+    const result = buildPricingScenarios({
+      estimationMad: ESTIMATION,
+      competitorCount: 0,
+      rebateBenchmark: {
+        source: 'overall',
+        key: 'overall',
+        count: 6,
+        medianPct: -5,
+        p25Pct: -10,
+        p75Pct: 3,
+      },
+    });
+    expect(result.scenarios.map((s) => s.rabaisPct)).toEqual([0, 0, 3]);
+  });
+
+  test('the recommendation cites the historical rabais, framed as not guaranteed', () => {
+    const result = buildPricingScenarios({
+      estimationMad: ESTIMATION,
+      competitorCount: 2,
+      rebateBenchmark: {
+        source: 'buyer',
+        key: 'ORMVAH',
+        count: 12,
+        medianPct: 11,
+        p25Pct: 7,
+        p75Pct: 16,
+      },
+    });
+    expect(result.recommandation.raison).toContain('historique');
+    expect(result.recommandation.raison).toContain('ORMVAH');
+    expect(result.recommandation.raison).toContain('11%');
+    expect(result.recommandation.raison).toContain('N=12');
+    expect(result.recommandation.raison).not.toContain('limité');
+  });
+
+  test('a thin sample is flagged as low-confidence in the brief', () => {
+    const result = buildPricingScenarios({
+      estimationMad: ESTIMATION,
+      competitorCount: 2,
+      rebateBenchmark: {
+        source: 'segment',
+        key: 'routes',
+        count: 5,
+        medianPct: 10,
+        p25Pct: 6,
+        p75Pct: 15,
+      },
+    });
+    expect(result.recommandation.raison.toLowerCase()).toContain('limité');
+    expect(result.recommandation.raison).toContain('le segment routes');
+  });
+});

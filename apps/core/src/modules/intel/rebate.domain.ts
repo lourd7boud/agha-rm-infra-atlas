@@ -1,4 +1,5 @@
 import { recoveredRebatePct } from '../tender/outcome.domain';
+import { normalizeFr } from '../tender/qualifier.domain';
 
 /**
  * Rebate calibration (intelligence M2) — turns the Result Miner's winner
@@ -125,6 +126,21 @@ function groupBy<K extends string>(
   return groups;
 }
 
+/**
+ * Canonical join key for a public buyer. Buyer names arrive from two
+ * independent paths (tender intake vs the result-crawler vision) and are never
+ * entity-resolved, so the same buyer can appear with different case, accents,
+ * punctuation or spacing. Folding them here keeps the aggregation grouping and
+ * the pricing-side selector agreeing on what "the same buyer" is. Display
+ * labels keep the raw name; only the JOIN key is folded.
+ */
+export function canonicalBuyerKey(buyerName: string): string {
+  return normalizeFr(buyerName)
+    .replace(/[.,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** Aggregate winner observations into overall + per-buyer + per-segment rebate stats. */
 export function summarizeRebates(
   observations: readonly RebateObservation[],
@@ -143,8 +159,17 @@ export function summarizeRebates(
     samples.push({ buyerName: obs.buyerName, segment: obs.segment, pct: raw });
   }
 
-  const byBuyer: BuyerRebate[] = [...groupBy(samples, (s) => s.buyerName)]
-    .map(([buyerName, pcts]) => ({ buyerName, ...distribution(pcts) }))
+  // Fold buyer variants (case/accent/punctuation) onto one canonical key so a
+  // split buyer cannot miss the sample gate; keep the first-seen raw label.
+  const buyerGroups = new Map<string, { label: string; pcts: number[] }>();
+  for (const s of samples) {
+    const key = canonicalBuyerKey(s.buyerName);
+    const group = buyerGroups.get(key);
+    if (group) group.pcts.push(s.pct);
+    else buyerGroups.set(key, { label: s.buyerName, pcts: [s.pct] });
+  }
+  const byBuyer: BuyerRebate[] = [...buyerGroups.values()]
+    .map(({ label, pcts }) => ({ buyerName: label, ...distribution(pcts) }))
     .sort((a, b) => b.count - a.count || b.medianPct - a.medianPct);
 
   const bySegment: SegmentRebate[] = [...groupBy(samples, (s) => s.segment)]

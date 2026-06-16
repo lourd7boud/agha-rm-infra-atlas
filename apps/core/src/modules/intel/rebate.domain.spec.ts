@@ -155,4 +155,19 @@ describe('summarizeRebates', () => {
     expect(bySegment).toEqual([]);
     expect(sampled).toBe(0);
   });
+
+  it('folds buyer-name casing/accent/punctuation variants into one row', () => {
+    // The same buyer arriving from two ingestion paths must not split into
+    // fragments that each miss the sample gate.
+    const obs = [
+      winner('A', 'Commune de Témara', 800_000), // 20%
+      winner('B', 'COMMUNE DE TEMARA', 850_000), // 15% — case + accent drift
+      winner('C', 'Commune de Témara, ', 900_000), // 10% — trailing comma + space
+    ];
+
+    const { byBuyer } = summarizeRebates(obs);
+
+    expect(byBuyer).toHaveLength(1);
+    expect(byBuyer[0]).toMatchObject({ buyerName: 'Commune de Témara', count: 3 });
+  });
 });

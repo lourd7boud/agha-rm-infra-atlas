@@ -9,10 +9,12 @@ import {
   INTEL_REPOSITORY,
   type IntelRepository,
 } from '../intel/intel.repository';
+import { selectRebateBenchmark } from '../intel/rebate-selector.domain';
 import {
   buildPricingScenarios,
   type PricingScenarios,
 } from './pricing.domain';
+import { inferSegment } from './inventory.domain';
 import {
   TENDER_REPOSITORY,
   type TenderRepository,
@@ -47,9 +49,31 @@ export class PricingService {
     }
 
     const competitorStats = await this.intel.listCompetitorStats();
+
+    // Learned winning-rabais for this buyer/segment. A benchmark read failure
+    // must never block the price, so it degrades to undefined (→ heuristic
+    // ladder); the pure select stays inside the same chain so only the I/O
+    // can trip the catch.
+    const rebateBenchmark = await this.intel
+      .rebateBenchmarks()
+      .then(
+        (benchmarks) =>
+          selectRebateBenchmark(benchmarks, {
+            buyerName: tender.buyerName,
+            segment: inferSegment(tender.objet, tender.buyerName),
+          }) ?? undefined,
+      )
+      .catch((error: unknown) => {
+        this.logger.warn(
+          `rebate benchmarks indisponibles, chiffrage heuristique: ${(error as Error).message}`,
+        );
+        return undefined;
+      });
+
     const scenarios = buildPricingScenarios({
       estimationMad: tender.estimationMad,
       competitorCount: competitorStats.length,
+      rebateBenchmark,
     });
 
     const result: PricingResult = {
@@ -62,7 +86,8 @@ export class PricingService {
 
     this.logger.log(
       `gate.G2.scenarios ${tender.reference} → ${result.recommandation.nom} ` +
-        `(${competitorStats.length} concurrents connus)`,
+        `(${competitorStats.length} concurrents connus, ` +
+        `${rebateBenchmark ? `calibré ${rebateBenchmark.source}` : 'heuristique'})`,
     );
     return result;
   }

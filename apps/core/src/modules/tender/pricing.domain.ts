@@ -22,9 +22,27 @@ export const SEUIL_OFFRE_ANORMALEMENT_BASSE_PCT = 25;
 const MARGE_ALERTE_SEUIL_PCT = 3;
 /** Competitor count at which competitive pressure saturates. */
 const PRESSION_SATURATION = 8;
+/** Below this sample size, a learned median is flagged as thin in the brief. */
+const CONFIANCE_ECHANTILLON_MIN = 8;
 
 export type PricingScenarioName = 'prudent' | 'equilibre' | 'agressif';
 export type StatutReglementaire = 'conforme' | 'proche_seuil_bas';
+
+/**
+ * A trusted recovered-rebate distribution for this tender's buyer or segment,
+ * selected upstream (intel/rebate-selector) once enough winners are observed.
+ * Structurally a subset of SelectedRebate, declared here so the pricing engine
+ * carries no dependency on the intel module.
+ */
+export interface RebateCalibration {
+  source: 'buyer' | 'segment' | 'overall';
+  /** Matched key for the brief copy (raw buyerName, segment slug, or 'overall'). */
+  key: string;
+  count: number;
+  medianPct: number;
+  p25Pct: number;
+  p75Pct: number;
+}
 
 export interface PricingInput {
   estimationMad: number;
@@ -32,6 +50,13 @@ export interface PricingInput {
   competitorCount: number;
   /** Company cost base as a fraction of the estimation, in (0, 1). */
   costRatio?: number;
+  /**
+   * Learned winning-rabais distribution for this buyer/segment. When present,
+   * it ANCHORS the ladder (p25→prudent, median→equilibre, p75→agressif, each
+   * clamped below the legal threshold) instead of the heuristic rabais. Absent
+   * (the default until enough results accrue) → today's heuristic ladder.
+   */
+  rebateBenchmark?: RebateCalibration;
 }
 
 export interface PricingScenario {
@@ -104,8 +129,19 @@ export function buildPricingScenarios(input: PricingInput): PricingScenarios {
   const pressure = Math.min(concurrentsConnus, PRESSION_SATURATION) / PRESSION_SATURATION;
   const coutMad = input.estimationMad * costRatio;
 
+  // When a trusted benchmark is present it ANCHORS the rabais ladder to the real
+  // winning distribution (clamped legal); otherwise the heuristic ladder runs.
+  const calibrated = input.rebateBenchmark;
+  const anchoredRabais: Record<PricingScenarioName, number> | null = calibrated
+    ? {
+        prudent: clampCalibratedRabais(calibrated.p25Pct),
+        equilibre: clampCalibratedRabais(calibrated.medianPct),
+        agressif: clampCalibratedRabais(calibrated.p75Pct),
+      }
+    : null;
+
   const scenarios = LADDER.map((step) => {
-    const rabaisPct = step.rabaisPct(pressure);
+    const rabaisPct = anchoredRabais ? anchoredRabais[step.nom] : step.rabaisPct(pressure);
     const prixMad = round2(input.estimationMad * (1 - rabaisPct / 100));
     const margeMad = round2(prixMad - coutMad);
     const probabiliteGain = round3(step.probabiliteGain(pressure));
@@ -126,20 +162,56 @@ export function buildPricingScenarios(input: PricingInput): PricingScenarios {
     };
   });
 
+  const recommandation = recommend(scenarios);
+
   return {
     estimationMad: input.estimationMad,
     hypotheses: {
       costRatio,
       concurrentsConnus,
       seuilAnormalementBasPct: SEUIL_OFFRE_ANORMALEMENT_BASSE_PCT,
-      methode:
-        'Heuristique v1 : probabilités de gain calibrées sur la pression ' +
-        'concurrentielle observée par C1 (nombre de concurrents actifs), ' +
-        'pas encore sur les distributions historiques de rabais.',
+      methode: calibrated
+        ? `Calibré sur les rabais gagnants historiques pour ${tierLabel(calibrated)} ` +
+          `(médiane ${calibrated.medianPct}%, p25 ${calibrated.p25Pct}%–p75 ${calibrated.p75Pct}%, ` +
+          `N=${calibrated.count}), écrêté sous le seuil d’offre anormalement basse. ` +
+          'Probabilités de gain heuristiques (pression concurrentielle C1).'
+        : 'Heuristique v1 : probabilités de gain calibrées sur la pression ' +
+          'concurrentielle observée par C1 (nombre de concurrents actifs), ' +
+          'pas encore sur les distributions historiques de rabais.',
     },
     scenarios,
-    recommandation: recommend(scenarios),
+    recommandation: calibrated
+      ? {
+          ...recommandation,
+          raison: `${recommandation.raison} ${calibrationClause(calibrated)}`,
+        }
+      : recommandation,
   };
+}
+
+/** Clamp a learned rabais anchor into the safe, legal band [0, seuil − marge]. */
+function clampCalibratedRabais(anchorPct: number): number {
+  const plafond = SEUIL_OFFRE_ANORMALEMENT_BASSE_PCT - MARGE_ALERTE_SEUIL_PCT;
+  return round2(Math.min(Math.max(anchorPct, 0), plafond));
+}
+
+/** How specific the benchmark is — surfaced so the reviewer knows its altitude. */
+function tierLabel(c: RebateCalibration): string {
+  if (c.source === 'buyer') return `l’acheteur ${c.key}`;
+  if (c.source === 'segment') return `le segment ${c.key}`;
+  return 'tous marchés confondus';
+}
+
+/** Plain, honest French clause appended to the recommendation when calibrated. */
+function calibrationClause(c: RebateCalibration): string {
+  const confiance =
+    c.count < CONFIANCE_ECHANTILLON_MIN
+      ? ` (échantillon limité, N=${c.count})`
+      : ` (N=${c.count})`;
+  return (
+    `Rabais gagnant historique pour ${tierLabel(c)} : médiane ${c.medianPct}% ` +
+    `(p25 ${c.p25Pct}%–p75 ${c.p75Pct}%)${confiance} — à égaler ou creuser, non garanti.`
+  );
 }
 
 function buildCommentaire(
