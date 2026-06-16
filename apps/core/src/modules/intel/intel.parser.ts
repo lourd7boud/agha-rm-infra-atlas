@@ -10,6 +10,10 @@ export interface PublishedResult {
   buyerName: string;
   bidderName: string;
   amountMad?: number;
+  /** Administrative estimation from the notice — pairs with amountMad for the rebate. */
+  estimationMad?: number;
+  /** Market object as printed on the notice — feeds segment inference. */
+  objet?: string;
   isWinner: boolean;
   resultDate?: Date;
   sourceUrl?: string;

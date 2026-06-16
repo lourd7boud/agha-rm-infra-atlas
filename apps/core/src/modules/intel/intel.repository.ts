@@ -3,8 +3,14 @@ import { and, desc, eq } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { competitorBids, competitors } from '../../db/schema';
 import { normalizeFr } from '../tender/qualifier.domain';
+import { inferSegment } from '../tender/inventory.domain';
 import type { PublishedResult } from './intel.parser';
 import { buildCompetitorProfile, type CompetitorProfile } from './intel.profile';
+import {
+  summarizeRebates,
+  type RebateBenchmarks,
+  type RebateObservation,
+} from './rebate.domain';
 
 export interface CompetitorRecord {
   id: string;
@@ -36,6 +42,27 @@ export interface IntelRepository {
   listCompetitorStats(): Promise<CompetitorStats[]>;
   /** C2: full dossier for one competitor, null when unknown. */
   getProfile(competitorId: string): Promise<CompetitorProfile | null>;
+  /** M2 calibration: recovered winning-rebate benchmarks, overall + by buyer/segment. */
+  rebateBenchmarks(): Promise<RebateBenchmarks>;
+}
+
+/** Map a stored bid to the rebate domain's observation (segment from objet+buyer). */
+function bidToObservation(bid: {
+  reference: string;
+  buyerName: string;
+  objet?: string;
+  estimationMad?: number;
+  amountMad?: number;
+  isWinner: boolean;
+}): RebateObservation {
+  return {
+    reference: bid.reference,
+    buyerName: bid.buyerName,
+    segment: inferSegment(bid.objet ?? '', bid.buyerName),
+    estimationMad: bid.estimationMad,
+    amountMad: bid.amountMad,
+    isWinner: bid.isWinner,
+  };
 }
 
 /** Canonical normalization: accents/case/punctuation + legal-form suffixes. */
@@ -105,6 +132,10 @@ export class InMemoryIntelRepository implements IntelRepository {
     const bids = this.bids.filter((b) => b.competitorId === competitorId);
     return buildCompetitorProfile(competitor, bids);
   }
+
+  async rebateBenchmarks(): Promise<RebateBenchmarks> {
+    return summarizeRebates(this.bids.map(bidToObservation));
+  }
 }
 
 export class DrizzleIntelRepository implements IntelRepository {
@@ -158,6 +189,8 @@ export class DrizzleIntelRepository implements IntelRepository {
       bidderName: result.bidderName,
       competitorId,
       amountMad: result.amountMad?.toString(),
+      estimationMad: result.estimationMad?.toString(),
+      objet: result.objet,
       isWinner: result.isWinner,
       resultDate: result.resultDate,
       sourceUrl: result.sourceUrl,
@@ -178,6 +211,8 @@ export class DrizzleIntelRepository implements IntelRepository {
       bidderName: row.bidderName,
       competitorId: row.competitorId ?? '',
       amountMad: row.amountMad ? Number(row.amountMad) : undefined,
+      estimationMad: row.estimationMad ? Number(row.estimationMad) : undefined,
+      objet: row.objet ?? undefined,
       isWinner: row.isWinner,
       resultDate: row.resultDate ?? undefined,
       sourceUrl: row.sourceUrl ?? undefined,
@@ -225,6 +260,8 @@ export class DrizzleIntelRepository implements IntelRepository {
       bidderName: row.bidderName,
       competitorId: row.competitorId ?? '',
       amountMad: row.amountMad ? Number(row.amountMad) : undefined,
+      estimationMad: row.estimationMad ? Number(row.estimationMad) : undefined,
+      objet: row.objet ?? undefined,
       isWinner: row.isWinner,
       resultDate: row.resultDate ?? undefined,
       sourceUrl: row.sourceUrl ?? undefined,
@@ -238,6 +275,22 @@ export class DrizzleIntelRepository implements IntelRepository {
         normalizedName: competitor.normalizedName,
       },
       bids,
+    );
+  }
+
+  async rebateBenchmarks(): Promise<RebateBenchmarks> {
+    const rows = await this.db.select().from(competitorBids);
+    return summarizeRebates(
+      rows.map((row) =>
+        bidToObservation({
+          reference: row.reference,
+          buyerName: row.buyerName,
+          objet: row.objet ?? undefined,
+          estimationMad: row.estimationMad ? Number(row.estimationMad) : undefined,
+          amountMad: row.amountMad ? Number(row.amountMad) : undefined,
+          isWinner: row.isWinner,
+        }),
+      ),
     );
   }
 }

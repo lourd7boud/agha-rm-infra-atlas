@@ -65,6 +65,17 @@ export class IntelController {
       Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 200) : 50;
     return this.repository.listResults(capped);
   }
+
+  /**
+   * Calibration (M2): recovered winning-rebate benchmarks — overall and by
+   * buyer/segment — mined from the result notices. Outliers (mis-read amounts)
+   * are filtered out of the sample.
+   */
+  @Roles('marches', 'direction', 'admin-si')
+  @Get('rebates')
+  async rebates() {
+    return this.repository.rebateBenchmarks();
+  }
 }
 
 const intelSourceProvider = {

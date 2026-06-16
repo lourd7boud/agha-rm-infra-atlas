@@ -39,6 +39,8 @@ export interface StoredResult {
   buyerName: string;
   bidderName: string;
   amountMad: number | null;
+  estimationMad: number | null;
+  objet: string | null;
   resultDate: Date;
   sourceUrl: string;
 }
@@ -108,6 +110,8 @@ export async function crawlResults(
         buyerName: notice.acheteur ?? 'Acheteur non précisé',
         bidderName: notice.attributaire,
         amountMad: notice.montantMad,
+        estimationMad: notice.estimationMad,
+        objet: notice.objet,
         resultDate: deps.now(),
         sourceUrl: link.detailUrl,
       });
@@ -221,6 +225,8 @@ export class ResultCrawlerService {
         buyerName: r.buyerName,
         bidderName: r.bidderName,
         amountMad: r.amountMad ?? undefined,
+        estimationMad: r.estimationMad ?? undefined,
+        objet: r.objet ?? undefined,
         isWinner: true,
         resultDate: r.resultDate,
         sourceUrl: r.sourceUrl,

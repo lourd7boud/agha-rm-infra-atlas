@@ -63,6 +63,13 @@ export const competitorBids = intel.table('competitor_bid', {
   // reference — the estimation↔attribution rebate depends on this link.
   tenderId: uuid('tender_id').references(() => tenders.id),
   amountMad: numeric('amount_mad', { precision: 14, scale: 2 }),
+  // The administrative estimation read off the result notice (vision). Together
+  // with amount_mad this yields the recovered winning rebate — the calibration
+  // GOLD. Often null on a résultat-définitif notice; captured when present.
+  estimationMad: numeric('estimation_mad', { precision: 14, scale: 2 }),
+  // Market object as printed on the notice — feeds segment inference for the
+  // per-segment rebate benchmarks.
+  objet: text('objet'),
   isWinner: boolean('is_winner').notNull().default(false),
   resultDate: date('result_date', { mode: 'date' }),
   sourceUrl: text('source_url'),

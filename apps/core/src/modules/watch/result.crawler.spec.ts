@@ -45,6 +45,22 @@ describe('crawlResults', () => {
     expect(stored[0]?.buyerName).toBe('Commune X');
   });
 
+  it('carries the estimation and objet through to the stored record', async () => {
+    const stored: StoredResult[] = [];
+    const noticeWithEstimation =
+      '{"attributaire":"STE BETA","acheteur":"ANEF","montant_attribue_mad":800000,' +
+      '"estimation_mad":1000000,"objet":"travaux de reboisement","lisible":true}';
+    await crawlResults(
+      deps({
+        visionExtract: async () => noticeWithEstimation,
+        storeResult: async (r) => (stored.push(r), true),
+      }),
+      { delayMs: 0 },
+    );
+    expect(stored[0]?.estimationMad).toBe(1_000_000);
+    expect(stored[0]?.objet).toBe('travaux de reboisement');
+  });
+
   it('skips consultations without a result notice', async () => {
     const s = await crawlResults(
       deps({ fetchDetail: async () => detailNoNotice('REF/111') }),
