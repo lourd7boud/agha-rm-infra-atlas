@@ -1,0 +1,84 @@
+<!-- SYNTHETIC fixture modelling the PMMP (marchespublics.gov.ma) authenticated
+     "Mes réponses" page (page=entreprise.MesReponses). Real HTML could NOT be
+     captured (a browser guardrail blocked the extraction), so this models the
+     portal's PRADO results-table conventions studied from
+     watch/fixtures/pmmp-results.html — stacked cell text split by its French
+     labels (Référence / Procédure / Catégorie, Objet / Organisme, Date limite
+     de remise des plis, Ma réponse, Retiré le). Values are synthetic.
+     NEEDS A LIVE-HTML VALIDATION PASS on the first real authenticated run:
+     confirm the real table id/classes and the exact label wording, then keep
+     this fixture as the layout-drift guard for the parser test. -->
+<html>
+<body>
+<div id="content">
+  <p class="result-count">Nombre de résultats : 3</p>
+  <p class="page-size">Afficher 10 | 20 | 50 | 100 | 500 résultats / page</p>
+  <table id="ctl0_CONTENU_PAGE_resultSearch_tableauMesReponses" class="table-results" summary="mes reponses">
+    <thead>
+      <tr>
+        <th>Référence | Procédure | Catégorie</th>
+        <th>Contexte | Objet | Organisme</th>
+        <th>Date limite de remise des plis</th>
+        <th>Ma réponse</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="ref">
+          Référence : 01/2026
+          <div class="procedure">Procédure : AOO ouvert</div>
+          <div class="categorie">Catégorie : Travaux</div>
+        </td>
+        <td class="objet">
+          Contexte/Programmme : Programme régional 2026
+          <div class="objet-libelle">Objet : Travaux de construction d'un mur de soutènement RN8 PK 12+300</div>
+          <div class="organisme">Organisme : Direction Régionale de l'Équipement de Marrakech</div>
+        </td>
+        <td class="date">06/04/2026 10:00</td>
+        <td class="ma-reponse">02/04/2026 14:30</td>
+        <td class="actions">-</td>
+      </tr>
+      <tr>
+        <td class="ref">
+          Référence : 62/2025/DP A/IF
+          <div class="procedure">Procédure : AOS sur offres</div>
+          <div class="categorie">Catégorie : Fournitures</div>
+        </td>
+        <td class="objet">
+          Contexte/Programmme : Budget de fonctionnement
+          <div class="objet-libelle">Objet : Fourniture de matériel informatique et péri-informatique</div>
+          <div class="organisme">Organisme : ORMVA de Ouarzazate</div>
+        </td>
+        <td class="date">28/11/2025 12:00</td>
+        <td class="ma-reponse">
+          26/11/2025 09:15
+          <div class="retrait">Retiré le : 27/11/2025 16:45</div>
+        </td>
+        <td class="actions">-</td>
+      </tr>
+      <tr>
+        <td class="ref">
+          Référence : 14/2026/AUAM
+          <div class="procedure">Procédure : AOO ouvert</div>
+          <div class="categorie">Catégorie : Services</div>
+        </td>
+        <td class="objet">
+          Contexte/Programmme : Plan d'aménagement
+          <div class="objet-libelle">Objet : Études topographiques et plans parcellaires</div>
+          <div class="organisme">Organisme : Agence Urbaine d'Agadir</div>
+        </td>
+        <td class="date">21/05/2026 11:30</td>
+        <td class="ma-reponse">19/05/2026 17:00</td>
+        <td class="actions">-</td>
+      </tr>
+      <tr>
+        <td class="ref">ligne corrompue sans référence ni date</td>
+        <td class="objet">devrait être ignorée par le parseur</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="pager">1 / 1</p>
+</div>
+</body>
+</html>

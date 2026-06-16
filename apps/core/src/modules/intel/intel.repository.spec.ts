@@ -52,6 +52,48 @@ describe('InMemoryIntelRepository.rebateBenchmarks', () => {
   });
 });
 
+describe('InMemoryIntelRepository.findWinnersByReferences', () => {
+  it('returns only winner rows whose canonical reference is requested', async () => {
+    // Arrange — one winner, one écarté (same market), one winner of another market.
+    const repo = new InMemoryIntelRepository();
+    const alpha = await repo.upsertCompetitor('STE ALPHA');
+    const beta = await repo.upsertCompetitor('STE BETA');
+    await repo.insertResult(
+      { reference: '62/2025/DP A/IF', buyerName: 'ORMVAH', bidderName: 'STE ALPHA', isWinner: true },
+      alpha.id,
+    );
+    await repo.insertResult(
+      { reference: '62/2025/DP A/IF', buyerName: 'ORMVAH', bidderName: 'STE BETA', isWinner: false },
+      beta.id,
+    );
+    await repo.insertResult(
+      { reference: '99/2025', buyerName: 'ORMVAH', bidderName: 'STE BETA', isWinner: true },
+      beta.id,
+    );
+
+    // Act — request the first market by its canonical key (folded case/space/punct).
+    const winners = await repo.findWinnersByReferences(['62 2025 dp a if']);
+
+    // Assert — only the winning row of the requested market comes back.
+    expect(winners).toHaveLength(1);
+    expect(winners[0]?.bidderName).toBe('STE ALPHA');
+    expect(winners[0]?.isWinner).toBe(true);
+  });
+
+  it('returns an empty list for no keys', async () => {
+    // Arrange
+    const repo = new InMemoryIntelRepository();
+    const alpha = await repo.upsertCompetitor('STE ALPHA');
+    await repo.insertResult(
+      { reference: 'AO/1', buyerName: 'ORMVAH', bidderName: 'STE ALPHA', isWinner: true },
+      alpha.id,
+    );
+
+    // Act / Assert
+    expect(await repo.findWinnersByReferences([])).toEqual([]);
+  });
+});
+
 describe('InMemoryIntelRepository.upsertResult', () => {
   it('inserts a new bid and reports the action', async () => {
     const repo = new InMemoryIntelRepository();

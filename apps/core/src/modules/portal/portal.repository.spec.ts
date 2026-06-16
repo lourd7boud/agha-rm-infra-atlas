@@ -127,6 +127,29 @@ describe('InMemoryPortalRepository.upsertCaution', () => {
     expect(await repo.listCautions(10)).toHaveLength(1);
   });
 
+  it('dedupes two amount-less (brouillon) cautions of the same ref+deadline', async () => {
+    // Arrange — a brouillon caution has no amount yet; folding NULL → 0 in the key
+    // must collapse both harvests onto ONE row, mirroring the Postgres index
+    // coalesce(amount_mad, 0) (NULL <> NULL would otherwise duplicate every run).
+    const repo = new InMemoryPortalRepository();
+    await repo.upsertCaution({
+      reference: 'AO-12/2026',
+      deadlineAt: DEADLINE,
+      bankName: 'BMCE',
+    });
+
+    // Act — same ref + deadline, still no amount.
+    const action = await repo.upsertCaution({
+      reference: 'AO-12/2026',
+      deadlineAt: DEADLINE,
+      statut: 'brouillon',
+    });
+
+    // Assert — updated in place, never a second row.
+    expect(action).toBe('updated');
+    expect(await repo.listCautions(10)).toHaveLength(1);
+  });
+
   it('treats a different amount as a distinct caution', async () => {
     // Arrange
     const repo = new InMemoryPortalRepository();

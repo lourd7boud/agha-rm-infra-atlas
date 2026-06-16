@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { competitorBids, competitors } from '../../db/schema';
 import { normalizeFr } from '../tender/qualifier.domain';
@@ -50,6 +50,18 @@ export interface IntelRepository {
     competitorId: string,
   ): Promise<'inserted' | 'updated'>;
   listResults(limit: number): Promise<CompetitorBidRecord[]>;
+  /**
+   * Returns only the WINNER bids (`isWinner`) whose reference matches one of the
+   * given canonical reference keys (folded with {@link canonicalReferenceKey}:
+   * lowercased, every non-alphanumeric run collapsed to a single space, trimmed).
+   * Used by the portal outcome reconciliation to join OUR soumissions to the
+   * published attributions WITHOUT scanning the whole competitor_bid table — the
+   * old fixed limit silently dropped winners past the ceiling, producing false
+   * 'en_attente' verdicts as the dataset grew. An empty input yields an empty list.
+   */
+  findWinnersByReferences(
+    canonicalKeys: readonly string[],
+  ): Promise<CompetitorBidRecord[]>;
   listCompetitorStats(): Promise<CompetitorStats[]>;
   /** C2: full dossier for one competitor, null when unknown. */
   getProfile(competitorId: string): Promise<CompetitorProfile | null>;
@@ -76,6 +88,40 @@ function bidToObservation(bid: {
   };
 }
 
+/** Shape of a competitor_bid row as returned by `db.select().from(competitorBids)`. */
+type CompetitorBidRow = {
+  id: string;
+  reference: string;
+  buyerName: string;
+  bidderName: string;
+  competitorId: string | null;
+  amountMad: string | null;
+  estimationMad: string | null;
+  objet: string | null;
+  isWinner: boolean;
+  resultDate: Date | null;
+  sourceUrl: string | null;
+  createdAt: Date;
+};
+
+/** Maps a raw competitor_bid row to the domain record (numerics back to numbers). */
+function mapBidRow(row: CompetitorBidRow): CompetitorBidRecord {
+  return {
+    id: row.id,
+    reference: row.reference,
+    buyerName: row.buyerName,
+    bidderName: row.bidderName,
+    competitorId: row.competitorId ?? '',
+    amountMad: row.amountMad ? Number(row.amountMad) : undefined,
+    estimationMad: row.estimationMad ? Number(row.estimationMad) : undefined,
+    objet: row.objet ?? undefined,
+    isWinner: row.isWinner,
+    resultDate: row.resultDate ?? undefined,
+    sourceUrl: row.sourceUrl ?? undefined,
+    createdAt: row.createdAt,
+  };
+}
+
 /** Drizzle insert row for a competitor bid (numerics stored as strings). */
 function bidInsertValues(result: PublishedResult, competitorId: string) {
   return {
@@ -97,6 +143,23 @@ export function normalizeCompanyName(rawName: string): string {
   return normalizeFr(rawName)
     .replace(/[.,]/g, ' ')
     .replace(/\b(s\s?a\s?r\s?l|sarl|sa|s\s?a|ste|societe|au)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Canonical join key for a market référence. The same market arrives from two
+ * independent paths (our authenticated "Mes réponses" listing vs the public
+ * result crawler) as short codes like "62/2025/DP A/IF", so case, spacing and
+ * punctuation drift. Folding case + collapsing every non-alphanumeric run to a
+ * single space keeps both sides agreeing on what "the same market" is. Lives
+ * here (next to normalizeCompanyName) so the SQL canonicalizer in
+ * findWinnersByReferences and the in-memory matcher share ONE definition with
+ * the portal outcome domain, which re-exports it.
+ */
+export function canonicalReferenceKey(reference: string): string {
+  return normalizeFr(reference)
+    .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -173,6 +236,16 @@ export class InMemoryIntelRepository implements IntelRepository {
     return [...this.bids]
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, limit);
+  }
+
+  async findWinnersByReferences(
+    canonicalKeys: readonly string[],
+  ): Promise<CompetitorBidRecord[]> {
+    if (canonicalKeys.length === 0) return [];
+    const wanted = new Set(canonicalKeys);
+    return this.bids.filter(
+      (bid) => bid.isWinner && wanted.has(canonicalReferenceKey(bid.reference)),
+    );
   }
 
   async listCompetitorStats(): Promise<CompetitorStats[]> {
@@ -285,20 +358,29 @@ export class DrizzleIntelRepository implements IntelRepository {
       .from(competitorBids)
       .orderBy(desc(competitorBids.createdAt))
       .limit(limit);
-    return rows.map((row) => ({
-      id: row.id,
-      reference: row.reference,
-      buyerName: row.buyerName,
-      bidderName: row.bidderName,
-      competitorId: row.competitorId ?? '',
-      amountMad: row.amountMad ? Number(row.amountMad) : undefined,
-      estimationMad: row.estimationMad ? Number(row.estimationMad) : undefined,
-      objet: row.objet ?? undefined,
-      isWinner: row.isWinner,
-      resultDate: row.resultDate ?? undefined,
-      sourceUrl: row.sourceUrl ?? undefined,
-      createdAt: row.createdAt,
-    }));
+    return rows.map(mapBidRow);
+  }
+
+  async findWinnersByReferences(
+    canonicalKeys: readonly string[],
+  ): Promise<CompetitorBidRecord[]> {
+    if (canonicalKeys.length === 0) return [];
+    // Fold the stored reference the SAME way canonicalReferenceKey does in TS:
+    // lowercase, collapse every non-alphanumeric run to one space, trim. Matching
+    // on the canonical key (not the raw reference) means our soumission and the
+    // public attribution agree even when case/spacing/punctuation drift, and the
+    // query is bounded by the submission set instead of a fixed row ceiling.
+    const canonical = sql`btrim(regexp_replace(lower(${competitorBids.reference}), '[^a-z0-9]+', ' ', 'g'))`;
+    const rows = await this.db
+      .select()
+      .from(competitorBids)
+      .where(
+        and(
+          eq(competitorBids.isWinner, true),
+          inArray(canonical, [...canonicalKeys]),
+        ),
+      );
+    return rows.map(mapBidRow);
   }
 
   async listCompetitorStats(): Promise<CompetitorStats[]> {
@@ -334,20 +416,7 @@ export class DrizzleIntelRepository implements IntelRepository {
       .select()
       .from(competitorBids)
       .where(eq(competitorBids.competitorId, competitorId));
-    const bids: CompetitorBidRecord[] = rows.map((row) => ({
-      id: row.id,
-      reference: row.reference,
-      buyerName: row.buyerName,
-      bidderName: row.bidderName,
-      competitorId: row.competitorId ?? '',
-      amountMad: row.amountMad ? Number(row.amountMad) : undefined,
-      estimationMad: row.estimationMad ? Number(row.estimationMad) : undefined,
-      objet: row.objet ?? undefined,
-      isWinner: row.isWinner,
-      resultDate: row.resultDate ?? undefined,
-      sourceUrl: row.sourceUrl ?? undefined,
-      createdAt: row.createdAt,
-    }));
+    const bids: CompetitorBidRecord[] = rows.map(mapBidRow);
 
     return buildCompetitorProfile(
       {

@@ -182,6 +182,21 @@ describe('PortalAuthSession login', () => {
       session.authedFetch('https://portal.test/protected'),
     ).rejects.not.toThrow(/secret-pw/);
   });
+
+  test('refuses to fetch a URL off the session origin (no cookie exfiltration)', async () => {
+    const fetchImpl = vi.fn(async () => htmlResponse(LOGIN_PAGE, ['PHPSESSID=x']));
+    const session = new PortalAuthSession({
+      ...CREDS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      baseUrl: 'https://portal.test/',
+    });
+
+    await expect(
+      session.authedFetch('https://evil.example/steal'),
+    ).rejects.toThrow(/off-origin/i);
+    // It must reject BEFORE any network call (no login, no cookie sent anywhere).
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 describe('PortalAuthSession session expiry', () => {

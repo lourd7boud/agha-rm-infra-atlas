@@ -107,6 +107,17 @@ function sameDeadline(a?: Date, b?: Date): boolean {
   return a.getTime() === b.getTime();
 }
 
+/**
+ * Caution amount comparison for the unique key. Mirrors the index expression
+ * `coalesce(amount_mad, 0)`: a missing amount (the brouillon case) folds to 0,
+ * so two amount-less cautions for the same (reference, deadline) are treated as
+ * the SAME row here — matching Postgres, where the COALESCE fold makes them
+ * conflict instead of inserting a duplicate on every harvest.
+ */
+function sameCautionAmount(a?: number, b?: number): boolean {
+  return (a ?? 0) === (b ?? 0);
+}
+
 /** Drizzle insert row for a submission (numerics N/A; dates pass through). */
 function submissionInsertValues(input: PortalSubmissionInput) {
   return {
@@ -123,7 +134,11 @@ function submissionInsertValues(input: PortalSubmissionInput) {
   };
 }
 
-/** Drizzle insert row for a caution (amount stored as string). */
+/**
+ * Drizzle insert row for a caution (amount stored as string). A missing amount
+ * (the brouillon case) is written as the 0 sentinel so it can anchor the unique
+ * index — see the index note in schema.ts; listCautions maps 0 back to undefined.
+ */
 function cautionInsertValues(input: PortalCautionInput) {
   return {
     reference: input.reference,
@@ -134,7 +149,7 @@ function cautionInsertValues(input: PortalCautionInput) {
     deadlineAt: input.deadlineAt,
     bankName: input.bankName,
     intitule: input.intitule,
-    amountMad: input.amountMad?.toString(),
+    amountMad: (input.amountMad ?? 0).toString(),
     statut: input.statut,
     demandeFile: input.demandeFile,
     consultationId: input.consultationId,
@@ -191,7 +206,7 @@ export class InMemoryPortalRepository implements PortalRepository {
       (row) =>
         row.reference === input.reference &&
         sameDeadline(row.deadlineAt, input.deadlineAt) &&
-        row.amountMad === input.amountMad,
+        sameCautionAmount(row.amountMad, input.amountMad),
     );
     const now = new Date();
     if (index === -1) {
@@ -275,7 +290,10 @@ export class DrizzlePortalRepository implements PortalRepository {
     input: PortalCautionInput,
   ): Promise<'inserted' | 'updated'> {
     // Same back-fill-only contract as submissions, keyed on the
-    // (reference, deadline_at, amount_mad) unique index.
+    // (reference, deadline_at, amount_mad) unique index. cautionInsertValues
+    // writes the 0 sentinel for a missing amount (a brouillon caution), so the
+    // amount column is never NULL and the conflict actually fires — NULL <> NULL
+    // would otherwise let every harvest INSERT a fresh duplicate.
     const [row] = await this.db
       .insert(portalCautions)
       .values(cautionInsertValues(input))
@@ -342,7 +360,10 @@ export class DrizzlePortalRepository implements PortalRepository {
       deadlineAt: row.deadlineAt ?? undefined,
       bankName: row.bankName ?? undefined,
       intitule: row.intitule ?? undefined,
-      amountMad: row.amountMad ? Number(row.amountMad) : undefined,
+      // amount_mad is NOT NULL with a 0 sentinel for "no amount" (brouillon), so
+      // the column arrives as e.g. "0" / "7700.00". `Number(...) || undefined`
+      // restores the absent-amount semantics: 0 → undefined, positive → number.
+      amountMad: Number(row.amountMad) || undefined,
       statut: row.statut ?? undefined,
       demandeFile: row.demandeFile ?? undefined,
       consultationId: row.consultationId ?? undefined,

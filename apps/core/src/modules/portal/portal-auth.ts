@@ -94,6 +94,10 @@ export class PortalAuthSession {
    * exactly once before retrying. Returns the page HTML.
    */
   async authedFetch(url: string): Promise<string> {
+    // Defence in depth: only ever send the session cookie to the portal origin
+    // this session authenticated against. Neutralises an env-injected off-origin
+    // URL (e.g. a tampered MES_CAUTIONS_URL) from exfiltrating the cookie.
+    this.assertSameOrigin(url);
     if (!this.cookie) {
       this.cookie = await this.authenticate();
     }
@@ -168,6 +172,15 @@ export class PortalAuthSession {
     });
     if (!res.ok) throw new Error(`Portal fetch failed: HTTP ${res.status}`);
     return res.text();
+  }
+
+  /** Reject any URL whose host differs from the authenticated origin. */
+  private assertSameOrigin(url: string): void {
+    if (new URL(url).host !== new URL(this.baseUrl).host) {
+      throw new Error(
+        `PortalAuthSession refuses to fetch off-origin (${new URL(url).host})`,
+      );
+    }
   }
 }
 

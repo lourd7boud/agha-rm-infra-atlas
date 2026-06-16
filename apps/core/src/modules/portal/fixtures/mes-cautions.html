@@ -1,0 +1,102 @@
+<!-- SYNTHETIC fixture modelling the PMMP (marchespublics.gov.ma) authenticated
+     "Mes cautions" page (page=entreprise.MesCautions). Real HTML could NOT be
+     captured (a browser guardrail blocked extraction), so this faithfully models
+     the portal's PRADO results-table conventions — study the real tag/class idiom
+     in ../../watch/fixtures/pmmp-results.html and watch.parser.ts. The parser
+     (mes-cautions.parser.ts) NEEDS a live-HTML validation pass on first real run;
+     until then these synthetic values guard against layout drift.
+
+     Per data row, stacked cells:
+       1) Référence + Procédure + Catégorie
+       2) Objet + Organisme + "Date limite de remise des plis"
+       3) Banque + optional RIB/compte + Intitulé + Montant + Demande PDF
+       4) Statut
+       5) Actions
+     Footer: "Nombre de résultats : N". -->
+<html>
+<body>
+<div id="content">
+  <table id="ctl0_CONTENU_PAGE_resultSearch_tableauMesCautions" class="table-results" summary="mes cautions">
+    <thead>
+      <tr>
+        <th>Référence</th>
+        <th>Objet</th>
+        <th>Caution</th>
+        <th>Statut</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- Row 1 — Validée par la banque, with a RIB/compte line. -->
+      <tr>
+        <td class="ref">
+          Référence : 01/2026<br />
+          Procédure : AOO ouvert
+          <div class="categorie">Catégorie : Travaux</div>
+        </td>
+        <td class="objet">
+          Objet : Travaux de construction d'un pont sur oued N'Fis<br />
+          Organisme : Direction Régionale de l'Équipement de Marrakech<br />
+          Date limite de remise des plis : 06/04/2026 10:00
+        </td>
+        <td class="caution">
+          Banque : Caisse de Dépôt et de Gestion<br />
+          Compte : 013010011450000280019496<br />
+          Intitulé : CAUTION PROVISOIRE<br />
+          Montant : 7&nbsp;700,00 MAD<br />
+          <a href="index.php?page=entreprise.DownloadDemandeCaution&amp;id=1191740">Demande_Caution_CDG_1191740.pdf</a>
+        </td>
+        <td class="statut">Validée par la banque</td>
+        <td class="actions">-</td>
+      </tr>
+      <!-- Row 2 — Rejetée par la banque, no RIB, larger montant. -->
+      <tr>
+        <td class="ref">
+          Référence : 62/2025/DP A/IF<br />
+          Procédure : AOS sur offre
+          <div class="categorie">Catégorie : Fournitures</div>
+        </td>
+        <td class="objet">
+          Objet : Fourniture et pose de conduites PEHD pour l'irrigation localisée<br />
+          Organisme : ORMVA de Ouarzazate<br />
+          Date limite de remise des plis : 14/07/2026 11:00
+        </td>
+        <td class="caution">
+          Banque : Banque marocaine pour le commerce et l'industrie<br />
+          Intitulé : caution provisoire<br />
+          Montant : 1&nbsp;177&nbsp;913,89 MAD<br />
+          <a href="index.php?page=entreprise.DownloadDemandeCaution&amp;id=1188002">Demande_Caution_BMCI_1188002.pdf</a>
+        </td>
+        <td class="statut">Rejetée par la banque</td>
+        <td class="actions">-</td>
+      </tr>
+      <!-- Row 3 — Brouillon: minimal, no montant, no demande PDF. -->
+      <tr>
+        <td class="ref">
+          Référence : 03/2026/AUAM<br />
+          Procédure : AOO ouvert
+          <div class="categorie">Catégorie : Services</div>
+        </td>
+        <td class="objet">
+          Objet : Études architecturales pour la construction d'un centre socio-culturel<br />
+          Organisme : Agence Urbaine d'Agadir<br />
+          Date limite de remise des plis : 21/07/2026 12:00
+        </td>
+        <td class="caution">
+          Banque : Caisse de Dépôt et de Gestion<br />
+          Intitulé : CAUTION PROVISOIRE
+        </td>
+        <td class="statut">Brouillon</td>
+        <td class="actions">-</td>
+      </tr>
+      <!-- Corrupted row — too few cells, must be skipped (never throw). -->
+      <tr>
+        <td class="ref">Référence : corrupted row without enough cells</td>
+        <td class="objet">should be skipped by the parser</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="pager">Nombre de résultats : 3</div>
+</div>
+</body>
+</html>

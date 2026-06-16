@@ -404,7 +404,12 @@ export const portalCautions = portal.table(
     deadlineAt: timestamp('deadline_at', { withTimezone: true }),
     bankName: text('bank_name'),
     intitule: text('intitule'),
-    amountMad: numeric('amount_mad', { precision: 14, scale: 2 }),
+    // NOT NULL with a 0 sentinel so it can anchor the unique index (NULL <> NULL
+    // would defeat dedup for amount-less brouillon cautions). 0 reads back as
+    // "no amount" — see listCautions and the unique-index note below.
+    amountMad: numeric('amount_mad', { precision: 14, scale: 2 })
+      .notNull()
+      .default('0'),
     statut: text('statut'),
     demandeFile: text('demande_file'),
     consultationId: text('consultation_id'),
@@ -415,6 +420,17 @@ export const portalCautions = portal.table(
   (table) => [
     // Same recurring-reference caveat as submissions; the amount further
     // distinguishes multiple cautions filed against one consultation.
+    //
+    // amount_mad is NOT NULL with a 0 default so it can sit in the unique key:
+    // a brouillon caution carries no amount yet, and in Postgres NULL <> NULL
+    // inside a unique index would let two amount-less rows for the same
+    // (reference, deadline) escape the conflict, duplicating on every harvest.
+    // The sentinel 0 (a real caution is always a positive guarantee) collapses
+    // all amount-less rows for one (reference, deadline) into a single conflict
+    // group while preserving distinct positive amounts. listCautions maps 0 back
+    // to `undefined` on read, so callers still see "no amount". The repository
+    // upsert writes 0 for a missing amount and the in-memory matcher folds the
+    // same way, keeping both implementations identical.
     uniqueIndex('portal_caution_ref_deadline_amount_uniq').on(
       table.reference,
       table.deadlineAt,
