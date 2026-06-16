@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { competitorBids, competitors } from '../../db/schema';
 import { normalizeFr } from '../tender/qualifier.domain';
@@ -234,67 +234,49 @@ export class DrizzleIntelRepository implements IntelRepository {
     result: PublishedResult,
     competitorId: string,
   ): Promise<boolean> {
-    const [existing] = await this.db
-      .select({ id: competitorBids.id })
-      .from(competitorBids)
-      .where(
-        and(
-          eq(competitorBids.reference, result.reference),
-          eq(competitorBids.competitorId, competitorId),
-        ),
-      )
-      .limit(1);
-    if (existing) return false;
-
-    await this.db.insert(competitorBids).values(bidInsertValues(result, competitorId));
-    return true;
+    // Atomic guard on the (reference, competitor_id) unique index: a concurrent
+    // writer that beat us to the row makes this a no-op (no returned id) instead
+    // of a duplicate, replacing the old SELECT-then-INSERT race.
+    const rows = await this.db
+      .insert(competitorBids)
+      .values(bidInsertValues(result, competitorId))
+      .onConflictDoNothing({
+        target: [competitorBids.reference, competitorBids.competitorId],
+      })
+      .returning({ id: competitorBids.id });
+    return rows.length > 0;
   }
 
   async upsertResult(
     result: PublishedResult,
     competitorId: string,
   ): Promise<'inserted' | 'updated'> {
-    const [existing] = await this.db
-      .select({
-        id: competitorBids.id,
-        buyerName: competitorBids.buyerName,
-        amountMad: competitorBids.amountMad,
-        estimationMad: competitorBids.estimationMad,
-        objet: competitorBids.objet,
-        isWinner: competitorBids.isWinner,
+    // One atomic INSERT … ON CONFLICT keyed on the (reference, competitor_id)
+    // unique index, so the result-crawler harvest and the PV harvest can race
+    // without producing a duplicate row that would double-count a winner in the
+    // rebate calibration. The SET clause is back-fill only — identical semantics
+    // to the old read-modify-write: a non-null incoming value enriches the row,
+    // an incoming null never erases what an earlier crawl learned (COALESCE
+    // keeps the existing value), the winner flag is sticky (OR), and a real
+    // buyer name replaces the 'Acheteur non précisé' placeholder. `excluded` is
+    // the row we tried to insert; the bare column is the row already stored.
+    // (xmax = 0) is the Postgres idiom for "this RETURNING row was freshly
+    // inserted" — xmax is 0 on a plain INSERT and non-zero after a DO UPDATE.
+    const [row] = await this.db
+      .insert(competitorBids)
+      .values(bidInsertValues(result, competitorId))
+      .onConflictDoUpdate({
+        target: [competitorBids.reference, competitorBids.competitorId],
+        set: {
+          buyerName: sql`case when excluded.buyer_name <> ${UNKNOWN_BUYER_LABEL} then excluded.buyer_name else ${competitorBids.buyerName} end`,
+          amountMad: sql`coalesce(excluded.amount_mad, ${competitorBids.amountMad})`,
+          estimationMad: sql`coalesce(excluded.estimation_mad, ${competitorBids.estimationMad})`,
+          objet: sql`coalesce(excluded.objet, ${competitorBids.objet})`,
+          isWinner: sql`${competitorBids.isWinner} or excluded.is_winner`,
+        },
       })
-      .from(competitorBids)
-      .where(
-        and(
-          eq(competitorBids.reference, result.reference),
-          eq(competitorBids.competitorId, competitorId),
-        ),
-      )
-      .limit(1);
-
-    if (!existing) {
-      await this.db
-        .insert(competitorBids)
-        .values(bidInsertValues(result, competitorId));
-      return 'inserted';
-    }
-
-    // Back-fill only: a non-null new value enriches the row; nulls never erase
-    // what an earlier crawl already learned. A real buyer name beats the placeholder.
-    await this.db
-      .update(competitorBids)
-      .set({
-        buyerName:
-          result.buyerName !== UNKNOWN_BUYER_LABEL
-            ? result.buyerName
-            : existing.buyerName,
-        amountMad: result.amountMad?.toString() ?? existing.amountMad,
-        estimationMad: result.estimationMad?.toString() ?? existing.estimationMad,
-        objet: result.objet ?? existing.objet,
-        isWinner: existing.isWinner || result.isWinner,
-      })
-      .where(eq(competitorBids.id, existing.id));
-    return 'updated';
+      .returning({ inserted: sql<boolean>`(xmax = 0)` });
+    return row?.inserted ? 'inserted' : 'updated';
   }
 
   async listResults(limit: number): Promise<CompetitorBidRecord[]> {
