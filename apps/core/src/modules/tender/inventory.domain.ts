@@ -91,6 +91,43 @@ export function inferRegion(buyerName: string, objet = ''): string | null {
   return null;
 }
 
+/**
+ * Ouvrage segment (famille de travaux) inferred from the objet — the axis every
+ * price/rebate distribution is later sliced on. Deterministic keyword match,
+ * ordered specific → general; first family with a hit wins, else 'autre'.
+ * Extend the keyword lists as new objets appear.
+ */
+const SEGMENT_KEYWORDS: ReadonlyArray<
+  readonly [segment: string, keywords: readonly string[]]
+> = [
+  ['assainissement', ['assainissement', 'eaux usees', "station d'epuration", 'station d epuration', 'step', 'collecteur', 'egout', 'eaux pluviales']],
+  ['eau_potable', ['eau potable', 'aep', 'adduction', 'alimentation en eau', "chateau d'eau", 'chateau d eau', 'conduite d eau', 'distribution d eau']],
+  ['irrigation', ['irrigation', 'perimetre', 'goutte a goutte', 'aspersion', 'seguia', 'hydro agricole', 'hydro-agricole', 'reseau d irrigation', 'pmh']],
+  ['barrage', ['barrage', 'digue', 'retenue collinaire', 'protection contre les inondations', 'protection contre les crues']],
+  ['forage', ['forage', 'puits', 'captage', 'sondage', 'piezometre']],
+  ['routes', ['voirie', 'chaussee', "ouvrage d'art", 'ouvrage d art', 'amenagement urbain', 'trottoir', 'route', 'piste']],
+  ['electricite', ['electrification', 'electrique', 'eclairage', 'photovoltaique', 'pompage solaire', 'poste de transformation']],
+  ['batiment', ['batiment', 'ecole', 'logement', 'salle de', 'centre de sante', 'dispensaire', 'mur de cloture', 'cloture']],
+  ['genie_civil', ['genie civil', 'terrassement', 'beton arme', 'rehabilitation', 'amenagement', 'travaux divers']],
+  ['etudes', ['etude', "maitrise d'oeuvre", 'maitrise d oeuvre', 'assistance technique', 'suivi et controle', 'topographi', 'expertise']],
+  ['fourniture', ['fourniture', 'acquisition', 'equipement', 'materiel', 'gardiennage', 'nettoyage', 'location']],
+];
+
+const SEGMENT_MATCHERS: ReadonlyArray<
+  readonly [segment: string, matchers: RegExp[]]
+> = SEGMENT_KEYWORDS.map(([segment, keywords]) => [
+  segment,
+  keywords.map(buildMatcher),
+]);
+
+export function inferSegment(objet: string, buyerName = ''): string {
+  const haystack = normalize(`${objet} ${buyerName}`);
+  for (const [segment, matchers] of SEGMENT_MATCHERS) {
+    if (matchers.some((re) => re.test(haystack))) return segment;
+  }
+  return 'autre';
+}
+
 export interface InventoryFilters {
   procedure?: TenderProcedure;
   buyer?: string;

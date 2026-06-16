@@ -63,6 +63,10 @@ import {
   type OutcomeRecord,
   type OutcomeRepository,
 } from './ledger.repository';
+import {
+  buildBuyerProfile,
+  buildBuyerProfiles,
+} from './buyer-observatory.domain';
 
 const transitionBodySchema = z.object({ to: pipelineStateSchema });
 const inventoryQuerySchema = z.object({
@@ -239,6 +243,24 @@ export class TenderController {
     const { limit, offset, ...filters } = parsed.data;
     const records = await this.repository.findAll();
     return buildInventory(records, filters, new Date(), { limit, offset });
+  }
+
+  /** Buyer Observatory: aggregated demand-side profile of every acheteur. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Get('buyers')
+  async buyers() {
+    const records = await this.repository.findAll();
+    return buildBuyerProfiles(records);
+  }
+
+  /** One buyer's profile (exact name, URL-encoded). */
+  @Roles('marches', 'direction', 'admin-si')
+  @Get('buyers/:name')
+  async buyer(@Param('name') name: string) {
+    const records = await this.repository.findAll();
+    const profile = buildBuyerProfile(records, name);
+    if (!profile) throw new NotFoundException(`Buyer not found: ${name}`);
+    return profile;
   }
 
   /** Full dossier (incl. G1 brief) — restricted to the decision circle. */
