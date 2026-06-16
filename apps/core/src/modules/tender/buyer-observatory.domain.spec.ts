@@ -4,6 +4,7 @@ import { inferSegment } from './inventory.domain';
 import {
   buildBuyerProfile,
   buildBuyerProfiles,
+  buildMarketContext,
 } from './buyer-observatory.domain';
 import type { TenderRecord } from './tender.repository';
 
@@ -90,5 +91,28 @@ describe('buildBuyerProfile', () => {
     const tenders = [tender({ buyerName: 'Commune X', objet: 'Forage de puits' })];
     expect(buildBuyerProfile(tenders, 'Commune X')?.tenderCount).toBe(1);
     expect(buildBuyerProfile(tenders, 'Inconnue')).toBeNull();
+  });
+});
+
+describe('buildMarketContext', () => {
+  it('gives the Strategist the segment + the buyer demand profile', () => {
+    const history = [
+      tender({ buyerName: 'ORMVA du Souss Massa', objet: "Travaux d'irrigation", estimationMad: 2_000_000 }),
+      tender({ buyerName: 'ORMVA du Souss Massa', objet: 'Adduction eau potable' }),
+    ];
+    const subject = tender({ buyerName: 'ORMVA du Souss Massa', objet: "Réseau d'irrigation Souss" });
+    const ctx = buildMarketContext(subject, history);
+    expect(ctx.segment).toBe('irrigation');
+    expect(ctx.profilAcheteur?.region).toBe('Souss-Massa');
+    expect(ctx.profilAcheteur?.nbAppelsObserves).toBe(2);
+  });
+
+  it('returns a null buyer profile for an unseen acheteur', () => {
+    const ctx = buildMarketContext(
+      { buyerName: 'Nouveau Maître', objet: 'Forage de puits' },
+      [],
+    );
+    expect(ctx.profilAcheteur).toBeNull();
+    expect(ctx.segment).toBe('forage');
   });
 });

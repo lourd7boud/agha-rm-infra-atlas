@@ -109,3 +109,46 @@ export function buildBuyerProfile(
   const group = tenders.filter((t) => t.buyerName === buyerName);
   return group.length > 0 ? profileFor(buyerName, group) : null;
 }
+
+export interface MarketContext {
+  segment: string;
+  profilAcheteur: {
+    region: string;
+    nbAppelsObserves: number;
+    appelsActifs: number;
+    proceduresFrequentes: CountEntry[];
+    famillesOuvrage: CountEntry[];
+    estimationMoyenneObserveeMad: number | null;
+  } | null;
+  note: string;
+}
+
+/**
+ * The market context injected into the Strategist's Go/No-Go dossier so it stops
+ * deciding blind: the ouvrage segment + the demand-side profile of this buyer,
+ * derived from observed history. Rebate bands and the expected competitive field
+ * fill in here as results are recorded (the learning surface grows in place).
+ */
+export function buildMarketContext(
+  tender: Pick<TenderRecord, 'buyerName' | 'objet'>,
+  allTenders: readonly TenderRecord[],
+): MarketContext {
+  const profile = buildBuyerProfile(allTenders, tender.buyerName);
+  return {
+    segment: inferSegment(tender.objet, tender.buyerName),
+    profilAcheteur: profile
+      ? {
+          region: profile.region,
+          nbAppelsObserves: profile.tenderCount,
+          appelsActifs: profile.activeCount,
+          proceduresFrequentes: profile.procedures.slice(0, 3),
+          famillesOuvrage: profile.topSegments,
+          estimationMoyenneObserveeMad: profile.avgEstimationMad,
+        }
+      : null,
+    note:
+      "Profil acheteur dérivé de l'historique observé. Les distributions de " +
+      "rabais gagnant et le champ concurrentiel attendu s'ajouteront à mesure " +
+      'que les résultats des marchés sont saisis.',
+  };
+}

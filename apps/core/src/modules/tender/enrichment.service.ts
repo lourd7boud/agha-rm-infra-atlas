@@ -24,6 +24,7 @@ import {
   type TenderRecord,
   type TenderRepository,
 } from './tender.repository';
+import { buildMarketContext } from './buyer-observatory.domain';
 
 export interface EnrichmentSummary {
   tenderId: string;
@@ -124,6 +125,9 @@ export class EnrichmentService {
   async generateG1Brief(id: string): Promise<BriefOutcome> {
     const llm = this.requireLlm();
     const tender = await this.requireTender(id);
+    // Market context so the Strategist stops deciding blind: the ouvrage
+    // segment + this buyer's demand profile, derived from observed history.
+    const allTenders = await this.repository.findAll();
 
     const dossier = {
       fiche: {
@@ -137,6 +141,7 @@ export class EnrichmentService {
         etatPipeline: tender.pipelineState,
       },
       qualificationAutomatique: tender.qualification,
+      marcheIntel: buildMarketContext(tender, allTenders),
       retroPlanning: buildBackPlan(tender.deadlineAt, new Date()),
       profilEntreprise: {
         plafondEstimationMad: AGHA_PROFILE.maxEstimationMad,
