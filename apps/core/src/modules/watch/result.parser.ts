@@ -49,9 +49,8 @@ export function parseFormFields(formHtml: string): Record<string, string> {
       /<option[^>]*value="([^"]*)"/i.exec(body);
     fields[s[1] as string] = selected?.[1] ?? '';
   }
-  for (const t of formHtml.matchAll(/<textarea\b[^>]*name="([^"]*)"[^>]*>([\s\S]*?)<\/textarea>/gi)) {
-    fields[t[1] as string] = decodeHtml(t[2] ?? '');
-  }
+  // Textareas are deliberately NOT submitted: the form's keyword textarea carries
+  // a placeholder that, when posted, filters the result search down to zero.
   return fields;
 }
 

@@ -59,7 +59,9 @@ export const RESULT_VISION_PROMPT =
   'Extrais STRICTEMENT en JSON, sans aucun texte autour: ' +
   '{"attributaire": raison sociale du soumissionnaire retenu (string) ou null, ' +
   '"acheteur": maître d\'ouvrage / acheteur public ou null, ' +
-  '"montant_attribue_mad": montant de l\'attribution en dirhams (number) ou null, ' +
+  '"montant_attribue_mad": montant de l\'attribution en dirhams — lis avec PRÉCISION ' +
+  'la virgule décimale; les espaces sont des séparateurs de milliers, PAS la virgule ' +
+  '(ex: "1 177 913,89" = 1177913.89, surtout pas un milliard) (number) ou null, ' +
   '"estimation_mad": estimation administrative si présente (number) ou null, ' +
   '"objet": objet du marché (court) ou null, ' +
   '"lisible": true si l\'image est lisible sinon false}.';

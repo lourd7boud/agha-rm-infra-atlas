@@ -6,6 +6,7 @@ import {
 } from '../tender/tender.repository';
 import { decideSnapshot } from './snapshot.domain';
 import { DetailCrawlerService } from './detail.crawler';
+import { ResultCrawlerService } from './result.crawler';
 import {
   SNAPSHOT_REPOSITORY,
   type SnapshotRepository,
@@ -71,6 +72,9 @@ export class WatchService {
     @Optional()
     @Inject(DetailCrawlerService)
     private readonly detailCrawler: DetailCrawlerService | null = null,
+    @Optional()
+    @Inject(ResultCrawlerService)
+    private readonly resultCrawler: ResultCrawlerService | null = null,
   ) {
     // Defensive finite guards: a poisoned env (NaN) must not silently disable
     // the crawl (page <= NaN is false → zero fetches) or the politeness delay.
@@ -205,6 +209,16 @@ export class WatchService {
         this.logger.error(
           `detail enrichment failed: ${(error as Error).message}`,
         );
+      }
+    }
+    // Stage-3: harvest a few published results (vision-read scanned notices →
+    // competitor wins). Bounded to cap vision cost; failures never fail the run.
+    if (this.resultCrawler) {
+      try {
+        const results = await this.resultCrawler.crawlOnce({ maxResults: 3 });
+        this.logger.log(`result harvest ${JSON.stringify(results)}`);
+      } catch (error) {
+        this.logger.error(`result harvest failed: ${(error as Error).message}`);
       }
     }
     return summary;
