@@ -94,3 +94,43 @@ export const tenderSchema = tenderInputSchema.extend({
   createdAt: z.coerce.date(),
 });
 export type Tender = z.infer<typeof tenderSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Submission outcome — the reward signal (Phase 0, "socle de vérité").
+// Capturing the real result of OUR bids is the precondition of every learning
+// loop: without the predicted↔real couple, no calibration is possible.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const SUBMISSION_RESULTS = ['won', 'lost', 'ecarte'] as const;
+export const submissionResultSchema = z.enum(SUBMISSION_RESULTS);
+export type SubmissionResult = z.infer<typeof submissionResultSchema>;
+
+export const PRICE_SCENARIOS = ['prudent', 'equilibre', 'agressif'] as const;
+export const priceScenarioSchema = z.enum(PRICE_SCENARIOS);
+export type PriceScenario = z.infer<typeof priceScenarioSchema>;
+
+export const submissionOutcomeInputSchema = z.object({
+  result: submissionResultSchema,
+  /** What WE submitted — the prediction half of the couple. */
+  montantSoumisMad: z.number().nonnegative().optional(),
+  rabaisRetenuPct: z.number().min(0).max(100).optional(),
+  scenarioChoisi: priceScenarioSchema.optional(),
+  /** The reality half — filled after the plis are opened. */
+  ourRank: z.number().int().positive().optional(),
+  winnerAmountMad: z.number().nonnegative().optional(),
+  motifRejet: z.string().max(2000).optional(),
+  lessons: z.array(z.string().max(500)).max(20).optional(),
+  decidedAt: z.coerce.date().optional(),
+});
+export type SubmissionOutcomeInput = z.infer<typeof submissionOutcomeInputSchema>;
+
+export const submissionOutcomeSchema = submissionOutcomeInputSchema.extend({
+  id: z.string().uuid(),
+  tenderId: z.string().uuid(),
+  /** Derived: how far above the winner we landed, in %. */
+  gapToFirstPct: z.number().nullable(),
+  /** Derived: the founding metric — (estimation − winner)/estimation, in %. */
+  recoveredRebatePct: z.number().nullable(),
+  createdAt: z.coerce.date(),
+});
+export type SubmissionOutcome = z.infer<typeof submissionOutcomeSchema>;

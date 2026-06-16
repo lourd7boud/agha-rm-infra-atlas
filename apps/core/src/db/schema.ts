@@ -59,6 +59,9 @@ export const competitorBids = intel.table('competitor_bid', {
   buyerName: text('buyer_name').notNull(),
   bidderName: text('bidder_name').notNull(),
   competitorId: uuid('competitor_id').references(() => competitors.id),
+  // Phase 0: the join key to the avis we saw. Nullable until back-filled by
+  // reference — the estimation↔attribution rebate depends on this link.
+  tenderId: uuid('tender_id').references(() => tenders.id),
   amountMad: numeric('amount_mad', { precision: 14, scale: 2 }),
   isWinner: boolean('is_winner').notNull().default(false),
   resultDate: date('result_date', { mode: 'date' }),
@@ -292,4 +295,40 @@ export const tenders = tender.table('tender', {
   raw: jsonb('raw'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── Phase 0 — Socle de vérité ────────────────────────────────────────────────
+
+// The reward signal: the real result of OUR bids joined to the price we
+// proposed. Without this table no learning loop can close (recon: déficit #0).
+export const submissionOutcomes = tender.table('submission_outcome', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenderId: uuid('tender_id')
+    .notNull()
+    .references(() => tenders.id),
+  result: text('result').notNull(),
+  montantSoumisMad: numeric('montant_soumis_mad', { precision: 14, scale: 2 }),
+  rabaisRetenuPct: numeric('rabais_retenu_pct', { precision: 5, scale: 2 }),
+  scenarioChoisi: text('scenario_choisi'),
+  ourRank: integer('our_rank'),
+  winnerAmountMad: numeric('winner_amount_mad', { precision: 14, scale: 2 }),
+  gapToFirstPct: numeric('gap_to_first_pct', { precision: 7, scale: 2 }),
+  motifRejet: text('motif_rejet'),
+  lessons: jsonb('lessons'),
+  decidedAt: timestamp('decided_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Append-only transition history — replaces the single mutable pipeline_state
+// column so we can measure stage durations and detected→won conversion.
+export const tenderEvents = tender.table('tender_event', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenderId: uuid('tender_id')
+    .notNull()
+    .references(() => tenders.id),
+  fromState: text('from_state'),
+  toState: text('to_state').notNull(),
+  actor: text('actor').notNull(),
+  reason: text('reason'),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
 });

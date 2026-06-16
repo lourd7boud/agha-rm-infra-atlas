@@ -11,14 +11,17 @@ import {
   Param,
   Post,
   Query,
+  Req,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import {
   pipelineStateSchema,
+  submissionOutcomeInputSchema,
   tenderInputSchema,
   tenderProcedureSchema,
 } from '@atlas/contracts';
+import type { AuthenticatedUser } from '../auth/auth.domain';
 import { Roles } from '../auth/auth.module';
 import { getDb } from '../../db/client';
 import { daysUntil } from '../../lib/dates';
@@ -44,6 +47,22 @@ import {
   type TenderRecord,
   type TenderRepository,
 } from './tender.repository';
+import {
+  deriveOutcome,
+  pipelineStateForResult,
+  recoveredRebatePct,
+} from './outcome.domain';
+import {
+  DrizzleEventRepository,
+  DrizzleOutcomeRepository,
+  InMemoryEventRepository,
+  InMemoryOutcomeRepository,
+  OUTCOME_REPOSITORY,
+  TENDER_EVENT_REPOSITORY,
+  type EventRepository,
+  type OutcomeRecord,
+  type OutcomeRepository,
+} from './ledger.repository';
 
 const transitionBodySchema = z.object({ to: pipelineStateSchema });
 const inventoryQuerySchema = z.object({
@@ -66,6 +85,17 @@ function present(record: TenderRecord) {
   return { ...record, daysLeft: daysUntil(record.deadlineAt, new Date()) };
 }
 
+interface RequestWithUser {
+  user?: AuthenticatedUser;
+}
+
+function presentOutcome(outcome: OutcomeRecord, estimationMad?: number) {
+  return {
+    ...outcome,
+    recoveredRebatePct: recoveredRebatePct(estimationMad, outcome.winnerAmountMad),
+  };
+}
+
 @Controller('tender')
 export class TenderController {
   constructor(
@@ -74,6 +104,8 @@ export class TenderController {
     @Inject(EnrichmentService) private readonly enrichment: EnrichmentService,
     @Inject(PricingService) private readonly pricing: PricingService,
     @Inject(VAULT_REPOSITORY) private readonly vault: VaultRepository,
+    @Inject(OUTCOME_REPOSITORY) private readonly outcomes: OutcomeRepository,
+    @Inject(TENDER_EVENT_REPOSITORY) private readonly events: EventRepository,
   ) {}
 
   /** Financial Modeler (B4): G2 pricing scenarios grounded in C1 intel. */
@@ -234,7 +266,11 @@ export class TenderController {
   /** Pipeline gate transition (G0–G3 actions land here). */
   @Roles('direction', 'marches')
   @Post('tenders/:id/transition')
-  async transition(@Param('id') id: string, @Body() body: unknown) {
+  async transition(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Req() request: RequestWithUser,
+  ) {
     const parsed = transitionBodySchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const record = await this.findOr404(id);
@@ -245,7 +281,66 @@ export class TenderController {
     }
     const updated = await this.repository.updateState(id, parsed.data.to);
     if (!updated) throw new NotFoundException(`Tender not found: ${id}`);
+    // Append-only history — every transition becomes a queryable event.
+    await this.events.append({
+      tenderId: id,
+      fromState: record.pipelineState,
+      toState: parsed.data.to,
+      actor: request.user?.username ?? 'dev-mode',
+      reason: 'transition',
+    });
     return present(updated);
+  }
+
+  /**
+   * Record the real outcome of OUR bid — Phase 0 "saisir_resultat" made real.
+   * Persists the reward signal, lands the tender in its terminal state, and
+   * appends the event. This is the data every learning loop depends on.
+   */
+  @Roles('marches', 'direction')
+  @Post('tenders/:id/outcome')
+  async recordOutcome(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Req() request: RequestWithUser,
+  ) {
+    const parsed = submissionOutcomeInputSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const record = await this.findOr404(id);
+
+    const now = new Date();
+    const derived = deriveOutcome(parsed.data, now);
+    const outcome = await this.outcomes.record({ tenderId: id, ...derived });
+
+    const toState = pipelineStateForResult(derived.result);
+    if (record.pipelineState !== toState) {
+      await this.repository.updateState(id, toState);
+      await this.events.append({
+        tenderId: id,
+        fromState: record.pipelineState,
+        toState,
+        actor: request.user?.username ?? 'dev-mode',
+        reason: `outcome:${derived.result}`,
+      });
+    }
+    return presentOutcome(outcome, record.estimationMad);
+  }
+
+  /** The recorded outcome (with the recovered-rebate metric), if any. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Get('tenders/:id/outcome')
+  async outcome(@Param('id') id: string) {
+    const record = await this.findOr404(id);
+    const found = await this.outcomes.findByTender(id);
+    return found ? presentOutcome(found, record.estimationMad) : null;
+  }
+
+  /** The append-only transition history of one tender. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Get('tenders/:id/events')
+  async listEvents(@Param('id') id: string) {
+    await this.findOr404(id);
+    return this.events.listByTender(id);
   }
 
   private async findOr404(id: string): Promise<TenderRecord> {
@@ -267,11 +362,33 @@ const tenderRepositoryProvider = {
   },
 };
 
+const outcomeRepositoryProvider = {
+  provide: OUTCOME_REPOSITORY,
+  useFactory: (): OutcomeRepository => {
+    const url = process.env.DATABASE_URL;
+    return url
+      ? new DrizzleOutcomeRepository(getDb(url))
+      : new InMemoryOutcomeRepository();
+  },
+};
+
+const eventRepositoryProvider = {
+  provide: TENDER_EVENT_REPOSITORY,
+  useFactory: (): EventRepository => {
+    const url = process.env.DATABASE_URL;
+    return url
+      ? new DrizzleEventRepository(getDb(url))
+      : new InMemoryEventRepository();
+  },
+};
+
 @Module({
   imports: [BrainModule, IntelModule, VaultModule],
   controllers: [TenderController],
   providers: [
     tenderRepositoryProvider,
+    outcomeRepositoryProvider,
+    eventRepositoryProvider,
     QualifierService,
     EnrichmentService,
     PricingService,

@@ -85,6 +85,13 @@
       "when": 1781308720706,
       "tag": "0011_sour_marvel_apes",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1781572316708,
+      "tag": "0012_phase0_socle_verite",
+      "breakpoints": true
     }
   ]
 }
