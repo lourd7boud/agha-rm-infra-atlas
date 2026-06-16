@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { parseFormInputs } from './prado';
 
 export interface PortalPage {
   html: string;
@@ -151,26 +152,6 @@ export class HttpPortalSource implements PortalSource {
 
 const USER_AGENT =
   'ATLAS-Sentinel/0.1 (AGHA RM INFRA; veille marchés publics)';
-
-/** Form `<input>` name→value pairs the PRADO postback must replay. */
-function parseFormInputs(html: string): Record<string, string> {
-  const fields: Record<string, string> = {};
-  const re = /<input\b([^>]*)>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(html))) {
-    const tag = m[1] ?? '';
-    const type = (/\btype="([^"]*)"/i.exec(tag)?.[1] ?? 'text').toLowerCase();
-    if (type === 'submit' || type === 'image' || type === 'button') continue;
-    const name = /\bname="([^"]*)"/i.exec(tag)?.[1];
-    if (!name) continue;
-    // Unchecked checkboxes/radios are not submitted by a browser.
-    if ((type === 'checkbox' || type === 'radio') && !/\bchecked\b/i.test(tag)) {
-      continue;
-    }
-    fields[name] = /\bvalue="([^"]*)"/i.exec(tag)?.[1] ?? '';
-  }
-  return fields;
-}
 
 /**
  * Resolves the PRADO postback target for the "next page" pager link. PRADO
