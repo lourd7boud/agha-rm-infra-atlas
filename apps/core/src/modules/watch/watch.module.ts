@@ -10,11 +10,13 @@ import {
   OnModuleInit,
   Param,
   Post,
+  Query,
 } from '@nestjs/common';
 import { Queue, Worker } from 'bullmq';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
 import { TenderModule } from '../tender/tender.module';
+import { DetailCrawlerService } from './detail.crawler';
 import {
   DrizzleSnapshotRepository,
   InMemorySnapshotRepository,
@@ -60,6 +62,8 @@ export class WatchController {
     @Inject(WATCH_QUEUE) private readonly queue: Queue,
     @Inject(SNAPSHOT_REPOSITORY)
     private readonly snapshots: SnapshotRepository,
+    @Inject(DetailCrawlerService)
+    private readonly crawler: DetailCrawlerService,
   ) {}
 
   /** Live-portal coverage report: fetches, changes, items per source. */
@@ -75,6 +79,20 @@ export class WatchController {
   async run() {
     const job = await this.queue.add('run', { trigger: 'manual' });
     return { jobId: job.id, queue: QUEUE_NAME };
+  }
+
+  /**
+   * Stage-2 detail crawl: enrich detected tenders from their consultation
+   * detail pages (caution provisoire, category, detail URL; estimation when
+   * published). Bounded + polite. `?max=` caps the detail fetches (default 40).
+   */
+  @Roles('admin-si', 'marches', 'direction')
+  @Post('enrich-details')
+  async enrichDetails(@Query('max') max?: string) {
+    const parsed = Number(max);
+    const maxDetails =
+      Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 200) : 40;
+    return this.crawler.crawlOnce({ maxDetails });
   }
 
   @Roles('admin-si', 'marches', 'direction')
@@ -176,6 +194,7 @@ const snapshotRepositoryProvider = {
     watchOptionsProvider,
     snapshotRepositoryProvider,
     WatchService,
+    DetailCrawlerService,
   ],
   exports: [snapshotRepositoryProvider],
 })
