@@ -6,9 +6,15 @@ import {
 import { extractDetailLinks, parseDetailPage } from './detail.parser';
 import { PORTAL_SOURCE, type PortalSource } from './watch.source';
 
-/** Canonical join key between a listing stub and its detail page. */
+/**
+ * Canonical join key between a listing stub and its detail page. The live Atexo
+ * listing stores the reference WITH the objet glued on ("19/2026/C.TT - ..." /
+ * "…objet: …"); the detail page carries the clean référence. Cut at the " - " /
+ * "objet:" separator so both sides collapse to the same key.
+ */
 export function normalizeReference(reference: string): string {
-  return reference.replace(/\s+/g, ' ').trim().toUpperCase();
+  const head = reference.split(/\s+-\s+|objet\s*:/i)[0] ?? reference;
+  return head.replace(/\s+/g, ' ').trim().toUpperCase();
 }
 
 export interface CrawlSummary {

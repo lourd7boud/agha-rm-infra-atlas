@@ -27,6 +27,12 @@ describe('normalizeReference', () => {
   it('collapses whitespace and uppercases', () => {
     expect(normalizeReference('  06/br/rgon/2026 ')).toBe('06/BR/RGON/2026');
   });
+
+  it('strips the objet suffix the listing glues onto the reference', () => {
+    expect(normalizeReference('19/2026/C.TT - ...')).toBe('19/2026/C.TT');
+    expect(normalizeReference('07/2026 - objet: travaux divers')).toBe('07/2026');
+    expect(normalizeReference('TE/25/2026')).toBe('TE/25/2026');
+  });
 });
 
 describe('crawlDetails', () => {
