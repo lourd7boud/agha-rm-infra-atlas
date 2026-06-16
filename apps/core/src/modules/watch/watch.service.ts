@@ -5,6 +5,7 @@ import {
   type TenderRepository,
 } from '../tender/tender.repository';
 import { decideSnapshot } from './snapshot.domain';
+import { DetailCrawlerService } from './detail.crawler';
 import {
   SNAPSHOT_REPOSITORY,
   type SnapshotRepository,
@@ -67,6 +68,9 @@ export class WatchService {
     @Optional()
     @Inject(WATCH_OPTIONS)
     options: WatchRunOptions | null = null,
+    @Optional()
+    @Inject(DetailCrawlerService)
+    private readonly detailCrawler: DetailCrawlerService | null = null,
   ) {
     // Defensive finite guards: a poisoned env (NaN) must not silently disable
     // the crawl (page <= NaN is false → zero fetches) or the politeness delay.
@@ -191,6 +195,18 @@ export class WatchService {
         : {}),
     };
     this.logger.log(`run complete ${JSON.stringify(summary)}`);
+    // Stage-2: auto-enrich the freshest consultations from their detail pages
+    // (caution, category, detail URL). A failure here never fails the Sentinel.
+    if (this.detailCrawler) {
+      try {
+        const detail = await this.detailCrawler.crawlOnce({ maxDetails: 20 });
+        this.logger.log(`detail enrichment ${JSON.stringify(detail)}`);
+      } catch (error) {
+        this.logger.error(
+          `detail enrichment failed: ${(error as Error).message}`,
+        );
+      }
+    }
     return summary;
   }
 }
