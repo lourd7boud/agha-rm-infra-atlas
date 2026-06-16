@@ -36,8 +36,21 @@ export interface LlmRequest {
   prefill?: string;
 }
 
+export type LlmImageMediaType = 'image/jpeg' | 'image/png' | 'image/webp';
+
+export interface LlmVisionRequest {
+  tier: LlmTier;
+  /** Base64-encoded image bytes (no data: prefix). */
+  imageBase64: string;
+  mediaType: LlmImageMediaType;
+  prompt: string;
+  maxTokens?: number;
+}
+
 export interface LlmClient {
   complete(request: LlmRequest): Promise<LlmCompletion>;
+  /** Vision read of a single image (scanned notices, plans…) → text. */
+  completeVision(request: LlmVisionRequest): Promise<LlmCompletion>;
 }
 
 export const LLM_CLIENT = Symbol('LLM_CLIENT');
@@ -101,6 +114,52 @@ export class AnthropicLlmClient implements LlmClient {
       outputTokens: response.usage.output_tokens,
     };
   }
+
+  async completeVision(request: LlmVisionRequest): Promise<LlmCompletion> {
+    const model = this.tierModels[request.tier];
+    let response: Anthropic.Message;
+    try {
+      response = await this.client.messages.create({
+        model,
+        max_tokens: request.maxTokens ?? 1024,
+        temperature: 0,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: request.mediaType,
+                  data: request.imageBase64,
+                },
+              },
+              { type: 'text', text: request.prompt },
+            ],
+          },
+        ],
+      });
+    } catch (error) {
+      const status = error instanceof Anthropic.APIError ? error.status : undefined;
+      new Logger('LlmClient').error(
+        `LLM vision call failed (${model}): ${(error as Error).message}`,
+      );
+      throw new ServiceUnavailableException(
+        `Service IA momentanément indisponible${status ? ` (HTTP ${status})` : ''} — réessayer dans quelques instants`,
+      );
+    }
+    const text = response.content
+      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+      .map((block) => block.text)
+      .join('');
+    return {
+      text,
+      model: response.model,
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+    };
+  }
 }
 
 /** Test double returning queued canned responses and recording requests. */
@@ -117,5 +176,17 @@ export class FakeLlmClient implements LlmClient {
     const text = this.queue.shift();
     if (text === undefined) throw new Error('FakeLlmClient queue exhausted');
     return { text, model: `fake-${request.tier}`, inputTokens: 10, outputTokens: 10 };
+  }
+
+  async completeVision(request: LlmVisionRequest): Promise<LlmCompletion> {
+    this.requests.push({ tier: request.tier, prompt: request.prompt });
+    const text = this.queue.shift();
+    if (text === undefined) throw new Error('FakeLlmClient queue exhausted');
+    return {
+      text,
+      model: `fake-vision-${request.tier}`,
+      inputTokens: 10,
+      outputTokens: 10,
+    };
   }
 }

@@ -16,7 +16,10 @@ import { Queue, Worker } from 'bullmq';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
 import { TenderModule } from '../tender/tender.module';
+import { BrainModule } from '../brain/brain.module';
+import { IntelModule } from '../intel/intel.module';
 import { DetailCrawlerService } from './detail.crawler';
+import { ResultCrawlerService } from './result.crawler';
 import {
   DrizzleSnapshotRepository,
   InMemorySnapshotRepository,
@@ -64,6 +67,8 @@ export class WatchController {
     private readonly snapshots: SnapshotRepository,
     @Inject(DetailCrawlerService)
     private readonly crawler: DetailCrawlerService,
+    @Inject(ResultCrawlerService)
+    private readonly resultCrawler: ResultCrawlerService,
   ) {}
 
   /** Live-portal coverage report: fetches, changes, items per source. */
@@ -93,6 +98,21 @@ export class WatchController {
     const maxDetails =
       Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 200) : 40;
     return this.crawler.crawlOnce({ maxDetails });
+  }
+
+  /**
+   * Stage-3 result crawl: mine published "avis de résultat définitif" — submit
+   * the result search, read each scanned notice with a vision LLM, and store the
+   * winner + amount in the competitor map. `?max=` caps notices (default 8;
+   * each notice costs one vision call).
+   */
+  @Roles('admin-si', 'marches', 'direction')
+  @Post('harvest-results')
+  async harvestResults(@Query('max') max?: string) {
+    const parsed = Number(max);
+    const maxResults =
+      Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 50) : 8;
+    return this.resultCrawler.crawlOnce({ maxResults });
   }
 
   @Roles('admin-si', 'marches', 'direction')
@@ -186,7 +206,7 @@ const snapshotRepositoryProvider = {
 };
 
 @Module({
-  imports: [TenderModule],
+  imports: [TenderModule, BrainModule, IntelModule],
   controllers: [WatchController],
   providers: [
     portalSourceProvider,
@@ -195,6 +215,7 @@ const snapshotRepositoryProvider = {
     snapshotRepositoryProvider,
     WatchService,
     DetailCrawlerService,
+    ResultCrawlerService,
   ],
   exports: [snapshotRepositoryProvider],
 })
