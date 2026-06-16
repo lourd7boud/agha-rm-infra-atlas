@@ -1,5 +1,6 @@
 import {
   canonicalBuyerKey,
+  UNKNOWN_BUYER_KEY,
   type RebateBenchmarks,
   type RebateDistribution,
 } from './rebate.domain';
@@ -58,9 +59,13 @@ export function selectRebateBenchmark(
   // the result-crawler vision); match on the same canonical key the aggregation
   // groups on, so case/accent/punctuation drift cannot miss the buyer tier.
   const buyerKey = canonicalBuyerKey(opts.buyerName);
-  const buyer = benchmarks.byBuyer.find(
-    (b) => b.count >= min && canonicalBuyerKey(b.buyerName) === buyerKey,
-  );
+  // The placeholder is not a real buyer — never match the buyer tier on it.
+  const buyer =
+    buyerKey === UNKNOWN_BUYER_KEY
+      ? undefined
+      : benchmarks.byBuyer.find(
+          (b) => b.count >= min && canonicalBuyerKey(b.buyerName) === buyerKey,
+        );
   if (buyer) {
     return { ...pickDistribution(buyer), source: 'buyer', key: buyer.buyerName };
   }

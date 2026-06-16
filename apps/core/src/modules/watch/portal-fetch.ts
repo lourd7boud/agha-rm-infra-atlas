@@ -1,0 +1,97 @@
+import type { LlmImageMediaType } from '../brain/llm.client';
+import { buildResultSearchBody } from './result.parser';
+
+/**
+ * Shared live-portal HTTP plumbing for the result/PV crawlers (Atexo MPE).
+ * Politeness headers, session-cookie handling, the stateful PRADO result search,
+ * and the scanned-image download — one place, reused by every result-stage crawl.
+ */
+
+export const PORTAL_UA =
+  'ATLAS-Sentinel/0.1 (AGHA RM INFRA; veille marchés publics)';
+export const PORTAL_TIMEOUT = 40_000;
+export const DEFAULT_SEARCH_URL =
+  'https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseAdvancedSearch';
+
+export const sleepMs = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+export function cookieHeader(setCookies: readonly string[]): string {
+  return setCookies
+    .map((c) => c.split(';')[0])
+    .filter((c): c is string => Boolean(c))
+    .join('; ');
+}
+
+export function imageMediaType(contentType: string | null): LlmImageMediaType {
+  const ct = (contentType ?? '').toLowerCase();
+  if (ct.includes('png')) return 'image/png';
+  if (ct.includes('webp')) return 'image/webp';
+  return 'image/jpeg';
+}
+
+export async function fetchText(url: string, cookie: string): Promise<string> {
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': PORTAL_UA,
+      Accept: 'text/html',
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+    signal: AbortSignal.timeout(PORTAL_TIMEOUT),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text();
+}
+
+export async function fetchImage(
+  url: string,
+  cookie: string,
+): Promise<{ base64: string; mediaType: LlmImageMediaType }> {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': PORTAL_UA, ...(cookie ? { Cookie: cookie } : {}) },
+    signal: AbortSignal.timeout(PORTAL_TIMEOUT),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  return {
+    base64: buf.toString('base64'),
+    mediaType: imageMediaType(res.headers.get('content-type')),
+  };
+}
+
+export interface PortalSearchResult {
+  listingHtml: string;
+  baseUrl: string;
+  /** Session cookie captured on the GET, to reuse for the follow-up fetches. */
+  cookie: string;
+}
+
+/**
+ * GET the advanced-search form, capture the PRADO session cookie, then POST the
+ * form with the given annonceType filter ('4' résultat définitif, '5' extrait de
+ * PV). Returns the result listing plus the cookie for the detail/image fetches.
+ */
+export async function pradoResultSearch(
+  searchUrl: string,
+  annonceType: string,
+): Promise<PortalSearchResult> {
+  const formRes = await fetch(searchUrl, {
+    headers: { 'User-Agent': PORTAL_UA, Accept: 'text/html' },
+    signal: AbortSignal.timeout(PORTAL_TIMEOUT),
+  });
+  const cookie = cookieHeader(formRes.headers.getSetCookie());
+  const body = buildResultSearchBody(await formRes.text(), annonceType);
+  const postRes = await fetch(searchUrl, {
+    method: 'POST',
+    headers: {
+      'User-Agent': PORTAL_UA,
+      Accept: 'text/html',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Referer: searchUrl,
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+    body,
+    signal: AbortSignal.timeout(PORTAL_TIMEOUT),
+  });
+  return { listingHtml: await postRes.text(), baseUrl: searchUrl, cookie };
+}

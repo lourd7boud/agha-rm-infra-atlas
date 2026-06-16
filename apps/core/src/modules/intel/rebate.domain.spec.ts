@@ -156,6 +156,18 @@ describe('summarizeRebates', () => {
     expect(sampled).toBe(0);
   });
 
+  it('counts unknown-buyer winners in overall but not as a buyer bucket', () => {
+    const obs = [
+      winner('A', 'Acheteur non précisé', 800_000), // 20%
+      winner('B', 'Acheteur non précisé', 850_000), // 15%
+    ];
+
+    const { overall, byBuyer } = summarizeRebates(obs);
+
+    expect(overall?.count).toBe(2);
+    expect(byBuyer).toEqual([]); // the placeholder is not a buyer identity
+  });
+
   it('folds buyer-name casing/accent/punctuation variants into one row', () => {
     // The same buyer arriving from two ingestion paths must not split into
     // fragments that each miss the sample gate.

@@ -141,6 +141,16 @@ export function canonicalBuyerKey(buyerName: string): string {
     .trim();
 }
 
+/**
+ * Placeholder used by the result/PV crawlers when the vision read yields no
+ * buyer. Its rebate is still real (it counts toward overall/segment), but it is
+ * NOT a buyer identity — every unknown-buyer winner would otherwise collapse
+ * into one meaningless byBuyer bucket that could clear the sample gate and
+ * mis-anchor a price. So it is excluded from the buyer dimension everywhere.
+ */
+export const UNKNOWN_BUYER_LABEL = 'Acheteur non précisé';
+export const UNKNOWN_BUYER_KEY = canonicalBuyerKey(UNKNOWN_BUYER_LABEL);
+
 /** Aggregate winner observations into overall + per-buyer + per-segment rebate stats. */
 export function summarizeRebates(
   observations: readonly RebateObservation[],
@@ -164,6 +174,7 @@ export function summarizeRebates(
   const buyerGroups = new Map<string, { label: string; pcts: number[] }>();
   for (const s of samples) {
     const key = canonicalBuyerKey(s.buyerName);
+    if (key === UNKNOWN_BUYER_KEY) continue; // real rebate, but not a buyer identity
     const group = buyerGroups.get(key);
     if (group) group.pcts.push(s.pct);
     else buyerGroups.set(key, { label: s.buyerName, pcts: [s.pct] });

@@ -106,6 +106,17 @@ describe('selectRebateBenchmark', () => {
     expect(result).toMatchObject({ source: 'buyer', medianPct: 12 });
   });
 
+  it('never matches the buyer tier on the unknown-buyer placeholder', () => {
+    const result = selectRebateBenchmark(
+      benchmarks({
+        byBuyer: [{ buyerName: 'Acheteur non précisé', ...dist(10, 14) }],
+        bySegment: [{ segment: 'routes', ...dist(8, 9) }],
+      }),
+      { buyerName: 'Acheteur non précisé', segment: 'routes' },
+    );
+    expect(result).toMatchObject({ source: 'segment', medianPct: 9 });
+  });
+
   it('honours an explicit lower minCount', () => {
     const result = selectRebateBenchmark(
       benchmarks({ byBuyer: [{ buyerName: 'ONEE', ...dist(2, 14) }] }),

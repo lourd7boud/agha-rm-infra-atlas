@@ -14,6 +14,7 @@ import {
   INTEL_REPOSITORY,
   type IntelRepository,
 } from '../intel/intel.repository';
+import { UNKNOWN_BUYER_LABEL } from '../intel/rebate.domain';
 import { extractDetailLinks, parseDetailPage } from './detail.parser';
 import {
   buildResultSearchBody,
@@ -107,7 +108,7 @@ export async function crawlResults(
 
       const ok = await deps.storeResult({
         reference,
-        buyerName: notice.acheteur ?? 'Acheteur non précisé',
+        buyerName: notice.acheteur ?? UNKNOWN_BUYER_LABEL,
         bidderName: notice.attributaire,
         amountMad: notice.montantMad,
         estimationMad: notice.estimationMad,
@@ -125,6 +126,11 @@ export async function crawlResults(
   return { resultsFound: links.length, notices, extracted, stored, errors };
 }
 
+// NOTE: portal-fetch.ts is the shared successor of the helpers below
+// (UA/TIMEOUT/DEFAULT_SEARCH_URL, cookieHeader, imageMediaType, fetchText,
+// fetchImage, pradoResultSearch). Kept duplicated here deliberately to avoid
+// regressing the live result crawler — keep both in sync, or migrate this file
+// onto portal-fetch once the PV crawler is validated in production.
 const UA = 'ATLAS-Sentinel/0.1 (AGHA RM INFRA; veille marchés publics)';
 const TIMEOUT = 40_000;
 const DEFAULT_SEARCH_URL =

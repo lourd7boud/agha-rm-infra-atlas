@@ -20,6 +20,7 @@ import { BrainModule } from '../brain/brain.module';
 import { IntelModule } from '../intel/intel.module';
 import { DetailCrawlerService } from './detail.crawler';
 import { ResultCrawlerService } from './result.crawler';
+import { ExtraitPvCrawlerService } from './pv.crawler';
 import {
   DrizzleSnapshotRepository,
   InMemorySnapshotRepository,
@@ -69,6 +70,8 @@ export class WatchController {
     private readonly crawler: DetailCrawlerService,
     @Inject(ResultCrawlerService)
     private readonly resultCrawler: ResultCrawlerService,
+    @Inject(ExtraitPvCrawlerService)
+    private readonly pvCrawler: ExtraitPvCrawlerService,
   ) {}
 
   /** Live-portal coverage report: fetches, changes, items per source. */
@@ -113,6 +116,20 @@ export class WatchController {
     const maxResults =
       Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 50) : 8;
     return this.resultCrawler.crawlOnce({ maxResults });
+  }
+
+  /**
+   * Stage-3b PV crawl: mine "extrait de procès-verbal" (annonceType=5) — the
+   * full bidder field + administrative estimation. Each PV stores every
+   * soumissionnaire (winner + écartés) and feeds the rebate calibration.
+   * `?max=` caps PVs (default 8; each costs one vision call).
+   */
+  @Roles('admin-si', 'marches', 'direction')
+  @Post('harvest-pv')
+  async harvestPv(@Query('max') max?: string) {
+    const parsed = Number(max);
+    const maxPv = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 50) : 8;
+    return this.pvCrawler.crawlOnce({ maxPv });
   }
 
   @Roles('admin-si', 'marches', 'direction')
@@ -216,6 +233,7 @@ const snapshotRepositoryProvider = {
     WatchService,
     DetailCrawlerService,
     ResultCrawlerService,
+    ExtraitPvCrawlerService,
   ],
   exports: [snapshotRepositoryProvider],
 })

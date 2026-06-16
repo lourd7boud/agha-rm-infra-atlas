@@ -8,6 +8,7 @@ import type { PublishedResult } from './intel.parser';
 import { buildCompetitorProfile, type CompetitorProfile } from './intel.profile';
 import {
   summarizeRebates,
+  UNKNOWN_BUYER_LABEL,
   type RebateBenchmarks,
   type RebateObservation,
 } from './rebate.domain';
@@ -38,6 +39,16 @@ export interface IntelRepository {
   upsertCompetitor(rawName: string): Promise<CompetitorRecord>;
   /** Inserts unless (reference, competitorId) already recorded. Returns false on duplicate. */
   insertResult(result: PublishedResult, competitorId: string): Promise<boolean>;
+  /**
+   * Inserts the bid, or — when (reference, competitorId) already exists —
+   * enriches it with newly-known estimation/objet/amount and the winner flag.
+   * The PV extract is the authoritative, richer source, so it back-fills what
+   * the résultat-définitif notice lacked. Returns the action taken.
+   */
+  upsertResult(
+    result: PublishedResult,
+    competitorId: string,
+  ): Promise<'inserted' | 'updated'>;
   listResults(limit: number): Promise<CompetitorBidRecord[]>;
   listCompetitorStats(): Promise<CompetitorStats[]>;
   /** C2: full dossier for one competitor, null when unknown. */
@@ -62,6 +73,22 @@ function bidToObservation(bid: {
     estimationMad: bid.estimationMad,
     amountMad: bid.amountMad,
     isWinner: bid.isWinner,
+  };
+}
+
+/** Drizzle insert row for a competitor bid (numerics stored as strings). */
+function bidInsertValues(result: PublishedResult, competitorId: string) {
+  return {
+    reference: result.reference,
+    buyerName: result.buyerName,
+    bidderName: result.bidderName,
+    competitorId,
+    amountMad: result.amountMad?.toString(),
+    estimationMad: result.estimationMad?.toString(),
+    objet: result.objet,
+    isWinner: result.isWinner,
+    resultDate: result.resultDate,
+    sourceUrl: result.sourceUrl,
   };
 }
 
@@ -104,6 +131,42 @@ export class InMemoryIntelRepository implements IntelRepository {
       { ...result, id: randomUUID(), competitorId, createdAt: new Date() },
     ];
     return true;
+  }
+
+  async upsertResult(
+    result: PublishedResult,
+    competitorId: string,
+  ): Promise<'inserted' | 'updated'> {
+    const index = this.bids.findIndex(
+      (bid) =>
+        bid.reference === result.reference && bid.competitorId === competitorId,
+    );
+    if (index === -1) {
+      this.bids = [
+        ...this.bids,
+        { ...result, id: randomUUID(), competitorId, createdAt: new Date() },
+      ];
+      return 'inserted';
+    }
+    const existing = this.bids[index]!;
+    const merged: CompetitorBidRecord = {
+      ...existing,
+      // Prefer a real buyer name over the placeholder, whichever side has it.
+      buyerName:
+        result.buyerName !== UNKNOWN_BUYER_LABEL
+          ? result.buyerName
+          : existing.buyerName,
+      amountMad: result.amountMad ?? existing.amountMad,
+      estimationMad: result.estimationMad ?? existing.estimationMad,
+      objet: result.objet ?? existing.objet,
+      isWinner: existing.isWinner || result.isWinner,
+    };
+    this.bids = [
+      ...this.bids.slice(0, index),
+      merged,
+      ...this.bids.slice(index + 1),
+    ];
+    return 'updated';
   }
 
   async listResults(limit: number): Promise<CompetitorBidRecord[]> {
@@ -183,19 +246,55 @@ export class DrizzleIntelRepository implements IntelRepository {
       .limit(1);
     if (existing) return false;
 
-    await this.db.insert(competitorBids).values({
-      reference: result.reference,
-      buyerName: result.buyerName,
-      bidderName: result.bidderName,
-      competitorId,
-      amountMad: result.amountMad?.toString(),
-      estimationMad: result.estimationMad?.toString(),
-      objet: result.objet,
-      isWinner: result.isWinner,
-      resultDate: result.resultDate,
-      sourceUrl: result.sourceUrl,
-    });
+    await this.db.insert(competitorBids).values(bidInsertValues(result, competitorId));
     return true;
+  }
+
+  async upsertResult(
+    result: PublishedResult,
+    competitorId: string,
+  ): Promise<'inserted' | 'updated'> {
+    const [existing] = await this.db
+      .select({
+        id: competitorBids.id,
+        buyerName: competitorBids.buyerName,
+        amountMad: competitorBids.amountMad,
+        estimationMad: competitorBids.estimationMad,
+        objet: competitorBids.objet,
+        isWinner: competitorBids.isWinner,
+      })
+      .from(competitorBids)
+      .where(
+        and(
+          eq(competitorBids.reference, result.reference),
+          eq(competitorBids.competitorId, competitorId),
+        ),
+      )
+      .limit(1);
+
+    if (!existing) {
+      await this.db
+        .insert(competitorBids)
+        .values(bidInsertValues(result, competitorId));
+      return 'inserted';
+    }
+
+    // Back-fill only: a non-null new value enriches the row; nulls never erase
+    // what an earlier crawl already learned. A real buyer name beats the placeholder.
+    await this.db
+      .update(competitorBids)
+      .set({
+        buyerName:
+          result.buyerName !== UNKNOWN_BUYER_LABEL
+            ? result.buyerName
+            : existing.buyerName,
+        amountMad: result.amountMad?.toString() ?? existing.amountMad,
+        estimationMad: result.estimationMad?.toString() ?? existing.estimationMad,
+        objet: result.objet ?? existing.objet,
+        isWinner: existing.isWinner || result.isWinner,
+      })
+      .where(eq(competitorBids.id, existing.id));
+    return 'updated';
   }
 
   async listResults(limit: number): Promise<CompetitorBidRecord[]> {

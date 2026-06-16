@@ -1,0 +1,106 @@
+import { describe, expect, it } from 'vitest';
+import { crawlExtraitsPv, type PvCrawlDeps, type StoredPvBid } from './pv.crawler';
+
+const PREFIX = 'ctl0_CONTENU_PAGE_idEntrepriseConsultationSummary';
+const LISTING =
+  '<a href="x?page=entreprise.EntrepriseDetailsConsultation&refConsultation=111&orgAcronyme=aaa">a</a>' +
+  '<a href="x?page=entreprise.EntrepriseDetailsConsultation&refConsultation=222&orgAcronyme=bbb">b</a>';
+const BASE = 'https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseAdvancedSearch';
+
+const detailWithNotice = (ref: string, rc: string, org: string): string =>
+  `<span id="${PREFIX}_reference">${ref}</span>` +
+  `<a href="index.php?page=entreprise.EntrepriseDownloadAvisJAL&refConsultation=${rc}&orgAcronyme=${org}&idAvis=999">notice</a>`;
+
+const pvJson = (winner: string): string =>
+  JSON.stringify({
+    acheteur: 'Commune X',
+    objet: 'travaux',
+    estimation_mad: 1_000_000,
+    soumissionnaires: [
+      { nom: winner, montant_mad: 800000, retenu: true },
+      { nom: 'STE LOSER', montant_mad: 950000, retenu: false },
+    ],
+    lisible: true,
+  });
+
+function deps(o: Partial<PvCrawlDeps>): PvCrawlDeps {
+  return {
+    search: async () => ({ listingHtml: LISTING, baseUrl: BASE }),
+    fetchDetail: async (url) =>
+      url.includes('refConsultation=111')
+        ? detailWithNotice('REF/111', '111', 'aaa')
+        : detailWithNotice('REF/222', '222', 'bbb'),
+    fetchImage: async () => ({ base64: 'AAAA', mediaType: 'image/jpeg' }),
+    visionExtract: async () => pvJson('STE ALPHA'),
+    storeBid: async () => 'inserted',
+    sleep: async () => {},
+    now: () => new Date('2026-06-16T00:00:00Z'),
+    ...o,
+  };
+}
+
+describe('crawlExtraitsPv', () => {
+  it('stores every bidder (winner + losers) with the estimation attached', async () => {
+    const stored: StoredPvBid[] = [];
+    const s = await crawlExtraitsPv(
+      deps({ storeBid: async (b) => (stored.push(b), 'inserted') }),
+      { delayMs: 0 },
+    );
+    expect(s).toMatchObject({ pvFound: 2, notices: 2, pvRead: 2, errors: 0 });
+    expect(s.bidsStored).toBe(4); // 2 PVs × 2 bidders
+    expect(stored.filter((b) => b.isWinner)).toHaveLength(2);
+    expect(stored.every((b) => b.estimationMad === 1_000_000)).toBe(true);
+    const winner = stored.find((b) => b.isWinner);
+    expect(winner?.bidderName).toBe('STE ALPHA');
+    expect(winner?.amountMad).toBe(800_000);
+  });
+
+  it('skips a detail page with no downloadable notice', async () => {
+    const s = await crawlExtraitsPv(
+      deps({ fetchDetail: async () => '<span>no notice here</span>' }),
+      { delayMs: 0 },
+    );
+    expect(s.notices).toBe(0);
+    expect(s.bidsStored).toBe(0);
+  });
+
+  it('skips an unreadable PV without storing bids', async () => {
+    const s = await crawlExtraitsPv(
+      deps({
+        visionExtract: async () =>
+          JSON.stringify({ soumissionnaires: [], lisible: false }),
+      }),
+      { delayMs: 0 },
+    );
+    expect(s.pvRead).toBe(0);
+    expect(s.bidsStored).toBe(0);
+  });
+
+  it('counts an unparseable vision read as an error, not a silent skip', async () => {
+    const s = await crawlExtraitsPv(
+      deps({ visionExtract: async () => 'illisible, aucune donnée JSON' }),
+      { delayMs: 0 },
+    );
+    expect(s.pvRead).toBe(0);
+    expect(s.errors).toBe(2); // both PVs returned unparseable JSON
+    expect(s.bidsStored).toBe(0);
+  });
+
+  it('counts an error when a fetch throws, and still processes the rest', async () => {
+    let n = 0;
+    const s = await crawlExtraitsPv(
+      deps({
+        fetchDetail: async (url) => {
+          n += 1;
+          if (n === 1) throw new Error('boom');
+          return url.includes('222')
+            ? detailWithNotice('REF/222', '222', 'bbb')
+            : detailWithNotice('REF/111', '111', 'aaa');
+        },
+      }),
+      { delayMs: 0 },
+    );
+    expect(s.errors).toBe(1);
+    expect(s.bidsStored).toBe(2); // the surviving PV still stored its 2 bidders
+  });
+});
