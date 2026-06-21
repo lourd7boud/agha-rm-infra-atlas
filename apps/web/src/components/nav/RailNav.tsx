@@ -15,6 +15,7 @@ const ITEMS: readonly NavItem[] = [
   { href: '/tenders', label: 'Marchés Publics', icon: 'tenders' },
   { href: '/projects', label: 'Projets & Chantiers', icon: 'chantiers' },
   { href: '/stock', label: 'Stock & Matériaux', icon: 'boxes' },
+  { href: '/equipment', label: 'Matériel & Équipements', icon: 'equipment' },
   { href: '/finance', label: 'Finance', icon: 'tresorerie' },
   { href: '/people', label: 'Personnel', icon: 'personnel' },
   { href: '/vault', label: 'Documents & GED', icon: 'documents' },
