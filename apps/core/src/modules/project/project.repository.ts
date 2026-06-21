@@ -47,6 +47,16 @@ export interface SituationRecord extends CreateSituation {
   createdAt: Date;
 }
 
+/**
+ * A situation flattened with its owning project's identity, as produced by a
+ * single project⋈situation join. Avoids a per-project query when the whole
+ * portfolio's situations are needed at once (e.g. finance receivables aging).
+ */
+export interface SituationWithProject extends SituationRecord {
+  projectReference: string;
+  buyerName: string;
+}
+
 export interface CreateAvenant {
   projectId: string;
   numero: number;
@@ -94,6 +104,12 @@ export interface ProjectRepository {
   findById(id: string): Promise<ProjectRecord | null>;
   updateStatus(id: string, status: ProjectStatus): Promise<ProjectRecord | null>;
   listSituations(projectId: string): Promise<SituationRecord[]>;
+  /**
+   * Every situation across every project, each joined to its project's
+   * reference + buyerName. One query for the whole portfolio — lets the finance
+   * receivables view avoid an N+1 (findAll + listSituations per project).
+   */
+  listAllSituations(): Promise<SituationWithProject[]>;
   createSituation(input: CreateSituation): Promise<SituationRecord>;
   listAvenants(projectId: string): Promise<AvenantRecord[]>;
   createAvenant(input: CreateAvenant): Promise<AvenantRecord>;
@@ -147,6 +163,21 @@ export class InMemoryProjectRepository implements ProjectRepository {
     return this.situations
       .filter((s) => s.projectId === projectId)
       .sort((a, b) => a.numero - b.numero);
+  }
+
+  async listAllSituations(): Promise<SituationWithProject[]> {
+    const projectById = new Map(this.projects.map((p) => [p.id, p]));
+    return this.situations.flatMap((situation) => {
+      const project = projectById.get(situation.projectId);
+      if (!project) return [];
+      return [
+        {
+          ...situation,
+          projectReference: project.reference,
+          buyerName: project.buyerName,
+        },
+      ];
+    });
   }
 
   async createSituation(input: CreateSituation): Promise<SituationRecord> {
@@ -299,6 +330,23 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .where(eq(situations.projectId, projectId))
       .orderBy(asc(situations.numero));
     return rows.map(toSituation);
+  }
+
+  async listAllSituations(): Promise<SituationWithProject[]> {
+    const rows = await this.db
+      .select({
+        situation: situations,
+        projectReference: projects.reference,
+        buyerName: projects.buyerName,
+      })
+      .from(situations)
+      .innerJoin(projects, eq(situations.projectId, projects.id))
+      .orderBy(asc(situations.numero));
+    return rows.map((row) => ({
+      ...toSituation(row.situation),
+      projectReference: row.projectReference,
+      buyerName: row.buyerName,
+    }));
   }
 
   async createSituation(input: CreateSituation): Promise<SituationRecord> {

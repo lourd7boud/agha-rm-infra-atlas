@@ -101,6 +101,68 @@ describe('InMemoryProjectRepository.findTaskById', () => {
   });
 });
 
+describe('InMemoryProjectRepository.listAllSituations', () => {
+  async function seedProjectWithSituation(
+    repo: InMemoryProjectRepository,
+    overrides: { reference: string; buyerName: string; numero: number },
+  ): Promise<string> {
+    const project = await repo.create({
+      reference: overrides.reference,
+      name: `Marché ${overrides.reference}`,
+      buyerName: overrides.buyerName,
+      montantMarcheMad: 1_000_000,
+    });
+    await repo.createSituation({
+      projectId: project.id,
+      numero: overrides.numero,
+      periodEnd: new Date('2026-05-31'),
+      montantCumuleMad: 500_000,
+      montantPeriodeMad: 500_000,
+      retenueGarantieMad: 50_000,
+      netAPayerMad: 450_000,
+      avancementPct: 50,
+    });
+    return project.id;
+  }
+
+  it('joins every situation to its project reference and buyer in one call', async () => {
+    // Arrange — two projects, one situation each.
+    const repo = new InMemoryProjectRepository();
+    await seedProjectWithSituation(repo, {
+      reference: 'MA-2026-001',
+      buyerName: 'DRETLH',
+      numero: 1,
+    });
+    await seedProjectWithSituation(repo, {
+      reference: 'MA-2026-002',
+      buyerName: 'Commune X',
+      numero: 1,
+    });
+
+    // Act
+    const rows = await repo.listAllSituations();
+
+    // Assert — both situations come back flattened with project identity.
+    expect(rows).toHaveLength(2);
+    const refs = rows.map((r) => r.projectReference).sort();
+    expect(refs).toEqual(['MA-2026-001', 'MA-2026-002']);
+    const first = rows.find((r) => r.projectReference === 'MA-2026-001');
+    expect(first?.buyerName).toBe('DRETLH');
+    expect(first?.netAPayerMad).toBe(450_000);
+  });
+
+  it('returns an empty list when there are no situations', async () => {
+    // Arrange
+    const repo = new InMemoryProjectRepository();
+
+    // Act
+    const rows = await repo.listAllSituations();
+
+    // Assert
+    expect(rows).toHaveLength(0);
+  });
+});
+
 describe('InMemoryProjectRepository.updateTask', () => {
   it('patches progress and status while keeping the label', async () => {
     // Arrange
