@@ -23,6 +23,15 @@ const ITEMS: readonly NavItem[] = [
   { href: '/agents', label: 'Salle des Agents', icon: 'agents' },
 ];
 
+/** Commercial / Ventes — private-client devis, BL, factures (separate from the
+ *  public-procurement Marchés flow). Grouped under its own heading. */
+const SALES: readonly NavItem[] = [
+  { href: '/sales/clients', label: 'Clients', icon: 'crm' },
+  { href: '/sales/quotes', label: 'Devis', icon: 'quote' },
+  { href: '/sales/delivery-notes', label: 'Bons de livraison', icon: 'delivery' },
+  { href: '/sales/invoices', label: 'Factures', icon: 'invoice' },
+];
+
 /** Planned modules — shown for breadth, not yet routed. */
 const SOON: readonly { label: string; icon: IconName }[] = [
   { label: 'Opérations Terrain', icon: 'terrain' },
@@ -43,43 +52,52 @@ export function RailNav({
   const path = usePathname();
   const horizontal = orientation === 'horizontal';
 
+  function renderItem(item: NavItem) {
+    const active = isActive(path, item.href);
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        aria-current={active ? 'page' : undefined}
+        className={`group relative flex items-center gap-2.5 rounded-md text-sm transition ${
+          horizontal ? 'shrink-0 px-3 py-1.5' : 'px-3 py-2'
+        } ${
+          active
+            ? 'bg-cyan-soft/60 text-ink'
+            : 'text-muted hover:bg-rail-2 hover:text-ink'
+        }`}
+      >
+        {!horizontal && (
+          <span
+            className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-r-full bg-cyan transition-all ${
+              active ? 'h-5 w-[3px]' : 'h-0 w-0'
+            }`}
+          />
+        )}
+        <Icon
+          name={item.icon}
+          size={18}
+          className={active ? 'text-cyan' : 'text-faint group-hover:text-muted'}
+        />
+        <span className="whitespace-nowrap font-medium">{item.label}</span>
+      </Link>
+    );
+  }
+
   return (
     <nav
       className={
         horizontal ? 'flex flex-row gap-1 overflow-x-auto pb-1' : 'flex flex-col gap-0.5'
       }
     >
-      {ITEMS.map((item) => {
-        const active = isActive(path, item.href);
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            aria-current={active ? 'page' : undefined}
-            className={`group relative flex items-center gap-2.5 rounded-md text-sm transition ${
-              horizontal ? 'shrink-0 px-3 py-1.5' : 'px-3 py-2'
-            } ${
-              active
-                ? 'bg-cyan-soft/60 text-ink'
-                : 'text-muted hover:bg-rail-2 hover:text-ink'
-            }`}
-          >
-            {!horizontal && (
-              <span
-                className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-r-full bg-cyan transition-all ${
-                  active ? 'h-5 w-[3px]' : 'h-0 w-0'
-                }`}
-              />
-            )}
-            <Icon
-              name={item.icon}
-              size={18}
-              className={active ? 'text-cyan' : 'text-faint group-hover:text-muted'}
-            />
-            <span className="whitespace-nowrap font-medium">{item.label}</span>
-          </Link>
-        );
-      })}
+      {ITEMS.map(renderItem)}
+
+      {!horizontal && (
+        <p className="mt-5 mb-1 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/70">
+          Commercial / Ventes
+        </p>
+      )}
+      {SALES.map(renderItem)}
 
       {!horizontal && (
         <>

@@ -13,6 +13,9 @@ export type IconName =
   | 'documents'
   | 'vault'
   | 'crm'
+  | 'quote'
+  | 'invoice'
+  | 'delivery'
   | 'analytics'
   | 'agents'
   | 'intel'
@@ -114,6 +117,27 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle cx="17" cy="10.5" r="2.4" />
       <path d="M3.5 20c0-3 2.6-5 5.5-5s5.5 2 5.5 5" />
       <path d="M15 20c.2-2.1 1.5-3.6 4-3.6" />
+    </>
+  ),
+  quote: (
+    <>
+      <path d="M8 3h8l3 3v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
+      <path d="M15 3v4h4" />
+      <path d="M9 12h6M9 15.5h6M9 8.5h3" />
+    </>
+  ),
+  invoice: (
+    <>
+      <path d="M6 3h12v18l-3-1.6-3 1.6-3-1.6L6 21z" />
+      <path d="M9 8h6M9 11.5h6M9 15h3" />
+    </>
+  ),
+  delivery: (
+    <>
+      <path d="M3 7h11v8H3z" />
+      <path d="M14 10h4l3 3v2h-7z" />
+      <circle cx="7" cy="17.5" r="1.6" />
+      <circle cx="17.5" cy="17.5" r="1.6" />
     </>
   ),
   analytics: (

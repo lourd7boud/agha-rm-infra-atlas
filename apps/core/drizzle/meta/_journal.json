@@ -148,6 +148,13 @@
       "when": 1782061717637,
       "tag": "0020_finance_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1782062993593,
+      "tag": "0021_sales_module",
+      "breakpoints": true
     }
   ]
 }
