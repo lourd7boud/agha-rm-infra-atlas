@@ -302,8 +302,44 @@ export const assignments = people.table('assignment', {
     .references(() => projects.id),
   startDate: date('start_date', { mode: 'date' }).notNull(),
   endDate: date('end_date', { mode: 'date' }),
+  // Phase 3 — pay basis for the labour-cost rollup. Both nullable: a freshly
+  // created assignment may carry no rate yet (dues fall back to 0 in
+  // labor.domain). rateType ∈ {'jour','mois'} — validated at the edge; a 'mois'
+  // rate is divided by WORKING_DAYS_PER_MONTH to get the effective daily rate.
+  rateType: text('rate_type'),
+  rateAmountMad: numeric('rate_amount_mad', { precision: 14, scale: 2 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// Pointage — one logged work day per assignment. daysWorked allows half-days
+// (0.5). Logging the same (assignment, date) UPSERTS (idempotent back-fill) so a
+// re-submitted pointage replaces daysWorked + notes instead of double-counting.
+export const workDays = people.table(
+  'work_day',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    assignmentId: uuid('assignment_id')
+      .notNull()
+      .references(() => assignments.id),
+    workDate: date('work_date', { mode: 'date' }).notNull(),
+    daysWorked: numeric('days_worked', { precision: 4, scale: 2 })
+      .notNull()
+      .default('1'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Work days are always read per assignment — keep that list query off a seq
+    // scan as the pointage log grows.
+    index('work_day_assignment_id_idx').on(table.assignmentId),
+    // One pointage per (assignment, day): lets a re-submitted log UPSERT on the
+    // natural key instead of duplicating the day in the labour-cost rollup.
+    uniqueIndex('work_day_assignment_date_uniq').on(
+      table.assignmentId,
+      table.workDate,
+    ),
+  ],
+);
 
 export const comms = pgSchema('comms');
 

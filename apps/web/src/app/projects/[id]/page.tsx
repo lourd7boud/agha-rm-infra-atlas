@@ -3,7 +3,9 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { apiGet, apiPatch, apiPost, AtlasApiError } from '@/lib/api';
 import {
+  fmtDays,
   fmtMad,
+  fmtRate,
   PROJECT_STATUS_BADGES,
   SITUATION_NEXT,
   SITUATION_STATUS_BADGES,
@@ -11,6 +13,7 @@ import {
   TASK_STATUS_OPTIONS,
   type Employee,
   type JournalResponse,
+  type ProjectLabor,
   type ProjectSummary,
   type Situation,
   type TaskStatus,
@@ -60,6 +63,21 @@ const ACTION_ERROR_MESSAGES: Record<string, string> = {
   'updateTask:invalid':
     'Mise à jour refusée : vérifiez l’avancement (0–100%) et le statut.',
   'updateTask:failed': 'Échec de la mise à jour de la tâche. Réessayez.',
+  'assignEmployee:invalid':
+    'Affectation refusée : tarif et base (jour/mois) doivent être renseignés ensemble.',
+  'assignEmployee:failed':
+    'Échec de l’affectation. Une affectation active existe peut-être déjà.',
+  'logWorkDay:invalid':
+    'Pointage refusé : la date est requise et les jours travaillés doivent être entre 0 et 2.',
+  'logWorkDay:failed': 'Échec du pointage. Réessayez.',
+  'endAssignment:failed':
+    'Échec de la clôture de l’affectation. L’affectation est introuvable ou déjà clôturée.',
+  'createSituation:invalid':
+    'Situation refusée : la fin de période est requise et le montant cumulé doit être positif.',
+  'createSituation:failed': 'Échec de l’enregistrement de la situation. Réessayez.',
+  'createDailyLog:invalid':
+    'Rapport refusé : effectifs ≥ 0 et travaux réalisés d’au moins 10 caractères requis.',
+  'createDailyLog:failed': 'Échec de la consignation du rapport. Réessayez.',
 };
 
 function actionErrorMessage(
@@ -121,7 +139,7 @@ export default async function ProjectDetailPage({
   const { id } = await params;
   const { error: actionError, code: actionCode } = await searchParams;
   const errorMessage = actionErrorMessage(actionError, actionCode);
-  const [project, journal, team, employees, consumption, taskData] =
+  const [project, journal, team, employees, consumption, taskData, labor] =
     await Promise.all([
       apiGet<ProjectDetail>(`/project/projects/${id}`),
       apiGet<JournalResponse>(`/field/projects/${id}/logs`),
@@ -129,7 +147,13 @@ export default async function ProjectDetailPage({
       apiGet<Employee[]>('/people/employees'),
       apiGet<ProjectMaterialConsumption[]>(`/stock/projects/${id}/consumption`),
       apiGet<TasksResponse>(`/project/projects/${id}/tasks`),
+      apiGet<ProjectLabor>(`/people/projects/${id}/labor`),
     ]);
+  // The labor summary keys off employeeId; team members carry the assignment id
+  // (member.id). Joining here lets each row show its dues and own a pointage form.
+  const laborByEmployee = new Map(
+    labor.lines.map((line) => [line.employeeId, line]),
+  );
   const consumptionTotalMad = consumption.reduce(
     (sum, row) => sum + row.totalCostMad,
     0,
@@ -156,34 +180,84 @@ export default async function ProjectDetailPage({
     'use server';
     const montant = Number(formData.get('montantCumuleMad'));
     const periodEnd = String(formData.get('periodEnd'));
-    if (Number.isFinite(montant) && montant >= 0 && periodEnd) {
+    if (!(Number.isFinite(montant) && montant >= 0 && periodEnd)) {
+      redirect(`/projects/${id}?error=createSituation&code=invalid`);
+    }
+    try {
       await apiPost(`/project/projects/${id}/situations`, {
         periodEnd,
         montantCumuleMad: montant,
       });
-      revalidatePath(`/projects/${id}`);
-      revalidatePath('/projects');
+    } catch (error) {
+      failToProject(id, 'createSituation', error);
     }
+    revalidatePath(`/projects/${id}`);
+    revalidatePath('/projects');
   }
 
   async function assignEmployee(formData: FormData) {
     'use server';
     const employeeId = String(formData.get('employeeId'));
     const startDate = String(formData.get('startDate'));
-    if (employeeId && startDate) {
+    if (!employeeId || !startDate) {
+      redirect(`/projects/${id}?error=assignEmployee&code=invalid`);
+    }
+    // rate is optional, but a basis and an amount go together: the backend
+    // rejects the half-set shape, so only forward the pair when both are present.
+    const rateType = String(formData.get('rateType') ?? '');
+    const rateRaw = String(formData.get('rateAmountMad') ?? '').trim();
+    const rateAmountMad = rateRaw ? Number(rateRaw) : undefined;
+    if ((rateType && rateAmountMad === undefined) || (rateAmountMad !== undefined && !rateType)) {
+      redirect(`/projects/${id}?error=assignEmployee&code=invalid`);
+    }
+    try {
       await apiPost(`/people/employees/${employeeId}/assign`, {
         projectId: id,
         startDate,
+        ...(rateType && rateAmountMad !== undefined
+          ? { rateType, rateAmountMad }
+          : {}),
       });
-      revalidatePath(`/projects/${id}`);
+    } catch (error) {
+      failToProject(id, 'assignEmployee', error);
     }
+    revalidatePath(`/projects/${id}`);
+  }
+
+  async function logWorkDay(formData: FormData) {
+    'use server';
+    const assignmentId = String(formData.get('aid') ?? '');
+    const workDate = String(formData.get('workDate') ?? '');
+    const daysWorked = Number(formData.get('daysWorked'));
+    if (
+      !assignmentId ||
+      !workDate ||
+      !Number.isFinite(daysWorked) ||
+      daysWorked <= 0 ||
+      daysWorked > 2
+    ) {
+      redirect(`/projects/${id}?error=logWorkDay&code=invalid`);
+    }
+    try {
+      const notes = String(formData.get('notes') ?? '').trim();
+      await apiPost(`/people/assignments/${assignmentId}/workdays`, {
+        workDate,
+        daysWorked,
+        notes: notes || undefined,
+      });
+    } catch (error) {
+      failToProject(id, 'logWorkDay', error);
+    }
+    revalidatePath(`/projects/${id}`);
   }
 
   async function endAssignment(formData: FormData) {
     'use server';
-    await apiPost(
-      `/people/assignments/${String(formData.get('aid'))}/end`,
-    );
+    try {
+      await apiPost(`/people/assignments/${String(formData.get('aid'))}/end`);
+    } catch (error) {
+      failToProject(id, 'endAssignment', error);
+    }
     revalidatePath(`/projects/${id}`);
   }
 
@@ -192,7 +266,17 @@ export default async function ProjectDetailPage({
     const effectifs = Number(formData.get('effectifs'));
     const travaux = String(formData.get('travauxRealises') ?? '');
     const reportDate = String(formData.get('reportDate'));
-    if (Number.isInteger(effectifs) && effectifs >= 0 && travaux.trim().length >= 10) {
+    if (
+      !(
+        Number.isInteger(effectifs) &&
+        effectifs >= 0 &&
+        travaux.trim().length >= 10 &&
+        reportDate
+      )
+    ) {
+      redirect(`/projects/${id}?error=createDailyLog&code=invalid`);
+    }
+    try {
       await apiPost(`/field/projects/${id}/logs`, {
         reportDate,
         effectifs,
@@ -200,8 +284,10 @@ export default async function ProjectDetailPage({
         blocages: String(formData.get('blocages') ?? '') || undefined,
         incidentsSecurite: Number(formData.get('incidentsSecurite')) || 0,
       });
-      revalidatePath(`/projects/${id}`);
+    } catch (error) {
+      failToProject(id, 'createDailyLog', error);
     }
+    revalidatePath(`/projects/${id}`);
   }
 
   async function transitionSituation(formData: FormData) {
@@ -556,40 +642,129 @@ export default async function ProjectDetailPage({
       </section>
 
       <section className="mb-6 rounded-xl border border-line bg-paper-2 shadow-sm">
-        <div className="flex items-center justify-between border-b border-line px-5 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-faint">
             Équipe ({team.effectifActif} actif{team.effectifActif > 1 ? 's' : ''})
           </h2>
+          <div className="flex flex-wrap items-center gap-4 text-xs text-muted">
+            <span>
+              Jours pointés{' '}
+              <strong className="font-mono tabular-nums text-ink-2">
+                {fmtDays(labor.totalDays)}
+              </strong>
+            </span>
+            <span>
+              Main-d&apos;œuvre due{' '}
+              <strong className="font-mono tabular-nums text-ink-2">
+                {fmtMad(labor.totalDuesMad)}
+              </strong>
+            </span>
+          </div>
         </div>
         <ul className="divide-y divide-line">
-          {team.membres.map((member) => (
-            <li
-              key={member.id}
-              className="flex flex-wrap items-center justify-between gap-3 px-5 py-3"
-            >
-              <div>
-                <p className="text-sm font-semibold">{member.fullName}</p>
-                <p className="text-xs text-faint">
-                  {member.metier} · depuis{' '}
-                  {new Date(member.startDate).toLocaleDateString('fr-MA')}
-                  {member.endDate &&
-                    ` → ${new Date(member.endDate).toLocaleDateString('fr-MA')}`}
-                </p>
-              </div>
-              {member.actif ? (
-                <form action={endAssignment}>
-                  <input type="hidden" name="aid" value={member.id} />
-                  <button className="rounded-md border border-line-2 px-2.5 py-1 text-xs font-medium text-muted transition hover:bg-sand">
-                    Clôturer l&apos;affectation
-                  </button>
-                </form>
-              ) : (
-                <span className="rounded-full bg-sand px-2.5 py-0.5 text-xs text-muted">
-                  Terminée
-                </span>
-              )}
-            </li>
-          ))}
+          {team.membres.map((member) => {
+            const line = laborByEmployee.get(member.employeeId);
+            const totalDays = line?.totalDays ?? 0;
+            const duesMad = line?.duesMad ?? 0;
+            const canLog =
+              member.actif &&
+              (project.status === 'en_cours' || project.status === 'suspendu');
+            return (
+              <li key={member.id} className="px-5 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold">{member.fullName}</p>
+                    <p className="text-xs text-faint">
+                      {member.metier} · depuis{' '}
+                      {new Date(member.startDate).toLocaleDateString('fr-MA')}
+                      {member.endDate &&
+                        ` → ${new Date(member.endDate).toLocaleDateString('fr-MA')}`}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-4 text-xs">
+                    <span className="text-muted">
+                      Tarif{' '}
+                      <strong className="font-mono tabular-nums text-ink-2">
+                        {fmtRate(line?.rateType, line?.rateAmountMad)}
+                      </strong>
+                    </span>
+                    <span className="text-muted">
+                      Jours{' '}
+                      <strong className="font-mono tabular-nums text-ink-2">
+                        {fmtDays(totalDays)}
+                      </strong>
+                    </span>
+                    <span className="text-muted">
+                      Dû{' '}
+                      <strong className="font-mono tabular-nums text-ink-2">
+                        {fmtMad(duesMad)}
+                      </strong>
+                    </span>
+                    {member.actif ? (
+                      <form action={endAssignment}>
+                        <input type="hidden" name="aid" value={member.id} />
+                        <button className="rounded-md border border-line-2 px-2.5 py-1 text-xs font-medium text-muted transition hover:bg-sand">
+                          Clôturer l&apos;affectation
+                        </button>
+                      </form>
+                    ) : (
+                      <span className="rounded-full bg-sand px-2.5 py-0.5 text-xs text-muted">
+                        Terminée
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {canLog && (
+                  <form
+                    action={logWorkDay}
+                    className="mt-3 flex flex-wrap items-end gap-2"
+                  >
+                    <input type="hidden" name="aid" value={member.id} />
+                    <label className="text-sm">
+                      <span className="mb-1 block text-xs text-muted">
+                        Date du pointage
+                      </span>
+                      <input
+                        type="date"
+                        name="workDate"
+                        required
+                        className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      <span className="mb-1 block text-xs text-muted">
+                        Jours travaillés
+                      </span>
+                      <input
+                        type="number"
+                        name="daysWorked"
+                        required
+                        min={0.5}
+                        max={2}
+                        step="0.5"
+                        defaultValue={1}
+                        className="w-24 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+                      />
+                    </label>
+                    <label className="min-w-48 flex-1 text-sm">
+                      <span className="mb-1 block text-xs text-muted">
+                        Note (optionnel)
+                      </span>
+                      <input
+                        type="text"
+                        name="notes"
+                        maxLength={1000}
+                        className="w-full rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+                      />
+                    </label>
+                    <button className="rounded-md border border-line-2 px-2.5 py-2 text-xs font-medium text-muted transition hover:bg-sand">
+                      Pointer la journée
+                    </button>
+                  </form>
+                )}
+              </li>
+            );
+          })}
         </ul>
         {team.membres.length === 0 && (
           <p className="p-8 text-center text-sm text-faint">
@@ -623,6 +798,32 @@ export default async function ProjectDetailPage({
                   name="startDate"
                   required
                   className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-xs text-muted">
+                  Base de paie (optionnel)
+                </span>
+                <select
+                  name="rateType"
+                  defaultValue=""
+                  className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+                >
+                  <option value="">—</option>
+                  <option value="jour">Journalier</option>
+                  <option value="mois">Mensuel</option>
+                </select>
+              </label>
+              <label className="text-sm">
+                <span className="mb-1 block text-xs text-muted">
+                  Tarif MAD (optionnel)
+                </span>
+                <input
+                  type="number"
+                  name="rateAmountMad"
+                  min={0}
+                  step="0.01"
+                  className="w-32 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
                 />
               </label>
               <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">

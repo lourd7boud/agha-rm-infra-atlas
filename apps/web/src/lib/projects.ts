@@ -157,6 +157,46 @@ export interface TeamResponse {
   membres: TeamMember[];
 }
 
+/** Pay basis for an assignment — daily or monthly rate. */
+export type RateType = 'jour' | 'mois';
+
+export const RATE_TYPE_LABELS: Record<RateType, string> = {
+  jour: 'jour',
+  mois: 'mois',
+};
+
+/** Per-worker line of GET /people/projects/:id/labor (mirrors @atlas/core). */
+export interface ProjectLaborLine {
+  employeeId: string;
+  fullName: string;
+  metier: string;
+  rateType?: RateType | null;
+  rateAmountMad?: number | null;
+  totalDays: number;
+  duesMad: number;
+}
+
+/** GET /people/projects/:id/labor envelope. */
+export interface ProjectLabor {
+  lines: ProjectLaborLine[];
+  totalDays: number;
+  totalDuesMad: number;
+}
+
 export function fmtMad(value: number): string {
   return `${Math.round(value).toLocaleString('fr-MA')} MAD`;
+}
+
+/** A worked-days count, trimmed of trailing zeros (e.g. "1" / "0,5" / "12,5"). */
+export function fmtDays(value: number): string {
+  return value.toLocaleString('fr-MA', { maximumFractionDigits: 2 });
+}
+
+/** Renders a rate as "300 MAD/jour", or a dash when no rate is set. */
+export function fmtRate(
+  rateType: RateType | null | undefined,
+  rateAmountMad: number | null | undefined,
+): string {
+  if (!rateType || !rateAmountMad) return '—';
+  return `${fmtMad(rateAmountMad)}/${RATE_TYPE_LABELS[rateType]}`;
 }
