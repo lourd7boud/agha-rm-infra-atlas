@@ -185,5 +185,7 @@ const stockRepositoryProvider = {
 @Module({
   controllers: [StockController],
   providers: [stockRepositoryProvider],
+  // Exported so ProjectModule can inject STOCK_REPOSITORY for the cost rollup.
+  exports: [stockRepositoryProvider],
 })
 export class StockModule {}

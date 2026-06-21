@@ -195,3 +195,60 @@ describe('InMemoryStockRepository.projectConsumption', () => {
     expect(consumption[0]?.history).toHaveLength(2);
   });
 });
+
+describe('InMemoryStockRepository.materialsCostByProject', () => {
+  it('sums valued consumption per project across the whole portfolio', async () => {
+    // Arrange — consumption on two projects; a non-consumption move is ignored.
+    const repo = new InMemoryStockRepository();
+    await repo.upsertMaterial({
+      code: 'CIM-001',
+      designation: 'Ciment CPJ 45',
+      unit: 'sac',
+      unitCostMad: 72,
+    });
+    const [material] = await repo.listMaterials();
+    const materialId = material!.id;
+    // proj-1: 10 + 5 sacs @72 = 1080 MAD.
+    await repo.recordMovement({
+      kind: 'consumption',
+      materialId,
+      quantity: 10,
+      fromDepotId: 'depot-chantier',
+      projectId: 'proj-1',
+      occurredAt: new Date('2026-03-06'),
+    });
+    await repo.recordMovement({
+      kind: 'consumption',
+      materialId,
+      quantity: 5,
+      fromDepotId: 'depot-chantier',
+      projectId: 'proj-1',
+      occurredAt: new Date('2026-03-07'),
+    });
+    // proj-2: 3 sacs @72 = 216 MAD.
+    await repo.recordMovement({
+      kind: 'consumption',
+      materialId,
+      quantity: 3,
+      fromDepotId: 'depot-chantier',
+      projectId: 'proj-2',
+      occurredAt: new Date('2026-03-08'),
+    });
+    // A purchase (not a consumption) must not contribute to any project's cost.
+    await repo.recordMovement({
+      kind: 'purchase',
+      materialId,
+      quantity: 100,
+      toDepotId: 'depot-central',
+      occurredAt: new Date('2026-03-01'),
+    });
+
+    // Act
+    const costs = await repo.materialsCostByProject();
+
+    // Assert — one row per project, valued by the material's standard cost.
+    expect(costs).toHaveLength(2);
+    expect(costs.find((c) => c.projectId === 'proj-1')?.costMad).toBe(1080);
+    expect(costs.find((c) => c.projectId === 'proj-2')?.costMad).toBe(216);
+  });
+});

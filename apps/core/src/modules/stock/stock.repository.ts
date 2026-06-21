@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { depots, materials, stockMovements } from '../../db/schema';
 import {
@@ -11,6 +11,12 @@ import {
   type ProjectMaterialConsumption,
   type StockMovementEntry,
 } from './stock.domain';
+
+/** Per-project materials cost: valued consumption summed for one chantier. */
+export interface MaterialsCostByProject {
+  projectId: string;
+  costMad: number;
+}
 
 // ── Inputs ───────────────────────────────────────────────────────────────────
 
@@ -98,6 +104,14 @@ export interface StockRepository {
   balances(): Promise<DepotBalance[]>;
   /** Per-material consumption rollup for one chantier, valued + with history. */
   projectConsumption(projectId: string): Promise<ProjectMaterialConsumption[]>;
+  /**
+   * Valued materials consumption summed per chantier, for every project at once
+   * — the materials component of the portfolio cost rollup. One grouped query
+   * (no per-project N+1): sums quantity × (movement cost ?? material cost ?? 0)
+   * over kind 'consumption' rows that carry a projectId. Projects with no site
+   * consumption simply do not appear; the cost domain defaults them to 0.
+   */
+  materialsCostByProject(): Promise<MaterialsCostByProject[]>;
 }
 
 const DEFAULT_MOVEMENT_LIMIT = 200;
@@ -232,6 +246,30 @@ export class InMemoryStockRepository implements StockRepository {
       scoped.map(toMovementEntry),
       this.materials.map(toMaterialRef),
     );
+  }
+
+  async materialsCostByProject(): Promise<MaterialsCostByProject[]> {
+    // Mirror the Drizzle GROUP BY: same valued-consumption fold the per-project
+    // rollup uses (movement cost ?? material cost ?? 0), summed across projects.
+    const costById = new Map<string, MaterialRecord>(
+      this.materials.map((material) => [material.id, material]),
+    );
+    const totals = new Map<string, number>();
+    for (const movement of this.movements) {
+      if (movement.kind !== 'consumption' || !movement.projectId) continue;
+      const unitCost =
+        movement.unitCostMad ??
+        costById.get(movement.materialId)?.unitCostMad ??
+        0;
+      totals.set(
+        movement.projectId,
+        (totals.get(movement.projectId) ?? 0) + movement.quantity * unitCost,
+      );
+    }
+    return [...totals.entries()].map(([projectId, costMad]) => ({
+      projectId,
+      costMad,
+    }));
   }
 }
 
@@ -370,6 +408,34 @@ export class DrizzleStockRepository implements StockRepository {
     return computeProjectConsumption(
       movementRows.map(toMovementRecord).map(toMovementEntry),
       materialRows.map(toMaterialRecord).map(toMaterialRef),
+    );
+  }
+
+  async materialsCostByProject(): Promise<MaterialsCostByProject[]> {
+    // One GROUP BY project_id query: SUM(quantity × coalesce(movement cost,
+    // material standard cost, 0)) over site-consumption rows only. The join to
+    // materials supplies the standard-cost fallback when a movement has no
+    // explicit unit cost — same valuation as computeProjectConsumption, summed
+    // in SQL so the whole portfolio costs one round trip, not one per project.
+    // stock_movement_project_id_idx backs the project_id filter/grouping.
+    const rows = await this.db
+      .select({
+        projectId: stockMovements.projectId,
+        costMad: sql<string>`coalesce(sum(${stockMovements.quantity} * coalesce(${stockMovements.unitCostMad}, ${materials.unitCostMad}, 0)), 0)`,
+      })
+      .from(stockMovements)
+      .innerJoin(materials, eq(materials.id, stockMovements.materialId))
+      .where(
+        and(
+          eq(stockMovements.kind, 'consumption'),
+          isNotNull(stockMovements.projectId),
+        ),
+      )
+      .groupBy(stockMovements.projectId);
+    return rows.flatMap((row) =>
+      row.projectId
+        ? [{ projectId: row.projectId, costMad: Number(row.costMad) }]
+        : [],
     );
   }
 }

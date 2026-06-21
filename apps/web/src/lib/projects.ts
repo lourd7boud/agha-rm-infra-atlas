@@ -183,8 +183,47 @@ export interface ProjectLabor {
   totalDuesMad: number;
 }
 
+/**
+ * One project's cost position — frontend mirror of @atlas/core ProjectCost.
+ * coutTotalMad = matériaux + main-d'œuvre + dépenses; restantMad = budget − coût;
+ * margePct = budget > 0 ? restant / budget × 100 : 0. incomesMad (encaissements)
+ * is carried through but never folded into the cost.
+ */
+export interface ProjectCost {
+  budgetMad: number;
+  materialsCostMad: number;
+  laborCostMad: number;
+  expensesMad: number;
+  coutTotalMad: number;
+  restantMad: number;
+  margePct: number;
+  incomesMad?: number;
+}
+
+/** GET /project/projects/cost-summary line — one ProjectCost keyed by project. */
+export interface ProjectCostSummary extends ProjectCost {
+  projectId: string;
+}
+
 export function fmtMad(value: number): string {
   return `${Math.round(value).toLocaleString('fr-MA')} MAD`;
+}
+
+/** Renders a margin/percentage as "12,3 %" (one decimal, fr-MA). */
+export function fmtPct(value: number): string {
+  return `${value.toLocaleString('fr-MA', {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  })} %`;
+}
+
+/**
+ * Tone for a remaining-budget / margin figure: emerald when the chantier is
+ * still in the black (≥ 0), clay once the cost overruns the budget (< 0).
+ * Mirrors the finance page's net-position coloring.
+ */
+export function costToneClass(value: number): string {
+  return value < 0 ? 'text-clay' : 'text-emerald';
 }
 
 /** A worked-days count, trimmed of trailing zeros (e.g. "1" / "0,5" / "12,5"). */

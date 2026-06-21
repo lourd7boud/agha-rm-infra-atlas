@@ -227,3 +227,93 @@ describe('InMemoryPeopleRepository.projectLabor', () => {
     expect(labor.totalDuesMad).toBe(0);
   });
 });
+
+describe('InMemoryPeopleRepository.laborDuesByProject', () => {
+  it('sums each chantier total dues across the whole portfolio', async () => {
+    // Arrange — two workers (jour + mois) on proj-1, one on proj-2.
+    const repo = new InMemoryPeopleRepository();
+    const macon = await repo.createEmployee({
+      fullName: 'Mohamed Alami',
+      metier: 'maçon',
+    });
+    const chef = await repo.createEmployee({
+      fullName: 'Youssef Bennani',
+      metier: 'chef de chantier',
+    });
+    const other = await repo.createEmployee({
+      fullName: 'Karim Idrissi',
+      metier: 'plombier',
+    });
+    const maconAssign = await repo.createAssignment(
+      macon.id,
+      'proj-1',
+      new Date('2026-06-01'),
+      { rateType: 'jour', rateAmountMad: 350 },
+    );
+    const chefAssign = await repo.createAssignment(
+      chef.id,
+      'proj-1',
+      new Date('2026-06-01'),
+      { rateType: 'mois', rateAmountMad: 7800 },
+    );
+    const otherAssign = await repo.createAssignment(
+      other.id,
+      'proj-2',
+      new Date('2026-06-01'),
+      { rateType: 'jour', rateAmountMad: 300 },
+    );
+    // maçon: 20 days @350 = 7000 ; chef: 26 days @(7800/26=300) = 7800.
+    for (let day = 1; day <= 20; day++) {
+      await repo.upsertWorkDay({
+        assignmentId: maconAssign.id,
+        workDate: new Date(2026, 5, day),
+        daysWorked: 1,
+      });
+    }
+    for (let day = 1; day <= 26; day++) {
+      await repo.upsertWorkDay({
+        assignmentId: chefAssign.id,
+        workDate: new Date(2026, 5, day),
+        daysWorked: 1,
+      });
+    }
+    await repo.upsertWorkDay({
+      assignmentId: otherAssign.id,
+      workDate: new Date('2026-06-21'),
+      daysWorked: 1,
+    });
+
+    // Act
+    const dues = await repo.laborDuesByProject();
+
+    // Assert — proj-1 = 14 800 (7000 + 7800), proj-2 = 300, one row each.
+    expect(dues).toHaveLength(2);
+    expect(dues.find((d) => d.projectId === 'proj-1')?.duesMad).toBe(14_800);
+    expect(dues.find((d) => d.projectId === 'proj-2')?.duesMad).toBe(300);
+  });
+
+  it('counts a rate-less assignment as 0 dues without dropping its project', async () => {
+    // Arrange — an assignment with logged days but no rate yet.
+    const repo = new InMemoryPeopleRepository();
+    const worker = await repo.createEmployee({
+      fullName: 'Hassan Tazi',
+      metier: 'manœuvre',
+    });
+    const assignment = await repo.createAssignment(
+      worker.id,
+      'proj-3',
+      new Date('2026-06-01'),
+    );
+    await repo.upsertWorkDay({
+      assignmentId: assignment.id,
+      workDate: new Date('2026-06-21'),
+      daysWorked: 1,
+    });
+
+    // Act
+    const dues = await repo.laborDuesByProject();
+
+    // Assert — proj-3 surfaces with 0 dues until a rate is set.
+    expect(dues.find((d) => d.projectId === 'proj-3')?.duesMad).toBe(0);
+  });
+});

@@ -3,6 +3,7 @@ import {
   Body,
   ConflictException,
   Controller,
+  forwardRef,
   Get,
   Inject,
   Logger,
@@ -15,7 +16,11 @@ import {
 import { z } from 'zod';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
+import { FinanceModule } from '../finance/finance.module';
+import { PeopleModule } from '../people/people.module';
+import { StockModule } from '../stock/stock.module';
 import { buildDecompte } from './decompte.domain';
+import { ProjectCostService } from './project-cost.service';
 import {
   DrizzleProjectRepository,
   InMemoryProjectRepository,
@@ -96,6 +101,7 @@ const SITUATION_TRANSITIONS: Record<SituationStatus, SituationStatus[]> = {
 export class ProjectController {
   constructor(
     @Inject(PROJECT_REPOSITORY) private readonly repository: ProjectRepository,
+    private readonly cost: ProjectCostService,
   ) {}
 
   /** Register a chantier (from a won tender or manually). */
@@ -115,12 +121,33 @@ export class ProjectController {
     return Promise.all(records.map((record) => this.present(record)));
   }
 
+  /**
+   * Portfolio cost rollup for the list: per-project matériaux + main-d'œuvre +
+   * dépenses against the marché budget, with restant + marge. Defined BEFORE the
+   * :id routes so the literal path is not shadowed by projects/:id. One batched
+   * service call (~5 queries), no per-project N+1.
+   */
+  @Roles('travaux', 'direction', 'finance', 'admin-si')
+  @Get('projects/cost-summary')
+  async costSummary() {
+    return this.cost.costSummary();
+  }
+
   @Roles('travaux', 'direction', 'finance', 'marches', 'admin-si')
   @Get('projects/:id')
   async detail(@Param('id') id: string) {
     const record = await this.findOr404(id);
     const situations = await this.repository.listSituations(id);
     return { ...(await this.present(record)), situations };
+  }
+
+  /** One chantier's cost breakdown: matériaux + main-d'œuvre + dépenses vs budget. */
+  @Roles('travaux', 'direction', 'finance', 'admin-si')
+  @Get('projects/:id/cost')
+  async projectCost(@Param('id') id: string) {
+    const cost = await this.cost.projectCost(id);
+    if (!cost) throw new NotFoundException(`Project not found: ${id}`);
+    return cost;
   }
 
   /** Chantier lifecycle transition. */
@@ -324,8 +351,17 @@ const projectRepositoryProvider = {
 };
 
 @Module({
+  // StockModule (no back-edge), plus People/Finance via forwardRef to break the
+  // module cycle (those two import ProjectModule for PROJECT_REPOSITORY). The
+  // three are imported so ProjectCostService can inject STOCK_REPOSITORY,
+  // PEOPLE_REPOSITORY and FINANCE_LEDGER_REPOSITORY for the cost rollup.
+  imports: [
+    StockModule,
+    forwardRef(() => PeopleModule),
+    forwardRef(() => FinanceModule),
+  ],
   controllers: [ProjectController],
-  providers: [projectRepositoryProvider],
+  providers: [projectRepositoryProvider, ProjectCostService],
   exports: [projectRepositoryProvider],
 })
 export class ProjectModule {}

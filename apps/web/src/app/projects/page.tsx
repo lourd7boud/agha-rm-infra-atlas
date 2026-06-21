@@ -1,13 +1,25 @@
 import Link from 'next/link';
 import { apiGet } from '@/lib/api';
 import {
+  costToneClass,
   fmtMad,
+  fmtPct,
   PROJECT_STATUS_BADGES,
+  type ProjectCostSummary,
   type ProjectSummary,
 } from '@/lib/projects';
 
 export default async function ProjectsPage() {
-  const projects = await apiGet<ProjectSummary[]>('/project/projects');
+  // Portfolio + cost rollup in parallel; the rollup is one batched service call
+  // (≈5 queries), joined per-card by projectId. A project missing from the
+  // rollup falls back to no-cost display rather than breaking the card.
+  const [projects, costSummary] = await Promise.all([
+    apiGet<ProjectSummary[]>('/project/projects'),
+    apiGet<ProjectCostSummary[]>('/project/projects/cost-summary'),
+  ]);
+  const costByProject = new Map<string, ProjectCostSummary>(
+    costSummary.map((cost) => [cost.projectId, cost]),
+  );
 
   return (
     <div>
@@ -22,6 +34,13 @@ export default async function ProjectsPage() {
       <div className="grid gap-5 lg:grid-cols-2">
         {projects.map((project) => {
           const badge = PROJECT_STATUS_BADGES[project.status];
+          const cost = costByProject.get(project.id);
+          // Width of the cost-vs-budget bar; clamped, and 0 for a budget-less
+          // chantier so the bar simply stays empty rather than dividing by zero.
+          const coutPct =
+            cost && cost.budgetMad > 0
+              ? Math.min(100, (cost.coutTotalMad / cost.budgetMad) * 100)
+              : 0;
           return (
             <Link
               key={project.id}
@@ -65,6 +84,37 @@ export default async function ProjectsPage() {
                   {fmtMad(project.retenueCumuleeMad)}
                 </span>
               </div>
+
+              {cost ? (
+                <div className="mt-4 border-t border-line pt-3">
+                  <div className="mb-2 flex items-baseline justify-between text-xs">
+                    <span className="text-faint">Coût engagé</span>
+                    <span className="font-mono tabular-nums text-ink-2">
+                      {fmtMad(cost.coutTotalMad)}
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-sand">
+                    <div
+                      className={`h-full rounded-full ${
+                        cost.restantMad < 0 ? 'bg-clay' : 'bg-cyan-deep'
+                      }`}
+                      style={{ width: `${coutPct}%` }}
+                    />
+                  </div>
+                  <div className="mt-2 flex justify-between text-xs">
+                    <span className={`font-mono tabular-nums ${costToneClass(cost.restantMad)}`}>
+                      Restant {fmtMad(cost.restantMad)}
+                    </span>
+                    <span className={`font-mono tabular-nums ${costToneClass(cost.margePct)}`}>
+                      marge {fmtPct(cost.margePct)}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-4 border-t border-line pt-3 text-xs text-faint">
+                  Coût indisponible
+                </p>
+              )}
             </Link>
           );
         })}

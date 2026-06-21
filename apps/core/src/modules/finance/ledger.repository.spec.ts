@@ -150,3 +150,37 @@ describe('InMemoryFinanceLedgerRepository — summaries', () => {
     expect(flow.netMad).toBe(350_000);
   });
 });
+
+describe('InMemoryFinanceLedgerRepository — per-project aggregates', () => {
+  test('expensesByProject sums dépenses per project, skipping null project rows', async () => {
+    // Arrange — two projects plus an unscoped dépense that must not appear.
+    const repo = new InMemoryFinanceLedgerRepository();
+    await repo.createExpense(expenseInput({ projectId: 'p1', amountMad: 250_000 }));
+    await repo.createExpense(expenseInput({ projectId: 'p1', amountMad: 50_000 }));
+    await repo.createExpense(expenseInput({ projectId: 'p2', amountMad: 100_000 }));
+    await repo.createExpense(expenseInput({ amountMad: 9_999 }));
+
+    // Act
+    const totals = await repo.expensesByProject();
+
+    // Assert — one row per project; the null-project dépense is excluded.
+    expect(totals).toHaveLength(2);
+    expect(totals.find((t) => t.projectId === 'p1')?.totalMad).toBe(300_000);
+    expect(totals.find((t) => t.projectId === 'p2')?.totalMad).toBe(100_000);
+  });
+
+  test('paymentsByProject sums recettes per project, skipping null project rows', async () => {
+    // Arrange
+    const repo = new InMemoryFinanceLedgerRepository();
+    await repo.createPayment(paymentInput({ projectId: 'p1', amountMad: 600_000 }));
+    await repo.createPayment(paymentInput({ projectId: 'p1', amountMad: 100_000 }));
+    await repo.createPayment(paymentInput({ amountMad: 7_777 }));
+
+    // Act
+    const totals = await repo.paymentsByProject();
+
+    // Assert — p1 folded across two rows; the unscoped recette is excluded.
+    expect(totals).toHaveLength(1);
+    expect(totals.find((t) => t.projectId === 'p1')?.totalMad).toBe(700_000);
+  });
+});

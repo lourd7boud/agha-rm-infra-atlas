@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, count, desc, eq, sum } from 'drizzle-orm';
+import { and, count, desc, eq, isNotNull, sum } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { expenses, payments } from '../../db/schema';
 import {
@@ -10,6 +10,12 @@ import {
   type ExpenseCategoryTotal,
   type ExpenseSummary,
 } from './ledger.domain';
+
+/** Per-project ledger total (dépenses or recettes) summed for one chantier. */
+export interface TotalByProject {
+  projectId: string;
+  totalMad: number;
+}
 
 export interface CreatePayment {
   projectId?: string;
@@ -65,6 +71,19 @@ export interface FinanceLedgerRepository {
   listExpenses(filter: ExpenseFilter): Promise<ExpenseRecord[]>;
   expenseSummary(): Promise<ExpenseSummary>;
   cashflow(projectId?: string): Promise<Cashflow>;
+  /**
+   * Dépenses summed per chantier, for every project at once — the expenses
+   * component of the portfolio cost rollup. One GROUP BY project_id query
+   * (project_id NOT NULL); projects with no dépenses do not appear and the cost
+   * domain defaults them to 0.
+   */
+  expensesByProject(): Promise<TotalByProject[]>;
+  /**
+   * Recettes (encaissements) summed per chantier, for every project at once —
+   * carried into the cost rollup as incomes (not a cost component). One GROUP BY
+   * project_id query (project_id NOT NULL).
+   */
+  paymentsByProject(): Promise<TotalByProject[]>;
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
@@ -126,6 +145,29 @@ export class InMemoryFinanceLedgerRepository implements FinanceLedgerRepository 
       projectId,
     );
   }
+
+  async expensesByProject(): Promise<TotalByProject[]> {
+    return sumByProject(this.expenseRecords);
+  }
+
+  async paymentsByProject(): Promise<TotalByProject[]> {
+    return sumByProject(this.paymentRecords);
+  }
+}
+
+/** Folds project-scoped ledger rows into one total per project (skips null). */
+function sumByProject(
+  rows: readonly { projectId?: string; amountMad: number }[],
+): TotalByProject[] {
+  const totals = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.projectId) continue;
+    totals.set(row.projectId, (totals.get(row.projectId) ?? 0) + row.amountMad);
+  }
+  return [...totals.entries()].map(([projectId, totalMad]) => ({
+    projectId,
+    totalMad,
+  }));
 }
 
 export class DrizzleFinanceLedgerRepository implements FinanceLedgerRepository {
@@ -256,6 +298,46 @@ export class DrizzleFinanceLedgerRepository implements FinanceLedgerRepository {
     const expensesMad = Number(expenseAgg[0]?.total ?? 0);
     return { incomesMad, expensesMad, netMad: incomesMad - expensesMad };
   }
+
+  async expensesByProject(): Promise<TotalByProject[]> {
+    // One GROUP BY project_id query (project_id NOT NULL), summed in SQL —
+    // expense_project_id_idx backs the filter/grouping, only one row per project
+    // crosses the wire. Unscoped (whole portfolio) — the cost rollup defaults
+    // absent projects to 0.
+    const rows = await this.db
+      .select({
+        projectId: expenses.projectId,
+        totalMad: sum(expenses.amountMad),
+      })
+      .from(expenses)
+      .where(isNotNull(expenses.projectId))
+      .groupBy(expenses.projectId);
+    return toTotalsByProject(rows);
+  }
+
+  async paymentsByProject(): Promise<TotalByProject[]> {
+    // Mirror expensesByProject for recettes — payment_project_id_idx backs it.
+    const rows = await this.db
+      .select({
+        projectId: payments.projectId,
+        totalMad: sum(payments.amountMad),
+      })
+      .from(payments)
+      .where(isNotNull(payments.projectId))
+      .groupBy(payments.projectId);
+    return toTotalsByProject(rows);
+  }
+}
+
+/** Shapes a GROUP BY project_id aggregate into TotalByProject (skips null id). */
+function toTotalsByProject(
+  rows: readonly { projectId: string | null; totalMad: string | null }[],
+): TotalByProject[] {
+  return rows.flatMap((row) =>
+    row.projectId
+      ? [{ projectId: row.projectId, totalMad: Number(row.totalMad ?? 0) }]
+      : [],
+  );
 }
 
 type PaymentRow = typeof payments.$inferSelect;

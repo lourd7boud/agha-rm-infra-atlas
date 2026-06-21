@@ -3,6 +3,7 @@ import {
   Body,
   ConflictException,
   Controller,
+  forwardRef,
   Get,
   Inject,
   Logger,
@@ -196,8 +197,13 @@ const peopleRepositoryProvider = {
 };
 
 @Module({
-  imports: [ProjectModule],
+  // forwardRef breaks the module cycle: ProjectModule imports PeopleModule for
+  // the cost rollup (PEOPLE_REPOSITORY), and PeopleModule imports ProjectModule
+  // for PROJECT_REPOSITORY (assign validation).
+  imports: [forwardRef(() => ProjectModule)],
   controllers: [PeopleController],
   providers: [peopleRepositoryProvider],
+  // Exported so ProjectModule can inject PEOPLE_REPOSITORY for the cost rollup.
+  exports: [peopleRepositoryProvider],
 })
 export class PeopleModule {}

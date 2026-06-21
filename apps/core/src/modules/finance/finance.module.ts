@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  forwardRef,
   Get,
   Inject,
   Logger,
@@ -226,7 +227,10 @@ const financeLedgerRepositoryProvider = {
 };
 
 @Module({
-  imports: [ProjectModule],
+  // forwardRef breaks the module cycle: ProjectModule imports FinanceModule for
+  // the cost rollup (FINANCE_LEDGER_REPOSITORY), and FinanceModule imports
+  // ProjectModule for PROJECT_REPOSITORY (receivables join).
+  imports: [forwardRef(() => ProjectModule)],
   controllers: [FinanceController],
   providers: [cautionRepositoryProvider, financeLedgerRepositoryProvider],
   exports: [cautionRepositoryProvider, financeLedgerRepositoryProvider],

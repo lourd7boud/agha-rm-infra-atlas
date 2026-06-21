@@ -3,10 +3,17 @@ import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { assignments, employees, workDays } from '../../db/schema';
 import {
+  computeAssignmentDues,
   computeProjectLabor,
   type ProjectLabor,
   type RateType,
 } from './labor.domain';
+
+/** Per-project labour cost: each chantier's main-d'œuvre dues, summed. */
+export interface LaborDuesByProject {
+  projectId: string;
+  duesMad: number;
+}
 
 export type EmployeeStatus = 'actif' | 'inactif';
 
@@ -96,6 +103,15 @@ export interface PeopleRepository {
   listWorkDays(assignmentId: string): Promise<WorkDayRecord[]>;
   /** Per-worker dues + project totals, folded from assignments × their pointage. */
   projectLabor(projectId: string): Promise<ProjectLabor>;
+  /**
+   * Total main-d'œuvre dues per chantier, for every project at once — the labour
+   * component of the portfolio cost rollup. Avoids a per-project N+1: one pass
+   * over assignments joined to their summed pointage, with dues folded via
+   * labor.domain.computeAssignmentDues (same definition as projectLabor) and
+   * accumulated by project. Projects with no assignments do not appear; the cost
+   * domain defaults them to 0.
+   */
+  laborDuesByProject(): Promise<LaborDuesByProject[]>;
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
@@ -249,6 +265,34 @@ export class InMemoryPeopleRepository implements PeopleRepository {
       };
     });
     return computeProjectLabor(withDays);
+  }
+
+  async laborDuesByProject(): Promise<LaborDuesByProject[]> {
+    // One pass over assignments: sum each one's pointage, fold to dues via the
+    // same labor.domain definition projectLabor uses, accumulate by project.
+    const daysByAssignment = new Map<string, number>();
+    for (const workDay of this.workDays) {
+      daysByAssignment.set(
+        workDay.assignmentId,
+        (daysByAssignment.get(workDay.assignmentId) ?? 0) + workDay.daysWorked,
+      );
+    }
+    const duesByProject = new Map<string, number>();
+    for (const assignment of this.assignments) {
+      const dues = computeAssignmentDues({
+        rateType: assignment.rateType,
+        rateAmountMad: assignment.rateAmountMad,
+        totalDays: daysByAssignment.get(assignment.id) ?? 0,
+      });
+      duesByProject.set(
+        assignment.projectId,
+        (duesByProject.get(assignment.projectId) ?? 0) + dues,
+      );
+    }
+    return [...duesByProject.entries()].map(([projectId, duesMad]) => ({
+      projectId,
+      duesMad,
+    }));
   }
 }
 
@@ -452,6 +496,48 @@ export class DrizzlePeopleRepository implements PeopleRepository {
         totalDays: Number(row.totalDays),
       })),
     );
+  }
+
+  async laborDuesByProject(): Promise<LaborDuesByProject[]> {
+    // One grouped query for the whole portfolio (no per-project N+1): each
+    // assignment with its summed pointage and pay basis, left-joined so a
+    // rate-less or pointage-less assignment still contributes (0 dues). Dues are
+    // folded in Node via computeAssignmentDues — the same labor.domain
+    // definition projectLabor uses — then accumulated per project, so the
+    // 'mois' ÷ WORKING_DAYS_PER_MONTH rule lives in one place, not duplicated in
+    // SQL.
+    const rows = await this.db
+      .select({
+        projectId: assignments.projectId,
+        rateType: assignments.rateType,
+        rateAmountMad: assignments.rateAmountMad,
+        totalDays: sql<string>`coalesce(sum(${workDays.daysWorked}), 0)`,
+      })
+      .from(assignments)
+      .leftJoin(workDays, eq(workDays.assignmentId, assignments.id))
+      .groupBy(
+        assignments.id,
+        assignments.projectId,
+        assignments.rateType,
+        assignments.rateAmountMad,
+      );
+
+    const duesByProject = new Map<string, number>();
+    for (const row of rows) {
+      const dues = computeAssignmentDues({
+        rateType: (row.rateType as RateType | null) ?? undefined,
+        rateAmountMad: row.rateAmountMad ? Number(row.rateAmountMad) : undefined,
+        totalDays: Number(row.totalDays),
+      });
+      duesByProject.set(
+        row.projectId,
+        (duesByProject.get(row.projectId) ?? 0) + dues,
+      );
+    }
+    return [...duesByProject.entries()].map(([projectId, duesMad]) => ({
+      projectId,
+      duesMad,
+    }));
   }
 }
 
