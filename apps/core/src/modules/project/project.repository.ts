@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { asc, desc, eq } from 'drizzle-orm';
 import type { Db } from '../../db/client';
-import { avenants, projects, situations } from '../../db/schema';
+import { avenants, projects, situations, tasks } from '../../db/schema';
+import { normalizeTaskPatch, type TaskPatch, type TaskStatus } from './task.domain';
 
 export type ProjectStatus =
   | 'preparation'
@@ -60,6 +61,31 @@ export interface AvenantRecord extends CreateAvenant {
   createdAt: Date;
 }
 
+export interface CreateTask {
+  projectId: string;
+  label: string;
+  description?: string;
+  progressPct?: number;
+  status?: TaskStatus;
+  startDate?: Date;
+  dueDate?: Date;
+  orderIndex?: number;
+}
+
+export interface TaskRecord {
+  id: string;
+  projectId: string;
+  label: string;
+  description?: string;
+  progressPct: number;
+  status: TaskStatus;
+  startDate?: Date;
+  dueDate?: Date;
+  orderIndex: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export const PROJECT_REPOSITORY = Symbol('PROJECT_REPOSITORY');
 
 export interface ProjectRepository {
@@ -76,6 +102,10 @@ export interface ProjectRepository {
     id: string,
     status: SituationStatus,
   ): Promise<SituationRecord | null>;
+  createTask(input: CreateTask): Promise<TaskRecord>;
+  listTasksByProject(projectId: string): Promise<TaskRecord[]>;
+  findTaskById(id: string): Promise<TaskRecord | null>;
+  updateTask(id: string, patch: TaskPatch): Promise<TaskRecord | null>;
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
@@ -160,6 +190,55 @@ export class InMemoryProjectRepository implements ProjectRepository {
     if (!existing) return null;
     const updated: SituationRecord = { ...existing, status };
     this.situations = this.situations.map((s) => (s.id === id ? updated : s));
+    return updated;
+  }
+
+  private tasks: readonly TaskRecord[] = [];
+
+  async createTask(input: CreateTask): Promise<TaskRecord> {
+    const status = input.status ?? 'a_faire';
+    const normalized = normalizeTaskPatch({
+      status,
+      progressPct: input.progressPct ?? 0,
+    });
+    const now = new Date();
+    const record: TaskRecord = {
+      id: randomUUID(),
+      projectId: input.projectId,
+      label: input.label,
+      description: input.description,
+      progressPct: normalized.progressPct ?? 0,
+      status: normalized.status ?? status,
+      startDate: input.startDate,
+      dueDate: input.dueDate,
+      orderIndex: input.orderIndex ?? 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.tasks = [...this.tasks, record];
+    return record;
+  }
+
+  async listTasksByProject(projectId: string): Promise<TaskRecord[]> {
+    return this.tasks
+      .filter((t) => t.projectId === projectId)
+      .sort((a, b) => a.orderIndex - b.orderIndex);
+  }
+
+  async findTaskById(id: string): Promise<TaskRecord | null> {
+    return this.tasks.find((t) => t.id === id) ?? null;
+  }
+
+  async updateTask(id: string, patch: TaskPatch): Promise<TaskRecord | null> {
+    const existing = this.tasks.find((t) => t.id === id) ?? null;
+    if (!existing) return null;
+    const normalized = normalizeTaskPatch(patch);
+    const updated: TaskRecord = {
+      ...existing,
+      ...normalized,
+      updatedAt: new Date(),
+    };
+    this.tasks = this.tasks.map((t) => (t.id === id ? updated : t));
     return updated;
   }
 }
@@ -304,10 +383,73 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .returning();
     return row ? toSituation(row) : null;
   }
+
+  async createTask(input: CreateTask): Promise<TaskRecord> {
+    const status = input.status ?? 'a_faire';
+    const normalized = normalizeTaskPatch({
+      status,
+      progressPct: input.progressPct ?? 0,
+    });
+    const [row] = await this.db
+      .insert(tasks)
+      .values({
+        projectId: input.projectId,
+        label: input.label,
+        description: input.description,
+        progressPct: (normalized.progressPct ?? 0).toString(),
+        status: normalized.status ?? status,
+        startDate: input.startDate,
+        dueDate: input.dueDate,
+        orderIndex: input.orderIndex ?? 0,
+      })
+      .returning();
+    if (!row) throw new Error('Task insert returned no row');
+    return toTask(row);
+  }
+
+  async listTasksByProject(projectId: string): Promise<TaskRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.projectId, projectId))
+      .orderBy(asc(tasks.orderIndex));
+    return rows.map(toTask);
+  }
+
+  async findTaskById(id: string): Promise<TaskRecord | null> {
+    const [row] = await this.db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, id))
+      .limit(1);
+    return row ? toTask(row) : null;
+  }
+
+  async updateTask(id: string, patch: TaskPatch): Promise<TaskRecord | null> {
+    const normalized = normalizeTaskPatch(patch);
+    const [row] = await this.db
+      .update(tasks)
+      .set({
+        label: normalized.label,
+        description: normalized.description,
+        ...(normalized.progressPct !== undefined
+          ? { progressPct: normalized.progressPct.toString() }
+          : {}),
+        status: normalized.status,
+        startDate: normalized.startDate,
+        dueDate: normalized.dueDate,
+        orderIndex: normalized.orderIndex,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, id))
+      .returning();
+    return row ? toTask(row) : null;
+  }
 }
 
 type ProjectRow = typeof projects.$inferSelect;
 type SituationRow = typeof situations.$inferSelect;
+type TaskRow = typeof tasks.$inferSelect;
 
 function toProject(row: ProjectRow): ProjectRecord {
   return {
@@ -338,5 +480,21 @@ function toSituation(row: SituationRow): SituationRecord {
     notes: row.notes ?? undefined,
     status: row.status as SituationStatus,
     createdAt: row.createdAt,
+  };
+}
+
+function toTask(row: TaskRow): TaskRecord {
+  return {
+    id: row.id,
+    projectId: row.projectId,
+    label: row.label,
+    description: row.description ?? undefined,
+    progressPct: Number(row.progressPct),
+    status: row.status as TaskStatus,
+    startDate: row.startDate ?? undefined,
+    dueDate: row.dueDate ?? undefined,
+    orderIndex: row.orderIndex,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }

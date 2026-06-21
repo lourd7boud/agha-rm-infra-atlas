@@ -127,6 +127,13 @@
       "when": 1782054553788,
       "tag": "0017_stock_materials",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1782056722055,
+      "tag": "0018_project_tasks",
+      "breakpoints": true
     }
   ]
 }

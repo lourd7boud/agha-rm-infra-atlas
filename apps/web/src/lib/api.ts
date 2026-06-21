@@ -65,3 +65,27 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   }
   return (await response.json()) as T;
 }
+
+/** Server-side PATCH against ATLAS Core (partial updates, e.g. task progress). */
+export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  const session = await auth();
+  if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
+    redirect(SIGNIN);
+  }
+  const response = await fetch(`${API_URL}${path}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.accessToken}`,
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    cache: 'no-store',
+  });
+  if (response.status === 401) {
+    redirect(SIGNIN);
+  }
+  if (!response.ok) {
+    throw new AtlasApiError(path, response.status);
+  }
+  return (await response.json()) as T;
+}

@@ -1,15 +1,20 @@
 import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
-import { apiGet, apiPost } from '@/lib/api';
+import { redirect } from 'next/navigation';
+import { apiGet, apiPatch, apiPost, AtlasApiError } from '@/lib/api';
 import {
   fmtMad,
   PROJECT_STATUS_BADGES,
   SITUATION_NEXT,
   SITUATION_STATUS_BADGES,
+  TASK_STATUS_BADGES,
+  TASK_STATUS_OPTIONS,
   type Employee,
   type JournalResponse,
   type ProjectSummary,
   type Situation,
+  type TaskStatus,
+  type TasksResponse,
   type TeamResponse,
 } from '@/lib/projects';
 import {
@@ -19,6 +24,53 @@ import {
 
 interface ProjectDetail extends ProjectSummary {
   situations: Situation[];
+}
+
+// next/navigation's redirect() throws a control-flow signal (NEXT_REDIRECT) that
+// must NOT be swallowed by an action's catch — re-throw it untouched.
+function isRedirectError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'digest' in error &&
+    typeof (error as { digest?: unknown }).digest === 'string' &&
+    (error as { digest: string }).digest.startsWith('NEXT_REDIRECT')
+  );
+}
+
+// Turn an action failure into user-visible feedback: log the real cause
+// server-side, then redirect back to the project with a stable error code the
+// page renders as a banner. The HTTP status (when the cause is an AtlasApiError)
+// distinguishes a 400 (validation) from a 5xx (server). Mirrors /stock.
+function failToProject(id: string, action: string, error: unknown): never {
+  if (isRedirectError(error)) throw error;
+  const status = error instanceof AtlasApiError ? error.status : undefined;
+  console.error(
+    `[projects] action "${action}" failed${status ? ` (HTTP ${status})` : ''}`,
+    error,
+  );
+  const code = status === 400 ? 'invalid' : 'failed';
+  redirect(`/projects/${id}?error=${action}&code=${code}`);
+}
+
+const ACTION_ERROR_MESSAGES: Record<string, string> = {
+  'createTask:invalid':
+    'Tâche refusée : l’intitulé doit comporter au moins 3 caractères.',
+  'createTask:failed': 'Échec de l’ajout de la tâche. Réessayez.',
+  'updateTask:invalid':
+    'Mise à jour refusée : vérifiez l’avancement (0–100%) et le statut.',
+  'updateTask:failed': 'Échec de la mise à jour de la tâche. Réessayez.',
+};
+
+function actionErrorMessage(
+  error: string | undefined,
+  code: string | undefined,
+): string | undefined {
+  if (!error) return undefined;
+  return (
+    ACTION_ERROR_MESSAGES[`${error}:${code ?? 'failed'}`] ??
+    'Une erreur est survenue. Réessayez.'
+  );
 }
 
 const NEXT_PROJECT_ACTIONS: Partial<
@@ -61,17 +113,23 @@ const NEXT_PROJECT_ACTIONS: Partial<
 
 export default async function ProjectDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ error?: string; code?: string }>;
 }) {
   const { id } = await params;
-  const [project, journal, team, employees, consumption] = await Promise.all([
-    apiGet<ProjectDetail>(`/project/projects/${id}`),
-    apiGet<JournalResponse>(`/field/projects/${id}/logs`),
-    apiGet<TeamResponse>(`/people/projects/${id}/team`),
-    apiGet<Employee[]>('/people/employees'),
-    apiGet<ProjectMaterialConsumption[]>(`/stock/projects/${id}/consumption`),
-  ]);
+  const { error: actionError, code: actionCode } = await searchParams;
+  const errorMessage = actionErrorMessage(actionError, actionCode);
+  const [project, journal, team, employees, consumption, taskData] =
+    await Promise.all([
+      apiGet<ProjectDetail>(`/project/projects/${id}`),
+      apiGet<JournalResponse>(`/field/projects/${id}/logs`),
+      apiGet<TeamResponse>(`/people/projects/${id}/team`),
+      apiGet<Employee[]>('/people/employees'),
+      apiGet<ProjectMaterialConsumption[]>(`/stock/projects/${id}/consumption`),
+      apiGet<TasksResponse>(`/project/projects/${id}/tasks`),
+    ]);
   const consumptionTotalMad = consumption.reduce(
     (sum, row) => sum + row.totalCostMad,
     0,
@@ -155,6 +213,46 @@ export default async function ProjectDetailPage({
     revalidatePath(`/projects/${id}`);
   }
 
+  async function createTask(formData: FormData) {
+    'use server';
+    const label = String(formData.get('label') ?? '').trim();
+    if (label.length < 3) {
+      redirect(`/projects/${id}?error=createTask&code=invalid`);
+    }
+    try {
+      const dueDate = String(formData.get('dueDate') ?? '');
+      const description = String(formData.get('description') ?? '').trim();
+      await apiPost(`/project/projects/${id}/tasks`, {
+        label,
+        description: description || undefined,
+        dueDate: dueDate || undefined,
+        status: 'a_faire',
+      });
+    } catch (error) {
+      failToProject(id, 'createTask', error);
+    }
+    revalidatePath(`/projects/${id}`);
+  }
+
+  async function updateTask(formData: FormData) {
+    'use server';
+    const taskId = String(formData.get('taskId') ?? '');
+    const progress = Number(formData.get('progressPct'));
+    const status = String(formData.get('status') ?? '') as TaskStatus;
+    if (!taskId || !Number.isFinite(progress) || progress < 0 || progress > 100) {
+      redirect(`/projects/${id}?error=updateTask&code=invalid`);
+    }
+    try {
+      await apiPatch(`/project/projects/${id}/tasks/${taskId}`, {
+        progressPct: progress,
+        status,
+      });
+    } catch (error) {
+      failToProject(id, 'updateTask', error);
+    }
+    revalidatePath(`/projects/${id}`);
+  }
+
   return (
     <div>
       <Link href="/projects" className="text-sm text-muted hover:text-ink">
@@ -170,6 +268,15 @@ export default async function ProjectDetailPage({
       <p className="mb-8 max-w-3xl text-sm text-muted">
         {project.name} — {project.buyerName}
       </p>
+
+      {errorMessage && (
+        <div
+          role="alert"
+          className="mb-6 rounded-xl border border-clay-soft bg-clay-soft/20 px-5 py-4 text-sm font-medium text-clay"
+        >
+          {errorMessage}
+        </div>
+      )}
 
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
@@ -289,6 +396,162 @@ export default async function ProjectDetailPage({
           <p className="p-8 text-center text-sm text-faint">
             Aucune situation — la première apparaît après le démarrage des travaux.
           </p>
+        )}
+      </section>
+
+      <section className="mb-6 rounded-xl border border-line bg-paper-2 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-faint">
+            Tâches ({taskData.tasks.length})
+          </h2>
+          <div className="flex flex-wrap items-center gap-4 text-xs text-muted">
+            <span>
+              Avancement physique{' '}
+              <strong className="font-mono tabular-nums text-ink-2">
+                {taskData.physicalProgressPct.toFixed(1)}%
+              </strong>
+            </span>
+            <span className="flex flex-wrap gap-1.5">
+              {TASK_STATUS_OPTIONS.map((option) => (
+                <span
+                  key={option.value}
+                  className={`rounded-full px-2 py-0.5 text-xs font-semibold ${TASK_STATUS_BADGES[option.value].classes}`}
+                >
+                  {option.label} {taskData.statusSummary[option.value]}
+                </span>
+              ))}
+            </span>
+          </div>
+        </div>
+        <ul className="divide-y divide-line">
+          {taskData.tasks.map((task) => {
+            const tBadge = TASK_STATUS_BADGES[task.status];
+            return (
+              <li key={task.id} className="px-5 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold">{task.label}</span>
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${tBadge.classes}`}
+                      >
+                        {tBadge.label}
+                      </span>
+                      {task.dueDate && (
+                        <span className="font-mono text-xs tabular-nums text-faint">
+                          échéance{' '}
+                          {new Date(task.dueDate).toLocaleDateString('fr-MA')}
+                        </span>
+                      )}
+                    </div>
+                    {task.description && (
+                      <p className="mt-1 text-sm text-ink-2">{task.description}</p>
+                    )}
+                    <div className="mt-2 flex items-center gap-3">
+                      <div className="h-2 w-48 max-w-full overflow-hidden rounded-full bg-sand">
+                        <div
+                          className="h-full rounded-full bg-cyan-deep"
+                          style={{
+                            width: `${Math.min(100, Math.max(0, task.progressPct))}%`,
+                          }}
+                        />
+                      </div>
+                      <span className="font-mono text-xs tabular-nums text-muted">
+                        {task.progressPct.toFixed(0)}%
+                      </span>
+                    </div>
+                  </div>
+                  <form
+                    action={updateTask}
+                    className="flex flex-wrap items-end gap-2"
+                  >
+                    <input type="hidden" name="taskId" value={task.id} />
+                    <label className="text-sm">
+                      <span className="mb-1 block text-xs text-muted">
+                        Avancement
+                      </span>
+                      <input
+                        type="number"
+                        name="progressPct"
+                        required
+                        min={0}
+                        max={100}
+                        step="1"
+                        defaultValue={task.progressPct}
+                        className="w-20 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      <span className="mb-1 block text-xs text-muted">Statut</span>
+                      <select
+                        name="status"
+                        defaultValue={task.status}
+                        className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+                      >
+                        {TASK_STATUS_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button className="rounded-md border border-line-2 px-2.5 py-2 text-xs font-medium text-muted transition hover:bg-sand">
+                      Mettre à jour
+                    </button>
+                  </form>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        {taskData.tasks.length === 0 && (
+          <p className="p-8 text-center text-sm text-faint">
+            Aucune tâche — découpez le chantier en tâches ci-dessous.
+          </p>
+        )}
+        {(project.status === 'en_cours' ||
+          project.status === 'preparation' ||
+          project.status === 'suspendu') && (
+          <form
+            action={createTask}
+            className="flex flex-wrap items-end gap-3 border-t border-line px-5 py-4"
+          >
+            <label className="min-w-48 flex-1 text-sm">
+              <span className="mb-1 block text-xs text-muted">Intitulé</span>
+              <input
+                type="text"
+                name="label"
+                required
+                minLength={3}
+                maxLength={300}
+                className="w-full rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+              />
+            </label>
+            <label className="min-w-48 flex-1 text-sm">
+              <span className="mb-1 block text-xs text-muted">
+                Description (optionnel)
+              </span>
+              <input
+                type="text"
+                name="description"
+                maxLength={2000}
+                className="w-full rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-muted">
+                Échéance (optionnel)
+              </span>
+              <input
+                type="date"
+                name="dueDate"
+                className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+              />
+            </label>
+            <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
+              Ajouter la tâche
+            </button>
+          </form>
         )}
       </section>
 

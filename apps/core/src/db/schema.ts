@@ -210,6 +210,35 @@ export const dailyLogs = project.table('daily_log', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Tâches de chantier — the physical work-breakdown for a project. Progress here
+// is PHYSICAL avancement (per-task % rolled up in task.domain), deliberately
+// SEPARATE from the situation-based financial avancement above.
+export const tasks = project.table(
+  'task',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id),
+    label: text('label').notNull(),
+    description: text('description'),
+    progressPct: numeric('progress_pct', { precision: 5, scale: 2 })
+      .notNull()
+      .default('0'),
+    // status ∈ {'a_faire','en_cours','termine','bloque'} — validated at the edge.
+    status: text('status').notNull().default('a_faire'),
+    startDate: date('start_date', { mode: 'date' }),
+    dueDate: date('due_date', { mode: 'date' }),
+    orderIndex: integer('order_index').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Tasks are always read per chantier — keep that list query off a seq scan.
+    index('task_project_id_idx').on(table.projectId),
+  ],
+);
+
 export const finance = pgSchema('finance');
 
 // Bank guarantees register — cash locked at banks until release.

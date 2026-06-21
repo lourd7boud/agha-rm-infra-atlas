@@ -85,6 +85,56 @@ export interface JournalResponse {
   items: DailyLog[];
 }
 
+export type TaskStatus = 'a_faire' | 'en_cours' | 'termine' | 'bloque';
+
+/** Tâche de chantier — frontend mirror of @atlas/core project task contract. */
+export interface Task {
+  id: string;
+  projectId: string;
+  label: string;
+  description?: string;
+  progressPct: number;
+  status: TaskStatus;
+  startDate?: string;
+  dueDate?: string;
+  orderIndex: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskStatusSummary {
+  a_faire: number;
+  en_cours: number;
+  termine: number;
+  bloque: number;
+}
+
+/** GET /project/projects/:id/tasks envelope. */
+export interface TasksResponse {
+  tasks: Task[];
+  physicalProgressPct: number;
+  statusSummary: TaskStatusSummary;
+}
+
+export const TASK_STATUS_BADGES: Record<
+  TaskStatus,
+  { label: string; classes: string }
+> = {
+  a_faire: { label: 'À faire', classes: 'bg-sand text-muted' },
+  en_cours: { label: 'En cours', classes: 'bg-emerald-soft text-emerald' },
+  termine: { label: 'Terminé', classes: 'bg-cyan-soft text-cyan' },
+  bloque: { label: 'Bloqué', classes: 'bg-ochre-soft text-ochre' },
+};
+
+/** Status options offered in the task forms, in workflow order. */
+export const TASK_STATUS_OPTIONS: readonly { value: TaskStatus; label: string }[] =
+  [
+    { value: 'a_faire', label: 'À faire' },
+    { value: 'en_cours', label: 'En cours' },
+    { value: 'termine', label: 'Terminé' },
+    { value: 'bloque', label: 'Bloqué' },
+  ];
+
 export interface Employee {
   id: string;
   fullName: string;

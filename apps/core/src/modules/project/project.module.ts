@@ -9,6 +9,7 @@ import {
   Module,
   NotFoundException,
   Param,
+  Patch,
   Post,
 } from '@nestjs/common';
 import { z } from 'zod';
@@ -24,6 +25,12 @@ import {
   type ProjectStatus,
   type SituationStatus,
 } from './project.repository';
+import {
+  computeProjectPhysicalProgress,
+  summarizeTaskStatuses,
+  TASK_STATUSES,
+  type TaskStatus,
+} from './task.domain';
 
 const projectInputSchema = z.object({
   reference: z.string().min(3).max(200),
@@ -42,6 +49,31 @@ const situationInputSchema = z.object({
 });
 
 const transitionSchema = z.object({ to: z.string().min(2).max(30) });
+
+const taskInputSchema = z.object({
+  label: z.string().min(3).max(300),
+  description: z.string().max(2000).optional(),
+  progressPct: z.number().min(0).max(100).optional(),
+  status: z.enum(TASK_STATUSES as readonly [TaskStatus, ...TaskStatus[]]).optional(),
+  startDate: z.coerce.date().optional(),
+  dueDate: z.coerce.date().optional(),
+  orderIndex: z.number().int().min(0).max(10_000).optional(),
+});
+
+const taskPatchSchema = z
+  .object({
+    label: z.string().min(3).max(300),
+    description: z.string().max(2000),
+    progressPct: z.number().min(0).max(100),
+    status: z.enum(TASK_STATUSES as readonly [TaskStatus, ...TaskStatus[]]),
+    startDate: z.coerce.date(),
+    dueDate: z.coerce.date(),
+    orderIndex: z.number().int().min(0).max(10_000),
+  })
+  .partial()
+  .refine((patch) => Object.keys(patch).length > 0, {
+    message: 'Au moins un champ à modifier est requis',
+  });
 
 /** Chantier lifecycle (construction ops v1). */
 const PROJECT_TRANSITIONS: Record<ProjectStatus, ProjectStatus[]> = {
@@ -191,6 +223,51 @@ export class ProjectController {
   async listAvenants(@Param('id') id: string) {
     await this.findOr404(id);
     return this.repository.listAvenants(id);
+  }
+
+  /** Add a tâche de chantier (physical work-breakdown item). */
+  @Roles('travaux', 'direction', 'terrain', 'admin-si')
+  @Post('projects/:id/tasks')
+  async createTask(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = taskInputSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    await this.findOr404(id);
+    return this.repository.createTask({ projectId: id, ...parsed.data });
+  }
+
+  /** Tâches with the physical avancement rollup (separate from financial). */
+  @Roles('travaux', 'direction', 'terrain', 'finance', 'admin-si')
+  @Get('projects/:id/tasks')
+  async listTasks(@Param('id') id: string) {
+    await this.findOr404(id);
+    const tasks = await this.repository.listTasksByProject(id);
+    return {
+      tasks,
+      physicalProgressPct: computeProjectPhysicalProgress(tasks),
+      statusSummary: summarizeTaskStatuses(tasks),
+    };
+  }
+
+  /** Update a tâche — label, progress, status, dates, order. */
+  @Roles('travaux', 'direction', 'terrain', 'admin-si')
+  @Patch('projects/:projectId/tasks/:taskId')
+  async updateTask(
+    @Param('projectId') projectId: string,
+    @Param('taskId') taskId: string,
+    @Body() body: unknown,
+  ) {
+    const parsed = taskPatchSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    await this.findOr404(projectId);
+    const task = await this.repository.findTaskById(taskId);
+    // Scope the patch to the project: a task may only be mutated through the
+    // project it belongs to, so cross-project access is rejected as not found.
+    if (!task || task.projectId !== projectId) {
+      throw new NotFoundException(`Task not found: ${taskId}`);
+    }
+    const updated = await this.repository.updateTask(taskId, parsed.data);
+    if (!updated) throw new NotFoundException(`Task not found: ${taskId}`);
+    return updated;
   }
 
   /** Décompte workflow — legal order enforced (brouillon→soumis→valide→paye). */
