@@ -13,9 +13,11 @@ const SIGNIN = '/login';
  */
 export class AtlasApiError extends Error {
   readonly digest: string;
+  readonly status: number;
 
   constructor(path: string, status: number) {
     super(`ATLAS API ${path} a répondu HTTP ${status}`);
+    this.status = status;
     this.digest = `ATLAS_API_${status}`;
   }
 }

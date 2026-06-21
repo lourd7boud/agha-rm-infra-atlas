@@ -13,6 +13,7 @@ import { MetricsModule } from './modules/metrics/metrics.module';
 import { PeopleModule } from './modules/people/people.module';
 import { PortalModule } from './modules/portal/portal.module';
 import { ProjectModule } from './modules/project/project.module';
+import { StockModule } from './modules/stock/stock.module';
 import { SupplyModule } from './modules/supply/supply.module';
 import { TenderModule } from './modules/tender/tender.module';
 import { VaultModule } from './modules/vault/vault.module';
@@ -52,6 +53,7 @@ export class HealthController {
     PeopleModule,
     PortalModule,
     ProjectModule,
+    StockModule,
     SupplyModule,
     VaultModule,
     TenderModule,

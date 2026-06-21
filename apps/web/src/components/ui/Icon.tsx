@@ -5,6 +5,7 @@ export type IconName =
   | 'dashboard'
   | 'tenders'
   | 'chantiers'
+  | 'boxes'
   | 'terrain'
   | 'personnel'
   | 'tresorerie'
@@ -55,6 +56,13 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M6 21V9l6-4 6 4v12" />
       <path d="M10 21v-4.5h4V21" />
       <path d="M12 5V3" />
+    </>
+  ),
+  boxes: (
+    <>
+      <path d="M3.5 7.5L12 3l8.5 4.5v9L12 21l-8.5-4.5z" />
+      <path d="M3.5 7.5L12 12l8.5-4.5M12 12v9" />
+      <path d="M7.75 5.25l8.5 4.5" />
     </>
   ),
   terrain: (

@@ -120,6 +120,13 @@
       "when": 1781617007148,
       "tag": "0016_portal_caution_amount_notnull",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1782054553788,
+      "tag": "0017_stock_materials",
+      "breakpoints": true
     }
   ]
 }
