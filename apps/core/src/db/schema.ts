@@ -123,6 +123,29 @@ export const purchaseOrders = supply.table('purchase_order', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Bon de commande line items — inserted with the parent order (mirrors the
+// sales quote_line/invoice_line pattern). When lines are supplied, the order's
+// amount_mad is the Σ of these line totals; legacy orders carry none.
+export const purchaseOrderLines = supply.table(
+  'purchase_order_line',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Lines are subordinate parts of the order — deleting the parent cascades.
+    purchaseOrderId: uuid('purchase_order_id')
+      .notNull()
+      .references(() => purchaseOrders.id, { onDelete: 'cascade' }),
+    designation: text('designation').notNull(),
+    quantity: numeric('quantity', { precision: 14, scale: 3 }).notNull(),
+    unit: text('unit'),
+    unitPriceMad: numeric('unit_price_mad', { precision: 14, scale: 2 }).notNull(),
+    lineTotalMad: numeric('line_total_mad', { precision: 14, scale: 2 }).notNull(),
+    orderIndex: integer('order_index').notNull().default(0),
+  },
+  (table) => [
+    index('supply_purchase_order_line_order_id_idx').on(table.purchaseOrderId),
+  ],
+);
+
 export const supplierInvoices = supply.table('supplier_invoice', {
   id: uuid('id').primaryKey().defaultRandom(),
   supplierId: uuid('supplier_id')

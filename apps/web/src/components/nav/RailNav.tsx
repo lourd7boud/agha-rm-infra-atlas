@@ -16,6 +16,7 @@ const ITEMS: readonly NavItem[] = [
   { href: '/projects', label: 'Projets & Chantiers', icon: 'chantiers' },
   { href: '/stock', label: 'Stock & Matériaux', icon: 'boxes' },
   { href: '/equipment', label: 'Matériel & Équipements', icon: 'equipment' },
+  { href: '/supply', label: 'Approvisionnements', icon: 'supply' },
   { href: '/finance', label: 'Finance', icon: 'tresorerie' },
   { href: '/people', label: 'Personnel', icon: 'personnel' },
   { href: '/vault', label: 'Documents & GED', icon: 'documents' },
@@ -36,7 +37,6 @@ const SALES: readonly NavItem[] = [
 /** Planned modules — shown for breadth, not yet routed. */
 const SOON: readonly { label: string; icon: IconName }[] = [
   { label: 'Opérations Terrain', icon: 'terrain' },
-  { label: 'Approvisionnements', icon: 'supply' },
   { label: 'BI & Analytics', icon: 'analytics' },
   { label: 'Paramètres Système', icon: 'settings' },
 ];

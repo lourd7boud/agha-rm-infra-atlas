@@ -12,6 +12,7 @@ import { summarizeLogs } from '../field/field.domain';
 import {
   PROJECT_REPOSITORY,
   type ProjectRepository,
+  type SituationWithProject,
 } from '../project/project.repository';
 import {
   TENDER_REPOSITORY,
@@ -57,12 +58,14 @@ export class DigestService {
   /** v2: tender brief + treasury + chantiers in one unified text. */
   async buildToday(): Promise<DigestText> {
     const now = new Date();
-    const [tenders, documents, allCautions, allProjects] = await Promise.all([
-      this.tenders.findAll(),
-      this.vault.findAll(),
-      this.cautions.findAll(),
-      this.projects.findAll(),
-    ]);
+    const [tenders, documents, allCautions, allProjects, allSituations] =
+      await Promise.all([
+        this.tenders.findAll(),
+        this.vault.findAll(),
+        this.cautions.findAll(),
+        this.projects.findAll(),
+        this.projects.listAllSituations(),
+      ]);
     const data = buildDigest(tenders, computeReadiness(documents, now), now);
     const lines: string[] = [renderDigestFr(data)];
 
@@ -75,13 +78,15 @@ export class DigestService {
 
     const enCours = allProjects.filter((p) => p.status === 'en_cours');
     if (enCours.length > 0) {
+      // Situations for every project came back in one query above; index them
+      // here so the per-chantier loop is a map lookup, not an N+1.
+      const lastSituationByProject = indexLastSituationByProject(allSituations);
       lines.push('', '— CHANTIERS —');
       for (const project of enCours) {
-        const [situations, logs] = await Promise.all([
-          this.projects.listSituations(project.id),
-          this.field.listLogs(project.id),
-        ]);
-        const last = situations[situations.length - 1];
+        // Field logs stay per-project: no batch read exists on FieldRepository
+        // and adding one is out of scope here (see assessment in PR notes).
+        const logs = await this.field.listLogs(project.id);
+        const last = lastSituationByProject.get(project.id);
         const journal = summarizeLogs(logs);
         const alerte =
           journal.blocagesOuverts > 0
@@ -135,4 +140,23 @@ export class DigestService {
   recent(limit: number): Promise<OutboxRecord[]> {
     return this.outbox.listRecent(limit);
   }
+}
+
+/**
+ * Index situations by project, keeping the latest one (highest numero) per
+ * project — the décompte that drives the chantier's avancement. Picking the max
+ * numero (rather than the array's last element) keeps the result independent of
+ * the order listAllSituations() returns rows in.
+ */
+function indexLastSituationByProject(
+  situations: readonly SituationWithProject[],
+): Map<string, SituationWithProject> {
+  const byProject = new Map<string, SituationWithProject>();
+  for (const situation of situations) {
+    const current = byProject.get(situation.projectId);
+    if (!current || situation.numero > current.numero) {
+      byProject.set(situation.projectId, situation);
+    }
+  }
+  return byProject;
 }

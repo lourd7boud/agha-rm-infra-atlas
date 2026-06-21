@@ -9,6 +9,27 @@ const MS_PER_DAY = 86_400_000;
 
 export type SupplierInvoiceStatus = 'recue' | 'validee' | 'payee';
 
+/** A priced bon-de-commande line — the unit shared by createOrder's lines. */
+export interface OrderLineTotal {
+  quantity: number;
+  unitPriceMad: number;
+}
+
+/** Round to 2 decimals (centimes), guarding against binary-float drift. */
+function round2(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Line total = quantity × unit price, rounded to 2 decimals. Shared by the
+ * InMemory and Drizzle order-create paths so both persist identical figures
+ * (mirrors sales.domain.lineTotal — kept local to keep the supply module
+ * self-contained).
+ */
+export function lineTotal(line: OrderLineTotal): number {
+  return round2(line.quantity * line.unitPriceMad);
+}
+
 export type AgingBucket = '0-30' | '31-60' | '61-90' | '90+';
 
 export interface PayableInput {

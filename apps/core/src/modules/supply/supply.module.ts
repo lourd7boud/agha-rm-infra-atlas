@@ -29,6 +29,14 @@ const supplierSchema = z.object({
   email: z.string().email().max(200).optional(),
 });
 
+const orderLineSchema = z.object({
+  designation: z.string().min(1).max(500),
+  quantity: z.number().positive().max(1_000_000),
+  unit: z.string().max(20).optional(),
+  unitPriceMad: z.number().nonnegative().max(100_000_000),
+  orderIndex: z.number().int().nonnegative().optional(),
+});
+
 const orderSchema = z.object({
   supplierId: z.string().uuid(),
   projectId: z.string().uuid().optional(),
@@ -36,6 +44,9 @@ const orderSchema = z.object({
   objet: z.string().min(3).max(500),
   amountMad: z.number().positive().max(100_000_000),
   orderedAt: z.coerce.date(),
+  // Optional bon-de-commande lines. When present, the repository overrides
+  // amountMad with Σ lineTotal; when absent, amountMad above is used as today.
+  lines: z.array(orderLineSchema).max(200).optional(),
 });
 
 const invoiceSchema = z.object({
@@ -93,13 +104,21 @@ export class SupplyController {
     return this.repository.listOrders();
   }
 
+  /** Bon de commande détaillé — order + its line items. */
+  @Roles('finance', 'direction', 'travaux', 'marches', 'admin-si')
+  @Get('orders/:id')
+  async getOrder(@Param('id') id: string) {
+    const order = await this.repository.getOrder(id);
+    if (!order) throw new NotFoundException(`Order not found: ${id}`);
+    return order;
+  }
+
   @Roles('finance', 'direction')
   @Post('orders/:id/transition')
   async transitionOrder(@Param('id') id: string, @Body() body: unknown) {
     const parsed = z.object({ to: z.string() }).safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
-    const orders = await this.repository.listOrders();
-    const order = orders.find((o) => o.id === id);
+    const order = await this.repository.getOrder(id);
     if (!order) throw new NotFoundException(`Order not found: ${id}`);
     if (!(ORDER_TRANSITIONS[order.status] ?? []).includes(parsed.data.to)) {
       throw new ConflictException(
