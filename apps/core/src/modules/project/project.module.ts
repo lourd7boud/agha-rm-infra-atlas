@@ -98,7 +98,10 @@ const SITUATION_TRANSITIONS: Record<SituationStatus, SituationStatus[]> = {
 export class ProjectController {
   constructor(
     @Inject(PROJECT_REPOSITORY) private readonly repository: ProjectRepository,
-    private readonly cost: ProjectCostService,
+    // Explicit token: the runtime is tsx/esbuild which does NOT emit decorator
+    // metadata, so type-only injection resolves to undefined. Every provider in
+    // this codebase is injected via @Inject for exactly this reason.
+    @Inject(ProjectCostService) private readonly cost: ProjectCostService,
   ) {
     // Fail loudly at construction if the cost service was not wired. A nullish
     // value here means the DI graph regressed (e.g. a reintroduced module cycle
