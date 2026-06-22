@@ -25,6 +25,13 @@ import {
   type TenderRepository,
 } from './tender.repository';
 import { buildMarketContext } from './buyer-observatory.domain';
+import {
+  aiEnrich,
+  readAiEnrichment,
+  runPool,
+  type AiEnrichment,
+} from './ai-enrichment';
+import { PROCEDURE_LABELS, inferCategory } from './inventory.domain';
 
 export interface EnrichmentSummary {
   tenderId: string;
@@ -32,6 +39,18 @@ export interface EnrichmentSummary {
   extraction: { ok: boolean; issues?: string[] };
   requalified: boolean;
 }
+
+export interface AiEnrichBatchResult {
+  candidates: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  /** IDs of tenders whose enrichment failed this run (visibility for retry). */
+  failedIds: string[];
+}
+
+/** Concurrent LLM enrichments in flight during a batch — fast but polite. */
+const AI_ENRICH_CONCURRENCY = 6;
 
 /**
  * Closes the read→think→act loop: Extractor output updates the tender
@@ -41,6 +60,8 @@ export interface EnrichmentSummary {
 @Injectable()
 export class EnrichmentService {
   private readonly logger = new Logger('Enrichment');
+  /** Single-flight guard: only one bulk enrichment runs at a time (cost bound). */
+  private aiBatchRunning = false;
 
   constructor(
     @Inject(TENDER_REPOSITORY) private readonly repository: TenderRepository,
@@ -298,5 +319,89 @@ export class EnrichmentService {
       );
     }
     return outcome;
+  }
+
+  /**
+   * AI enrichment (fast OpenRouter model): fills the structural/qualitative
+   * blanks for one tender — secteur, résumé, FAQ, lots, conditions — from what
+   * we already know. No financial figure is ever fabricated.
+   */
+  async aiEnrichTender(id: string): Promise<AiEnrichment> {
+    const llm = this.requireLlm();
+    const tender = await this.requireTender(id);
+    const raw = tender.raw as Record<string, unknown> | null;
+    const detail = (raw?.detail ?? null) as {
+      categorie?: string | null;
+      qualificationsRequises?: string[];
+    } | null;
+
+    const enrichment = await aiEnrich(llm, {
+      objet: tender.objet,
+      buyerName: tender.buyerName,
+      procedureLabel: PROCEDURE_LABELS[tender.procedure] ?? tender.procedure,
+      category: inferCategory(tender.objet),
+      categorieDetail: detail?.categorie ?? null,
+      qualificationsRequises: detail?.qualificationsRequises ?? null,
+      cautionProvisoireMad: tender.cautionProvisoireMad ?? null,
+    });
+
+    await this.repository.updateEnrichment(id, {}, { aiEnrichment: enrichment });
+    this.logger.log(
+      `ai.enrich ${tender.reference} → ${enrichment.secteur} (${enrichment.faq.length} FAQ, ${enrichment.lots.length} lots)`,
+    );
+    return enrichment;
+  }
+
+  /**
+   * Bulk AI enrichment of the catalogue — enriches tenders not yet enriched
+   * (active/future deadline by default), with bounded concurrency. Per-tender
+   * failures are logged and skipped, never aborting the batch.
+   */
+  async aiEnrichBatch(
+    limit: number,
+    opts: { onlyActive?: boolean } = {},
+  ): Promise<AiEnrichBatchResult> {
+    this.requireLlm();
+    // Reject overlapping batches so a single user can't fan out the cost.
+    if (this.aiBatchRunning) {
+      throw new ConflictException('Un enrichissement par lot est déjà en cours');
+    }
+    this.aiBatchRunning = true;
+    try {
+      const onlyActive = opts.onlyActive ?? true;
+      const now = Date.now();
+      const all = await this.repository.findAll();
+      const pending = all
+        .filter((t) => !readAiEnrichment(t.raw))
+        .filter((t) => !onlyActive || t.deadlineAt.getTime() >= now)
+        .slice(0, Math.max(0, Math.floor(limit)));
+
+      let succeeded = 0;
+      const failedIds: string[] = [];
+      await runPool(pending, AI_ENRICH_CONCURRENCY, async (t) => {
+        try {
+          await this.aiEnrichTender(t.id);
+          succeeded += 1;
+        } catch (error) {
+          failedIds.push(t.id);
+          this.logger.warn(
+            `ai.enrich failed ${t.reference}: ${(error as Error).message}`,
+          );
+        }
+      });
+
+      this.logger.log(
+        `ai.enrich.batch candidates=${pending.length} ok=${succeeded} ko=${failedIds.length}`,
+      );
+      return {
+        candidates: pending.length,
+        processed: pending.length,
+        succeeded,
+        failed: failedIds.length,
+        failedIds,
+      };
+    } finally {
+      this.aiBatchRunning = false;
+    }
   }
 }

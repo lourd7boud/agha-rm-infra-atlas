@@ -84,6 +84,12 @@ const enrichBodySchema = z.object({
     .min(20, 'Texte trop court pour une extraction')
     .max(50_000, 'Texte trop long (50 000 caractères max)'),
 });
+const enrichBatchBodySchema = z.object({
+  // Cost-bounded: one batch fans out up to `limit` LLM calls. A higher volume
+  // is achieved by re-running (each run skips already-enriched tenders).
+  limit: z.coerce.number().int().positive().max(200).default(100),
+  onlyActive: z.boolean().default(true),
+});
 
 function present(record: TenderRecord) {
   return { ...record, daysLeft: daysUntil(record.deadlineAt, new Date()) };
@@ -168,6 +174,26 @@ export class TenderController {
   @Post('tenders/:id/estimate')
   async estimate(@Param('id') id: string) {
     return this.enrichment.generateEstimateSkeletonFor(id);
+  }
+
+  /** AI enrichment (fast model): secteur/résumé/FAQ/lots for one tender. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 30 } })
+  @Post('tenders/:id/ai-enrich')
+  async aiEnrich(@Param('id') id: string) {
+    return this.enrichment.aiEnrichTender(id);
+  }
+
+  /** Bulk AI enrichment of the active catalogue (datao-style fill). */
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 4 } })
+  @Post('enrich-batch')
+  async enrichBatch(@Body() body: unknown) {
+    const parsed = enrichBatchBodySchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    return this.enrichment.aiEnrichBatch(parsed.data.limit, {
+      onlyActive: parsed.data.onlyActive,
+    });
   }
 
   /** Run the Qualifier (A3) over all detected/parsed tenders. */
@@ -275,6 +301,7 @@ export class TenderController {
   }
 
   /** J-X preparation back-plan for one tender (orchestrator view). */
+  @Roles('marches', 'direction', 'admin-si')
   @Get('tenders/:id/plan')
   async plan(@Param('id') id: string) {
     const record = await this.findOr404(id);

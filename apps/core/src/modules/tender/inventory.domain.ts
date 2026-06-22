@@ -1,6 +1,7 @@
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import { daysUntil } from '../../lib/dates';
 import type { TenderRecord } from './tender.repository';
+import { readAiEnrichment, type AiEnrichment } from './ai-enrichment';
 
 /**
  * Tender Inventory (جرد) — turns the raw detected-tender stream into a
@@ -383,6 +384,17 @@ export interface InventoryItem {
   lotCount: number;
   /** Portal detail URL — powers Télécharger / Soumission en ligne. */
   sourceUrl?: string;
+  // ── AI enrichment (fast model) — present once the tender is enriched ──
+  aiResume?: string;
+  faq?: Array<{ question: string; reponse: string }>;
+  lotsDetail?: Array<{ designation: string; description?: string | null }>;
+  conditions?: {
+    cautionDefinitivePct?: number | null;
+    retenueGarantiePct?: number | null;
+    delaiGarantieMois?: number | null;
+  };
+  reserveAuxPme?: boolean;
+  enrichedAt?: string;
 }
 
 export interface InventoryFacets {
@@ -425,6 +437,7 @@ interface Classified {
   ville: string | null;
   category: TenderCategory;
   secteur: string;
+  ai: AiEnrichment | null;
 }
 
 function tallyTop(
@@ -476,13 +489,18 @@ export function buildInventory(
   );
   const offset = Math.max(0, Math.floor(paging.offset ?? 0));
 
-  const classified: Classified[] = records.map((record) => ({
-    record,
-    region: inferRegion(record.buyerName, record.objet) ?? UNLOCATED,
-    ville: inferVille(record.buyerName, record.objet),
-    category: inferCategory(record.objet),
-    secteur: segmentLabel(inferSegment(record.objet, record.buyerName)),
-  }));
+  const classified: Classified[] = records.map((record) => {
+    const ai = readAiEnrichment(record.raw);
+    return {
+      record,
+      region: inferRegion(record.buyerName, record.objet) ?? UNLOCATED,
+      ville: inferVille(record.buyerName, record.objet),
+      category: inferCategory(record.objet),
+      // AI secteur wins when enriched, else the deterministic ouvrage label.
+      secteur: ai?.secteur ?? segmentLabel(inferSegment(record.objet, record.buyerName)),
+      ai,
+    };
+  });
 
   const procedures: InventoryFacet[] = (
     Object.keys(PROCEDURE_LABELS) as TenderProcedure[]
@@ -505,7 +523,7 @@ export function buildInventory(
 
   const matched: InventoryItem[] = classified
     .filter((c) => matches(c, filters))
-    .map(({ record, region, ville, category, secteur }) => ({
+    .map(({ record, region, ville, category, secteur, ai }) => ({
       id: record.id,
       reference: record.reference,
       buyerName: record.buyerName,
@@ -522,8 +540,15 @@ export function buildInventory(
       ville,
       category,
       secteur,
-      lotCount: inferLotCount(record.objet),
+      // Real lot count from the AI breakdown when available, else parsed.
+      lotCount: ai && ai.lots.length > 0 ? ai.lots.length : inferLotCount(record.objet),
       sourceUrl: record.sourceUrl,
+      aiResume: ai?.resume,
+      faq: ai?.faq,
+      lotsDetail: ai?.lots,
+      conditions: ai?.conditions,
+      reserveAuxPme: ai?.reserveAuxPme,
+      enrichedAt: ai?.enrichedAt,
     }))
     // Deadline ascending; reference breaks ties so order is stable regardless
     // of the repository's row order.

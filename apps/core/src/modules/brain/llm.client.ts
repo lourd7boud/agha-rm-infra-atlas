@@ -162,6 +162,166 @@ export class AnthropicLlmClient implements LlmClient {
   }
 }
 
+export interface OpenRouterClientOptions {
+  apiKey: string;
+  /** Defaults to https://openrouter.ai/api/v1 */
+  baseUrl?: string;
+  tierModels?: Partial<Record<LlmTier, string>>;
+  timeoutMs?: number;
+  /** Optional OpenRouter attribution headers. */
+  appUrl?: string;
+  appTitle?: string;
+}
+
+const OPENROUTER_DEFAULT_BASE = 'https://openrouter.ai/api/v1';
+const OPENROUTER_TIMEOUT_MS = 60_000;
+
+interface OpenAiChatResponse {
+  choices?: Array<{ message?: { content?: string | null } }>;
+  model?: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  error?: { message?: string; code?: number | string };
+}
+
+/**
+ * OpenRouter speaks the OpenAI Chat Completions protocol (NOT Anthropic
+ * Messages), so this is a small fetch-based client rather than a reuse of the
+ * Anthropic SDK. It implements the same LlmClient contract, so every brain
+ * agent + the enrichment service work through it unchanged. A `prefill` request
+ * (JSON expected) can't be "continued" in the OpenAI protocol, so we force a
+ * JSON object via response_format instead and echo the prefill so the shared
+ * parseModelJson reassembly stays compatible.
+ */
+export class OpenRouterLlmClient implements LlmClient {
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+  private readonly tierModels: Record<LlmTier, string>;
+  private readonly timeoutMs: number;
+  private readonly extraHeaders: Record<string, string>;
+
+  constructor(options: OpenRouterClientOptions) {
+    this.apiKey = options.apiKey;
+    // Validate the base URL at construction — a misconfigured OPENROUTER_API_BASE
+    // would otherwise send the bearer key to an arbitrary host for the process
+    // lifetime. Fail fast instead of silently redirecting traffic.
+    const base = (options.baseUrl ?? OPENROUTER_DEFAULT_BASE).replace(/\/+$/, '');
+    let parsed: URL;
+    try {
+      parsed = new URL(base);
+    } catch {
+      throw new Error(`OPENROUTER_API_BASE invalide (URL malformée): ${base}`);
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error(`OPENROUTER_API_BASE doit utiliser http(s): ${base}`);
+    }
+    this.baseUrl = base;
+    this.tierModels = { ...DEFAULT_TIER_MODELS, ...options.tierModels };
+    this.timeoutMs = options.timeoutMs ?? OPENROUTER_TIMEOUT_MS;
+    this.extraHeaders = {
+      ...(options.appUrl ? { 'HTTP-Referer': options.appUrl } : {}),
+      ...(options.appTitle ? { 'X-Title': options.appTitle } : {}),
+    };
+  }
+
+  async complete(request: LlmRequest): Promise<LlmCompletion> {
+    const model = this.tierModels[request.tier];
+    const messages: Array<{ role: string; content: string }> = [];
+    if (request.system) messages.push({ role: 'system', content: request.system });
+    messages.push({ role: 'user', content: request.prompt });
+    const data = await this.post(
+      {
+        model,
+        messages,
+        temperature: 0,
+        max_tokens: request.maxTokens ?? 1024,
+        ...(request.prefill ? { response_format: { type: 'json_object' } } : {}),
+      },
+      model,
+    );
+    return {
+      text: data.choices?.[0]?.message?.content ?? '',
+      prefill: request.prefill,
+      model: data.model ?? model,
+      inputTokens: data.usage?.prompt_tokens ?? 0,
+      outputTokens: data.usage?.completion_tokens ?? 0,
+    };
+  }
+
+  async completeVision(request: LlmVisionRequest): Promise<LlmCompletion> {
+    const model = this.tierModels[request.tier];
+    const data = await this.post(
+      {
+        model,
+        temperature: 0,
+        max_tokens: request.maxTokens ?? 1024,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: request.prompt },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:${request.mediaType};base64,${request.imageBase64}`,
+                },
+              },
+            ],
+          },
+        ],
+      },
+      model,
+    );
+    return {
+      text: data.choices?.[0]?.message?.content ?? '',
+      model: data.model ?? model,
+      inputTokens: data.usage?.prompt_tokens ?? 0,
+      outputTokens: data.usage?.completion_tokens ?? 0,
+    };
+  }
+
+  private async post(body: unknown, model: string): Promise<OpenAiChatResponse> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+          ...this.extraHeaders,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (error) {
+      new Logger('OpenRouterLlmClient').error(
+        `LLM call failed (${model}): ${(error as Error).message}`,
+      );
+      throw new ServiceUnavailableException(
+        'Service IA momentanément indisponible — réessayer dans quelques instants',
+      );
+    }
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      new Logger('OpenRouterLlmClient').error(
+        `LLM HTTP ${res.status} (${model}): ${detail.slice(0, 300)}`,
+      );
+      throw new ServiceUnavailableException(
+        `Service IA momentanément indisponible (HTTP ${res.status}) — réessayer dans quelques instants`,
+      );
+    }
+    const data = (await res.json()) as OpenAiChatResponse;
+    if (data.error) {
+      new Logger('OpenRouterLlmClient').error(
+        `LLM error (${model}): ${data.error.message ?? 'inconnue'}`,
+      );
+      throw new ServiceUnavailableException(
+        'Service IA momentanément indisponible — réessayer dans quelques instants',
+      );
+    }
+    return data;
+  }
+}
+
 /** Test double returning queued canned responses and recording requests. */
 export class FakeLlmClient implements LlmClient {
   readonly requests: LlmRequest[] = [];

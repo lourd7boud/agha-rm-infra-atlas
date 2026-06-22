@@ -27,6 +27,17 @@ export interface TenderItem {
   secteur: string;
   lotCount: number;
   sourceUrl?: string;
+  // AI enrichment (fast model) — present once the tender has been enriched.
+  aiResume?: string;
+  faq?: Array<{ question: string; reponse: string }>;
+  lotsDetail?: Array<{ designation: string; description?: string | null }>;
+  conditions?: {
+    cautionDefinitivePct?: number | null;
+    retenueGarantiePct?: number | null;
+    delaiGarantieMois?: number | null;
+  };
+  reserveAuxPme?: boolean;
+  enrichedAt?: string;
 }
 
 export interface TenderFacet {

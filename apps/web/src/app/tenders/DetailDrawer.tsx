@@ -62,26 +62,51 @@ function ActionButton({
   );
 }
 
-const AI_NOTE =
-  'Synthèse automatique à partir des champs structurés. Le résumé détaillé, la FAQ et le BPU générés par IA depuis le dossier arrivent prochainement (Phase C).';
+const AI_NOTE_ENRICHED =
+  'Données générées par IA — se référer aux documents officiels pour validation.';
+const AI_NOTE_PENDING =
+  'Synthèse automatique à partir des champs structurés. L’enrichissement IA (résumé détaillé, FAQ, lots) n’a pas encore été lancé pour ce marché.';
 
-function AiBanner() {
+function AiBanner({ enriched }: { enriched: boolean }) {
   return (
     <p className="flex items-start gap-2 rounded-lg bg-cyan-soft/50 px-3 py-2 text-xs text-muted">
       <span className="rounded bg-cyan px-1 py-0.5 text-[9px] font-bold text-paper">IA</span>
-      {AI_NOTE}
+      {enriched ? AI_NOTE_ENRICHED : AI_NOTE_PENDING}
     </p>
   );
 }
 
-function ConditionRow({ label, value }: { label: string; value: string }) {
+function ConditionRow({
+  label,
+  value,
+  aiEstimated,
+}: {
+  label: string;
+  value: string;
+  aiEstimated?: boolean;
+}) {
   return (
     <div className="flex items-center justify-between border-b border-line py-2 text-sm last:border-0">
       <span className="text-muted">{label}</span>
-      <span className="font-medium text-ink">{value}</span>
+      <span className="font-medium text-ink">
+        {value}
+        {aiEstimated && value !== '—' && (
+          <span
+            className="ml-1.5 text-[10px] font-normal italic text-cyan"
+            title="Estimation générée par IA — vérifier dans le dossier officiel"
+          >
+            (IA)
+          </span>
+        )}
+      </span>
     </div>
   );
 }
+
+const fmtPctOrDash = (v: number | null | undefined): string =>
+  v != null ? `${v} %` : '—';
+const fmtMoisOrDash = (v: number | null | undefined): string =>
+  v != null ? `${v} mois` : '—';
 
 export function DetailDrawer({
   item,
@@ -122,6 +147,9 @@ export function DetailDrawer({
   const overdue = item.daysLeft < 0;
   const sourceUrl = safeHttpUrl(item.sourceUrl);
   const hasSource = Boolean(sourceUrl);
+  const enriched = Boolean(item.enrichedAt);
+  const lots = item.lotsDetail ?? [];
+  const faq = item.faq ?? [];
   const tabs: ReadonlyArray<{ key: Tab; label: string }> = [
     { key: 'resume', label: 'Résumé' },
     { key: 'faq', label: 'FAQ' },
@@ -260,8 +288,15 @@ export function DetailDrawer({
           <div className="py-4">
             {tab === 'resume' && (
               <div className="space-y-4">
-                <AiBanner />
-                <p className="text-sm leading-relaxed text-ink-2">{buildResume(item)}</p>
+                <AiBanner enriched={enriched} />
+                {item.reserveAuxPme && (
+                  <span className="inline-block rounded-full bg-emerald-soft px-2.5 py-0.5 text-xs font-medium text-emerald">
+                    Réservé aux PME / TPE / coopératives
+                  </span>
+                )}
+                <p className="text-sm leading-relaxed text-ink-2">
+                  {item.aiResume ?? buildResume(item)}
+                </p>
                 <div>
                   <h3 className="mb-1 text-xs font-bold uppercase tracking-wider text-faint">
                     Conditions financières
@@ -279,8 +314,19 @@ export function DetailDrawer({
                     }
                   />
                   <ConditionRow
-                    label="Caution définitive / retenue / délai"
-                    value="Voir dossier"
+                    label="Caution définitive"
+                    value={fmtPctOrDash(item.conditions?.cautionDefinitivePct)}
+                    aiEstimated
+                  />
+                  <ConditionRow
+                    label="Retenue de garantie"
+                    value={fmtPctOrDash(item.conditions?.retenueGarantiePct)}
+                    aiEstimated
+                  />
+                  <ConditionRow
+                    label="Délai de garantie"
+                    value={fmtMoisOrDash(item.conditions?.delaiGarantieMois)}
+                    aiEstimated
                   />
                 </div>
                 <Link
@@ -295,40 +341,80 @@ export function DetailDrawer({
 
             {tab === 'faq' && (
               <div className="space-y-3">
-                <AiBanner />
-                <p className="text-sm text-muted">
-                  Les questions / réponses sur les conditions d&apos;éligibilité
-                  (chiffre d&apos;affaires, qualification, classification…) seront
-                  générées par IA à partir du dossier. En attendant, consultez le
-                  règlement de consultation sur le portail.
-                </p>
+                <AiBanner enriched={enriched} />
+                {faq.length > 0 ? (
+                  <ul className="space-y-2">
+                    {faq.map((qa, i) => (
+                      <li
+                        key={`${i}-${qa.question}`}
+                        className="rounded-lg border border-line bg-paper-2 p-3"
+                      >
+                        <p className="flex items-start gap-2 text-sm font-semibold text-ink">
+                          <span className="mt-0.5 shrink-0 rounded bg-cyan px-1 text-[10px] font-bold text-paper">
+                            Q
+                          </span>
+                          {qa.question}
+                        </p>
+                        <p className="mt-1 pl-6 text-sm text-ink-2">{qa.reponse}</p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-muted">
+                    Aucune question / réponse disponible. Lancez l&apos;enrichissement
+                    IA ou consultez le règlement de consultation sur le portail.
+                  </p>
+                )}
               </div>
             )}
 
             {tab === 'lots' && (
               <div className="space-y-3">
-                {item.lotCount > 1 ? (
+                {lots.length > 0 ? (
+                  <>
+                    <p className="text-sm text-muted">
+                      {lots.length === 1 ? 'Lot unique' : `${lots.length} lots`}
+                    </p>
+                    <ul className="space-y-2">
+                      {lots.map((lot, i) => (
+                        <li
+                          key={`${i}-${lot.designation}`}
+                          className="rounded-lg border border-line bg-paper-2 p-3"
+                        >
+                          <p className="text-sm font-semibold text-ink">
+                            {lots.length > 1 ? `Lot ${i + 1} — ` : ''}
+                            {lot.designation}
+                          </p>
+                          {lot.description && (
+                            <p className="mt-1 text-sm text-ink-2">{lot.description}</p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : item.lotCount > 1 ? (
                   <p className="text-sm text-muted">
                     Ce marché comporte{' '}
                     <span className="font-semibold text-ink">{item.lotCount} lots</span>.
-                    Le détail par lot (désignation, spécifications) sera extrait du
-                    dossier.
+                    Lancez l&apos;enrichissement IA pour le détail par lot.
                   </p>
                 ) : (
-                  <p className="text-sm font-semibold text-ink">Lot unique</p>
+                  <>
+                    <p className="text-sm font-semibold text-ink">Lot unique</p>
+                    <div className="rounded-lg border border-line bg-paper-2 p-3">
+                      <p className="text-xs font-bold uppercase tracking-wider text-faint">
+                        Désignation
+                      </p>
+                      <p className="mt-1 text-sm text-ink-2">{item.objet}</p>
+                    </div>
+                  </>
                 )}
-                <div className="rounded-lg border border-line bg-paper-2 p-3">
-                  <p className="text-xs font-bold uppercase tracking-wider text-faint">
-                    Désignation
-                  </p>
-                  <p className="mt-1 text-sm text-ink-2">{item.objet}</p>
-                </div>
               </div>
             )}
 
             {tab === 'bpu' && (
               <div className="space-y-3">
-                <AiBanner />
+                <AiBanner enriched={enriched} />
                 <p className="text-sm text-muted">
                   Le bordereau des prix unitaires (désignation, quantité, unité) sera
                   extrait du dossier de consultation.

@@ -16,8 +16,13 @@ import { extractAvis } from './extractor';
 import {
   AnthropicLlmClient,
   LLM_CLIENT,
+  OpenRouterLlmClient,
   type LlmClient,
+  type LlmTier,
 } from './llm.client';
+
+/** Fast, cheap default for OpenRouter bulk reads (extraction/classification). */
+const OPENROUTER_DEFAULT_MODEL = 'google/gemini-2.5-flash';
 
 const extractBodySchema = z.object({
   text: z
@@ -51,17 +56,37 @@ export class BrainController {
 const llmClientProvider = {
   provide: LLM_CLIENT,
   useFactory: (): LlmClient | null => {
+    const log = new Logger('BrainModule');
+
+    // OpenRouter (OpenAI-protocol) takes precedence when configured — a single
+    // fast model serves every tier unless an explicit per-tier override is set.
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+    if (openrouterKey) {
+      const model = process.env.OPENROUTER_MODEL ?? OPENROUTER_DEFAULT_MODEL;
+      const tierModels: Partial<Record<LlmTier, string>> = {
+        T1: model,
+        T2: process.env.OPENROUTER_MODEL_T2 ?? model,
+        T3: process.env.OPENROUTER_MODEL_T3 ?? model,
+      };
+      log.log(`LLM client active (OpenRouter · ${model})`);
+      return new OpenRouterLlmClient({
+        apiKey: openrouterKey,
+        baseUrl: process.env.OPENROUTER_API_BASE,
+        tierModels,
+        appUrl: process.env.PUBLIC_WEB_URL ?? 'https://atlas.marocinfra.com',
+        appTitle: 'ATLAS — AGHA RM INFRA',
+      });
+    }
+
     const apiKey = process.env.LLM_API_KEY;
     if (!apiKey) {
-      new Logger('BrainModule').warn(
-        'LLM_API_KEY not set — brain endpoints disabled',
+      log.warn(
+        'No LLM provider configured (OPENROUTER_API_KEY / LLM_API_KEY) — brain endpoints disabled',
       );
       return null;
     }
     const baseUrl = process.env.LLM_API_BASE;
-    new Logger('BrainModule').log(
-      `LLM client active (${baseUrl ?? 'api.anthropic.com'})`,
-    );
+    log.log(`LLM client active (${baseUrl ?? 'api.anthropic.com'})`);
     return new AnthropicLlmClient({
       apiKey,
       baseUrl,
