@@ -3,7 +3,6 @@ import {
   Body,
   ConflictException,
   Controller,
-  forwardRef,
   Get,
   Inject,
   Logger,
@@ -14,16 +13,14 @@ import {
   Post,
 } from '@nestjs/common';
 import { z } from 'zod';
-import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
 import { FinanceModule } from '../finance/finance.module';
 import { PeopleModule } from '../people/people.module';
 import { StockModule } from '../stock/stock.module';
 import { buildDecompte } from './decompte.domain';
 import { ProjectCostService } from './project-cost.service';
+import { ProjectRepositoryModule } from './project-repository.module';
 import {
-  DrizzleProjectRepository,
-  InMemoryProjectRepository,
   PROJECT_REPOSITORY,
   type ProjectRecord,
   type ProjectRepository,
@@ -102,7 +99,19 @@ export class ProjectController {
   constructor(
     @Inject(PROJECT_REPOSITORY) private readonly repository: ProjectRepository,
     private readonly cost: ProjectCostService,
-  ) {}
+  ) {
+    // Fail loudly at construction if the cost service was not wired. A nullish
+    // value here means the DI graph regressed (e.g. a reintroduced module cycle
+    // instantiated this controller before ProjectCostService resolved). The real
+    // guarantee is the acyclic module graph; this is a guard against silent
+    // `Cannot read properties of undefined (reading 'costSummary')` at runtime.
+    if (!this.cost) {
+      throw new Error(
+        'ProjectController: ProjectCostService was not injected — the project ' +
+          'module DI graph is broken (likely a reintroduced circular dependency).',
+      );
+    }
+  }
 
   /** Register a chantier (from a won tender or manually). */
   @Roles('travaux', 'direction', 'admin-si')
@@ -338,30 +347,18 @@ export class ProjectController {
   }
 }
 
-const projectRepositoryProvider = {
-  provide: PROJECT_REPOSITORY,
-  useFactory: (): ProjectRepository => {
-    const url = process.env.DATABASE_URL;
-    if (url) return new DrizzleProjectRepository(getDb(url));
-    new Logger('ProjectModule').warn(
-      'DATABASE_URL not set — project uses a non-persistent in-memory repository',
-    );
-    return new InMemoryProjectRepository();
-  },
-};
-
 @Module({
-  // StockModule (no back-edge), plus People/Finance via forwardRef to break the
-  // module cycle (those two import ProjectModule for PROJECT_REPOSITORY). The
-  // three are imported so ProjectCostService can inject STOCK_REPOSITORY,
-  // PEOPLE_REPOSITORY and FINANCE_LEDGER_REPOSITORY for the cost rollup.
-  imports: [
-    StockModule,
-    forwardRef(() => PeopleModule),
-    forwardRef(() => FinanceModule),
-  ],
+  // Acyclic, one-way imports — no forwardRef. The PROJECT_REPOSITORY token now
+  // lives in the leaf ProjectRepositoryModule, so People/Finance no longer need
+  // to import ProjectModule for it (that back-edge was the cycle). Here:
+  //   - ProjectRepositoryModule: the controller injects PROJECT_REPOSITORY.
+  //   - Stock/People/Finance: ProjectCostService injects STOCK_REPOSITORY,
+  //     PEOPLE_REPOSITORY and FINANCE_LEDGER_REPOSITORY for the cost rollup.
+  // ProjectRepositoryModule is re-exported so existing importers of ProjectModule
+  // (field, digest, app) keep resolving PROJECT_REPOSITORY transitively.
+  imports: [ProjectRepositoryModule, StockModule, PeopleModule, FinanceModule],
   controllers: [ProjectController],
-  providers: [projectRepositoryProvider, ProjectCostService],
-  exports: [projectRepositoryProvider],
+  providers: [ProjectCostService],
+  exports: [ProjectRepositoryModule],
 })
 export class ProjectModule {}

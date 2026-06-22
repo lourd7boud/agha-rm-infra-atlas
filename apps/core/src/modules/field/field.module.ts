@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { getDb } from '../../db/client';
 import type { AuthenticatedUser } from '../auth/auth.domain';
 import { Roles } from '../auth/auth.module';
-import { ProjectModule } from '../project/project.module';
+import { ProjectRepositoryModule } from '../project/project-repository.module';
 import {
   PROJECT_REPOSITORY,
   type ProjectRepository,
@@ -114,7 +114,10 @@ const fieldRepositoryProvider = {
 };
 
 @Module({
-  imports: [ProjectModule],
+  // Only needs the PROJECT_REPOSITORY token (project existence/status checks), so
+  // it depends on the leaf ProjectRepositoryModule rather than the full
+  // ProjectModule — lighter, and avoids coupling field to the cost-rollup graph.
+  imports: [ProjectRepositoryModule],
   controllers: [FieldController],
   providers: [fieldRepositoryProvider],
   exports: [fieldRepositoryProvider],

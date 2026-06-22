@@ -14,7 +14,7 @@ import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
 import { FinanceModule } from '../finance/finance.module';
 import { FieldModule } from '../field/field.module';
-import { ProjectModule } from '../project/project.module';
+import { ProjectRepositoryModule } from '../project/project-repository.module';
 import { TenderModule } from '../tender/tender.module';
 import { VaultModule } from '../vault/vault.module';
 import { DigestService } from './digest.service';
@@ -94,7 +94,15 @@ const digestQueueProvider = {
 };
 
 @Module({
-  imports: [TenderModule, VaultModule, FinanceModule, FieldModule, ProjectModule],
+  // DigestService injects PROJECT_REPOSITORY only, so import the leaf
+  // ProjectRepositoryModule rather than the full ProjectModule.
+  imports: [
+    TenderModule,
+    VaultModule,
+    FinanceModule,
+    FieldModule,
+    ProjectRepositoryModule,
+  ],
   controllers: [DigestController],
   providers: [
     DigestService,

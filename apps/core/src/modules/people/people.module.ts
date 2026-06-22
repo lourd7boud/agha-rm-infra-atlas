@@ -3,7 +3,6 @@ import {
   Body,
   ConflictException,
   Controller,
-  forwardRef,
   Get,
   Inject,
   Logger,
@@ -15,7 +14,7 @@ import {
 import { z } from 'zod';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
-import { ProjectModule } from '../project/project.module';
+import { ProjectRepositoryModule } from '../project/project-repository.module';
 import {
   PROJECT_REPOSITORY,
   type ProjectRepository,
@@ -197,10 +196,11 @@ const peopleRepositoryProvider = {
 };
 
 @Module({
-  // forwardRef breaks the module cycle: ProjectModule imports PeopleModule for
-  // the cost rollup (PEOPLE_REPOSITORY), and PeopleModule imports ProjectModule
-  // for PROJECT_REPOSITORY (assign validation).
-  imports: [forwardRef(() => ProjectModule)],
+  // One-way, no forwardRef: import only the leaf ProjectRepositoryModule for the
+  // PROJECT_REPOSITORY token (assign validation). ProjectModule imports
+  // PeopleModule (cost rollup) — and since PeopleModule no longer imports
+  // ProjectModule, that edge is no longer a cycle.
+  imports: [ProjectRepositoryModule],
   controllers: [PeopleController],
   providers: [peopleRepositoryProvider],
   // Exported so ProjectModule can inject PEOPLE_REPOSITORY for the cost rollup.

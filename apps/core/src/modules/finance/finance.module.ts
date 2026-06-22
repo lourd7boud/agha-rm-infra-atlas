@@ -2,7 +2,6 @@ import {
   BadRequestException,
   Body,
   Controller,
-  forwardRef,
   Get,
   Inject,
   Logger,
@@ -15,7 +14,7 @@ import {
 import { z } from 'zod';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
-import { ProjectModule } from '../project/project.module';
+import { ProjectRepositoryModule } from '../project/project-repository.module';
 import {
   PROJECT_REPOSITORY,
   type ProjectRepository,
@@ -227,10 +226,11 @@ const financeLedgerRepositoryProvider = {
 };
 
 @Module({
-  // forwardRef breaks the module cycle: ProjectModule imports FinanceModule for
-  // the cost rollup (FINANCE_LEDGER_REPOSITORY), and FinanceModule imports
-  // ProjectModule for PROJECT_REPOSITORY (receivables join).
-  imports: [forwardRef(() => ProjectModule)],
+  // One-way, no forwardRef: import only the leaf ProjectRepositoryModule for the
+  // PROJECT_REPOSITORY token (receivables join). ProjectModule imports
+  // FinanceModule (cost rollup) — and since FinanceModule no longer imports
+  // ProjectModule, that edge is no longer a cycle.
+  imports: [ProjectRepositoryModule],
   controllers: [FinanceController],
   providers: [cautionRepositoryProvider, financeLedgerRepositoryProvider],
   exports: [cautionRepositoryProvider, financeLedgerRepositoryProvider],
