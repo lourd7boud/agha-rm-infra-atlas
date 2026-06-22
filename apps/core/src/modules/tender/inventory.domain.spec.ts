@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
-import { buildInventory, inferRegion } from './inventory.domain';
+import {
+  buildInventory,
+  inferCategory,
+  inferLotCount,
+  inferRegion,
+  inferVille,
+} from './inventory.domain';
 import type { TenderRecord } from './tender.repository';
 
 function rec(overrides: Partial<TenderRecord> & { reference: string }): TenderRecord {
@@ -200,5 +206,86 @@ describe('buildInventory', () => {
     );
     const inv = buildInventory(many, {}, NOW, { limit: 2, offset: 2 });
     expect(inv.items.map((i) => i.reference)).toEqual(['P/2', 'P/3']);
+  });
+
+  test('enriches items with category, secteur, ville, lots, caution and publishedAt', () => {
+    const created = new Date('2026-06-10T08:00:00Z');
+    const inv = buildInventory(
+      [
+        {
+          ...rec({
+            reference: 'NAC/1',
+            buyerName: 'Office Régional de Mise en Valeur Agricole du Haouz',
+            objet: 'Acquisition du matériel de sécurité du réseau informatique',
+            cautionProvisoireMad: 4000,
+            sourceUrl: 'https://portal/tender/1',
+          }),
+          createdAt: created,
+        },
+      ],
+      {},
+      NOW,
+    );
+    const item = inv.items[0]!;
+    expect(item.category).toBe('Fournitures');
+    expect(item.secteur).toBe('Fournitures & équipements');
+    expect(item.ville).toBe('Marrakech');
+    expect(item.lotCount).toBe(1);
+    expect(item.cautionProvisoireMad).toBe(4000);
+    expect(item.sourceUrl).toBe('https://portal/tender/1');
+    expect(item.publishedAt).toEqual(created);
+  });
+
+  test('exposes category and secteur facets over the catalogue', () => {
+    const inv = buildInventory(records, {}, NOW);
+    // Voirie + Irrigation → Travaux; Fournitures → Fournitures; Étude → Services.
+    expect(inv.facets.categories.find((f) => f.key === 'Travaux')?.count).toBe(2);
+    expect(inv.facets.categories.find((f) => f.key === 'Fournitures')?.count).toBe(1);
+    expect(inv.facets.categories.find((f) => f.key === 'Services')?.count).toBe(1);
+    expect(inv.facets.secteurs.length).toBeGreaterThan(0);
+  });
+});
+
+describe('inferCategory', () => {
+  test('an explicit "travaux" wins even with a service verb present', () => {
+    expect(inferCategory("Travaux d'entretien des routes")).toBe('Travaux');
+    expect(inferCategory('Travaux de signalisation horizontale')).toBe('Travaux');
+  });
+
+  test('supply verbs map to Fournitures', () => {
+    expect(inferCategory('Acquisition du matériel de sécurité')).toBe('Fournitures');
+    expect(inferCategory("Fourniture et équipement de bureau")).toBe('Fournitures');
+    expect(inferCategory('Achat de matériel médico-technique')).toBe('Fournitures');
+  });
+
+  test('service verbs map to Services', () => {
+    expect(inferCategory('Entretien bâtiments techniques, dératisation')).toBe('Services');
+    expect(inferCategory("Assistance technique et accompagnement")).toBe('Services');
+    expect(inferCategory('Réalisation des essais de contrôle et suivi de la qualité')).toBe(
+      'Services',
+    );
+  });
+});
+
+describe('inferVille', () => {
+  test('extracts the city from buyer or objet', () => {
+    expect(inferVille('Commune de Jerada')).toBe('Jerada');
+    expect(inferVille('Ministère X', "Construction d'une école à Dakhla")).toBe('Dakhla');
+  });
+
+  test('returns null when no city is present', () => {
+    expect(inferVille('Direction Générale', 'Fourniture de matériel')).toBeNull();
+  });
+});
+
+describe('inferLotCount', () => {
+  test('parses numeric and spelled-out lot counts', () => {
+    expect(inferLotCount("Travaux d'aménagement des voies en deux lots (02 lots)")).toBe(2);
+    expect(inferLotCount('Prestations en 3 lots')).toBe(3);
+  });
+
+  test('defaults to a single lot', () => {
+    expect(inferLotCount('Lot unique — acquisition de matériel')).toBe(1);
+    expect(inferLotCount('Travaux divers')).toBe(1);
   });
 });

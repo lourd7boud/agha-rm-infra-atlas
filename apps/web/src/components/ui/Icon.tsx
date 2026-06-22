@@ -29,7 +29,10 @@ export type IconName =
   | 'alert'
   | 'check'
   | 'activity'
-  | 'pin';
+  | 'pin'
+  | 'download'
+  | 'external'
+  | 'close';
 
 /** Hand-drawn ATLAS icon set — 24px grid, 1.6 stroke, rounded, currentColor. */
 const PATHS: Record<IconName, ReactNode> = {
@@ -212,6 +215,21 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle cx="12" cy="10" r="2.5" />
     </>
   ),
+  download: (
+    <>
+      <path d="M12 3v12" />
+      <path d="M7 11l5 5 5-5" />
+      <path d="M5 20h14" />
+    </>
+  ),
+  external: (
+    <>
+      <path d="M14 4h6v6" />
+      <path d="M20 4l-9 9" />
+      <path d="M19 13.5V19a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5.5" />
+    </>
+  ),
+  close: <path d="M6 6l12 12M18 6L6 18" />,
 };
 
 interface IconProps {
