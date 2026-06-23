@@ -240,6 +240,8 @@ const snapshotRepositoryProvider = {
 export class WatchModule implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('WatchModule');
   private worker: Worker | null = null;
+  /** Set on destroy so the continuous loop's self-reschedule stops cleanly. */
+  private shuttingDown = false;
 
   constructor(
     @Inject(WatchService) private readonly service: WatchService,
@@ -256,6 +258,44 @@ export class WatchModule implements OnModuleInit, OnModuleDestroy {
       this.logger.error(`watch job ${job?.id} failed: ${error.message}`),
     );
 
+    // Two scheduling modes, mutually exclusive — continuous wins if set:
+    //   WATCH_CONTINUOUS=true → self-rescheduling loop (no idle gaps): each
+    //     completed sweep enqueues the next after WATCH_LOOP_DELAY_MS (default
+    //     5 s breather, polite to the portal). The BullMQ worker stays the
+    //     single point of execution, so there is no overlap — naturally
+    //     single-flight.
+    //   WATCH_CRON=… → legacy cron schedule (idle between runs).
+    if (process.env.WATCH_CONTINUOUS === 'true') {
+      const loopDelay = intEnv(process.env.WATCH_LOOP_DELAY_MS, 5_000, 0);
+      this.logger.log(
+        `Sentinel: continuous mode (loop, ${loopDelay}ms breather between sweeps)`,
+      );
+      this.worker.on('completed', () => {
+        if (this.shuttingDown) return;
+        setTimeout(() => {
+          if (this.shuttingDown) return;
+          this.queue
+            .add(
+              'sentinel-sweep',
+              {},
+              { removeOnComplete: 50, removeOnFail: 20 },
+            )
+            .catch((err) =>
+              this.logger.error(
+                `continuous re-enqueue failed: ${(err as Error).message}`,
+              ),
+            );
+        }, loopDelay).unref();
+      });
+      // Kick off the first sweep — subsequent ones chain off `completed`.
+      await this.queue.add(
+        'sentinel-sweep',
+        {},
+        { removeOnComplete: 50, removeOnFail: 20 },
+      );
+      return;
+    }
+
     const cron = process.env.WATCH_CRON;
     if (cron) {
       await this.queue.upsertJobScheduler('watch-schedule', { pattern: cron });
@@ -264,6 +304,7 @@ export class WatchModule implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.shuttingDown = true;
     await this.worker?.close();
     await this.queue.close();
   }
