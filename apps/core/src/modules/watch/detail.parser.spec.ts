@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractDetailLinks,
+  firstDetailLink,
   parseDetailPage,
   parseMoneyMad,
 } from './detail.parser';
@@ -44,6 +45,27 @@ describe('extractDetailLinks', () => {
 
   it('returns nothing on a page with no consultations', () => {
     expect(extractDetailLinks('<html></html>', 'https://x.ma')).toEqual([]);
+  });
+});
+
+describe('firstDetailLink', () => {
+  it('returns the first canonical detail link in a row fragment', () => {
+    const link = firstDetailLink(
+      LISTING_FIXTURE,
+      'https://www.marchespublics.gov.ma/index.php?page=entreprise.EntrepriseAdvancedSearch',
+    );
+    expect(link).toEqual({
+      refConsultation: '977311',
+      orgAcronyme: 'm8x',
+      detailUrl:
+        'https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=977311&orgAcronyme=m8x',
+    });
+  });
+
+  it('returns null when the fragment carries only a popUp ref anchor', () => {
+    const popUpOnly =
+      `<a href="javascript:popUp('index.php?page=commun.PopUpDetailLots&orgAccronyme=m8x&refConsultation=977311','yes')">ref</a>`;
+    expect(firstDetailLink(popUpOnly, 'https://x.ma')).toBeNull();
   });
 });
 

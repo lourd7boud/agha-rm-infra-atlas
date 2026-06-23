@@ -1,6 +1,7 @@
 import * as cheerio from 'cheerio';
 import type { TenderProcedure } from '@atlas/contracts';
 import type { CreateTender } from '../tender/tender.repository';
+import { firstDetailLink } from './detail.parser';
 
 // Morocco is UTC+1 year-round (since 2018); PMMP shows local times.
 // Ramadan clock changes are ignored deliberately — one hour of slack is
@@ -63,6 +64,36 @@ function cleanCell(text: string): string {
 }
 
 /**
+ * Per-row sourceUrl, the join key for download/Soumission. The live reference
+ * anchor is a `javascript:popUp(...)` with no usable href, so we first mine the
+ * row's own détails/retraits links for the canonical
+ * `EntrepriseDetailsConsultation&refConsultation=…&orgAcronyme=…` pair. Only if
+ * that is absent (synthetic fixtures) do we fall back to a real anchor href.
+ */
+function resolveSourceUrl(
+  rowHtml: string,
+  href: string | undefined,
+  baseUrl: string,
+): string | undefined {
+  const detail = firstDetailLink(rowHtml, baseUrl);
+  if (detail) return detail.detailUrl;
+  // Fallback for non-PRADO/recorded sources: accept a real anchor href only if
+  // it resolves to a download-capable consultation link (refConsultation +
+  // orgAcronyme). This keeps the invariant that every stored sourceUrl is
+  // parseable by the dossier downloader, never a half-formed URL.
+  if (!href || href.startsWith('javascript:') || href.startsWith('#')) {
+    return undefined;
+  }
+  let absolute: string;
+  try {
+    absolute = new URL(href, baseUrl).toString();
+  } catch {
+    return undefined;
+  }
+  return firstDetailLink(absolute, baseUrl)?.detailUrl;
+}
+
+/**
  * Recorded-fixture layout (table id …tableauResultSearch): one row per
  * tender, columns reference / objet / buyer / deadline.
  */
@@ -97,7 +128,7 @@ function parseFixtureLayout(
       procedure,
       objet,
       deadlineAt,
-      sourceUrl: href ? new URL(href, baseUrl).toString() : undefined,
+      sourceUrl: resolveSourceUrl($(row).html() ?? '', href, baseUrl),
     });
   });
 
@@ -144,7 +175,7 @@ function parseLiveLayout($: cheerio.CheerioAPI, baseUrl: string): ParseOutcome {
       procedure,
       objet,
       deadlineAt,
-      sourceUrl: href ? new URL(href, baseUrl).toString() : undefined,
+      sourceUrl: resolveSourceUrl($(row).html() ?? '', href, baseUrl),
     });
   });
 

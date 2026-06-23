@@ -52,7 +52,7 @@ describe('parsePmmpResults', () => {
     expect(pont.objet).toContain("pont sur oued N'Fis");
     expect(pont.deadlineAt.toISOString()).toBe('2026-07-07T09:00:00.000Z');
     expect(pont.sourceUrl).toBe(
-      'https://www.marchespublics.gov.ma/index.php?page=entreprise.EntrepriseDetailsConsultation&refConsultation=824513',
+      'https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=824513&orgAcronyme=d7h',
     );
 
     const concours = tenders[2]!;
@@ -64,6 +64,31 @@ describe('parsePmmpResults', () => {
     const { tenders, skippedRows } = parsePmmpResults('<html><body>maintenance</body></html>', BASE_URL);
     expect(tenders).toEqual([]);
     expect(skippedRows).toBe(0);
+  });
+
+  test('captures the canonical sourceUrl from the row when the ref anchor is a popUp', () => {
+    // Live Atexo shape: the référence anchor is a javascript:popUp(...) with no
+    // usable href, but the row also carries détails/retraits links embedding the
+    // ref+org pair. sourceUrl must resolve to the canonical consultation URL.
+    const html = `<table class="table-results"><tbody>
+      <tr>
+        <td><input type="checkbox" /></td>
+        <td>AOO <span>Appel d'offres ouvert</span></td>
+        <td>
+          <a href="javascript:popUp('index.php?page=commun.PopUpDetailLots&orgAccronyme=m8x&refConsultation=977311&lang=','yes')">06/BR/RGON/2026</a>
+          <span>Objet : Travaux de construction d'un ouvrage hydraulique</span>
+        </td>
+        <td>Commune de Guelmim</td>
+        <td>15/07/202610:00</td>
+        <td><a href="https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=977311&orgAcronyme=m8x&code=&retraits">0</a></td>
+      </tr>
+    </tbody></table>`;
+    const { tenders } = parsePmmpResults(html, BASE_URL);
+    expect(tenders).toHaveLength(1);
+    expect(tenders[0]!.reference).toBe('06/BR/RGON/2026');
+    expect(tenders[0]!.sourceUrl).toBe(
+      'https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=977311&orgAcronyme=m8x',
+    );
   });
 
   test('falls back to the live Atexo layout (table.table-results)', () => {

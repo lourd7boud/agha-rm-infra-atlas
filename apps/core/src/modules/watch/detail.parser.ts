@@ -42,6 +42,44 @@ export function parseMoneyMad(text: string | null | undefined): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+/** Canonical GET detail/consultation URL from a (refConsultation, orgAcronyme) pair. */
+export function buildDetailUrl(
+  refConsultation: string,
+  orgAcronyme: string,
+  origin: string,
+): string {
+  return `${origin}/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=${refConsultation}&orgAcronyme=${orgAcronyme}`;
+}
+
+/** Matches one consultation detail link; tolerates `&amp;` from serialized HTML. */
+const DETAIL_LINK_SOURCE =
+  'EntrepriseDetailsConsultation&(?:amp;)?refConsultation=(\\d+)&(?:amp;)?orgAcronyme=([A-Za-z0-9_]+)';
+
+/**
+ * Reused (non-global) matcher for the single-match path. Kept distinct from the
+ * per-call global regex in extractDetailLinks, whose stateful lastIndex must not
+ * be shared.
+ */
+const DETAIL_LINK_REGEX = new RegExp(DETAIL_LINK_SOURCE);
+
+/**
+ * First consultation detail link in an HTML fragment, as a buildable GET URL.
+ * Used to attach the canonical sourceUrl to a single listing row (the live
+ * reference anchor is a `javascript:popUp(...)` with no usable href, but each
+ * row also carries the détails/retraits links that embed the ref+org pair).
+ */
+export function firstDetailLink(html: string, baseUrl: string): DetailLink | null {
+  const match = DETAIL_LINK_REGEX.exec(html);
+  if (!match) return null;
+  const refConsultation = match[1] as string;
+  const orgAcronyme = match[2] as string;
+  return {
+    refConsultation,
+    orgAcronyme,
+    detailUrl: buildDetailUrl(refConsultation, orgAcronyme, safeOrigin(baseUrl)),
+  };
+}
+
 /**
  * All distinct consultations referenced by the listing HTML, as buildable GET
  * detail URLs. Robust against the listing's table markup: it scans the whole
@@ -49,8 +87,7 @@ export function parseMoneyMad(text: string | null | undefined): number | null {
  */
 export function extractDetailLinks(html: string, baseUrl: string): DetailLink[] {
   const origin = safeOrigin(baseUrl);
-  const re =
-    /EntrepriseDetailsConsultation&(?:amp;)?refConsultation=(\d+)&(?:amp;)?orgAcronyme=([A-Za-z0-9_]+)/g;
+  const re = new RegExp(DETAIL_LINK_SOURCE, 'g');
   const seen = new Set<string>();
   const links: DetailLink[] = [];
   let match: RegExpExecArray | null;
@@ -63,7 +100,7 @@ export function extractDetailLinks(html: string, baseUrl: string): DetailLink[] 
     links.push({
       refConsultation,
       orgAcronyme,
-      detailUrl: `${origin}/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=${refConsultation}&orgAcronyme=${orgAcronyme}`,
+      detailUrl: buildDetailUrl(refConsultation, orgAcronyme, origin),
     });
   }
   return links;

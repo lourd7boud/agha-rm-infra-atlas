@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, isNull } from 'drizzle-orm';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import type { Db } from '../../db/client';
 import { tenders } from '../../db/schema';
@@ -42,6 +42,17 @@ export interface TenderRepository {
   create(input: CreateTender): Promise<TenderRecord>;
   findAll(): Promise<TenderRecord[]>;
   findById(id: string): Promise<TenderRecord | null>;
+  /**
+   * Fills sourceUrl on an already-stored tender (matched by reference+buyer)
+   * only when it is currently NULL — never overwrites a known value. Returns
+   * whether a row was updated. Lets a re-crawl heal the legacy rows that were
+   * ingested before the listing parser captured the canonical detail link.
+   */
+  backfillSourceUrl(
+    reference: string,
+    buyerName: string,
+    sourceUrl: string,
+  ): Promise<boolean>;
   updateState(id: string, state: PipelineState): Promise<TenderRecord | null>;
   updateQualification(
     id: string,
@@ -82,6 +93,26 @@ export class InMemoryTenderRepository implements TenderRepository {
 
   async findById(id: string): Promise<TenderRecord | null> {
     return this.records.find((r) => r.id === id) ?? null;
+  }
+
+  async backfillSourceUrl(
+    reference: string,
+    buyerName: string,
+    sourceUrl: string,
+  ): Promise<boolean> {
+    let changed = false;
+    this.records = this.records.map((r) => {
+      if (
+        r.reference === reference &&
+        r.buyerName === buyerName &&
+        r.sourceUrl === undefined
+      ) {
+        changed = true;
+        return { ...r, sourceUrl };
+      }
+      return r;
+    });
+    return changed;
   }
 
   async updateState(id: string, state: PipelineState): Promise<TenderRecord | null> {
@@ -176,6 +207,25 @@ export class DrizzleTenderRepository implements TenderRepository {
       .where(eq(tenders.id, id))
       .limit(1);
     return row ? toRecord(row) : null;
+  }
+
+  async backfillSourceUrl(
+    reference: string,
+    buyerName: string,
+    sourceUrl: string,
+  ): Promise<boolean> {
+    const rows = await this.db
+      .update(tenders)
+      .set({ sourceUrl, updatedAt: new Date() })
+      .where(
+        and(
+          eq(tenders.reference, reference),
+          eq(tenders.buyerName, buyerName),
+          isNull(tenders.sourceUrl),
+        ),
+      )
+      .returning({ id: tenders.id });
+    return rows.length > 0;
   }
 
   async updateState(id: string, state: PipelineState): Promise<TenderRecord | null> {

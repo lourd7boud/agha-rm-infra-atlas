@@ -71,6 +71,7 @@ describe('WatchService.runOnce', () => {
       fetched: 3,
       inserted: 3,
       duplicates: 0,
+      sourceUrlBackfilled: 0,
       skippedRows: 1,
       errors: 0,
       pagesFetched: 1,
@@ -92,6 +93,40 @@ describe('WatchService.runOnce', () => {
     expect(second.inserted).toBe(0);
     expect(second.duplicates).toBe(3);
     expect(await repository.findAll()).toHaveLength(3);
+  });
+
+  test('heals a legacy NULL source_url on a later crawl that exposes the link', async () => {
+    const repo = new InMemoryTenderRepository();
+    const cell2 = `<td><a href="javascript:popUp('x')">12/2026/AB</a> - <span>Objet : Travaux</span></td>`;
+    const rowNoLink = `<html><body><table class="table-results"><tbody><tr>
+      <td><input /></td><td>AOO Appel d'offres ouvert</td>${cell2}
+      <td>Commune X</td><td>15/07/202610:00</td><td></td>
+    </tr></tbody></table></body></html>`;
+    const rowWithLink = `<html><body><table class="table-results"><tbody><tr>
+      <td><input /></td><td>AOO Appel d'offres ouvert</td>${cell2}
+      <td>Commune X</td><td>15/07/202610:00</td>
+      <td><a href="https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=900111&orgAcronyme=z9z&retraits">0</a></td>
+    </tr></tbody></table></body></html>`;
+
+    // First crawl: no resolvable link → stored with NULL source_url.
+    const first = await new WatchService(
+      new PagedFakeSource([rowNoLink]),
+      repo,
+    ).runOnce();
+    expect(first.inserted).toBe(1);
+    expect((await repo.findAll())[0]!.sourceUrl).toBeUndefined();
+
+    // Later crawl: same tender, link now present → duplicate + backfill.
+    const second = await new WatchService(
+      new PagedFakeSource([rowWithLink]),
+      repo,
+    ).runOnce();
+    expect(second.inserted).toBe(0);
+    expect(second.duplicates).toBe(1);
+    expect(second.sourceUrlBackfilled).toBe(1);
+    const healed = (await repo.findAll())[0]!.sourceUrl;
+    expect(healed).toContain('EntrepriseDetailsConsultation');
+    expect(healed).toContain('refConsultation=900111&orgAcronyme=z9z');
   });
 
   test('single-page source is fetched once even with a high page cap', async () => {

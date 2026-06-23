@@ -18,6 +18,8 @@ export interface WatchRunSummary {
   fetched: number;
   inserted: number;
   duplicates: number;
+  /** Legacy rows whose NULL source_url was healed from the canonical detail link. */
+  sourceUrlBackfilled: number;
   skippedRows: number;
   errors: number;
   /** Pages actually fetched and parsed this run. */
@@ -90,6 +92,7 @@ export class WatchService {
     let fetched = 0;
     let inserted = 0;
     let duplicates = 0;
+    let sourceUrlBackfilled = 0;
     let skippedRows = 0;
     let errors = 0;
     let pagesFetched = 0;
@@ -173,6 +176,23 @@ export class WatchService {
         } catch (error) {
           if (error instanceof DuplicateTenderError) {
             duplicates += 1;
+            // Self-heal: an already-stored tender that predates canonical
+            // sourceUrl capture gets its NULL source_url filled in place. Never
+            // overwrites a known value; a backfill failure must not fail the run.
+            if (tender.sourceUrl) {
+              try {
+                const healed = await this.tenders.backfillSourceUrl(
+                  tender.reference,
+                  tender.buyerName,
+                  tender.sourceUrl,
+                );
+                if (healed) sourceUrlBackfilled += 1;
+              } catch (backfillError) {
+                this.logger.warn(
+                  `sourceUrl backfill failed for ${tender.reference}: ${(backfillError as Error).message}`,
+                );
+              }
+            }
             continue;
           }
           errors += 1;
@@ -191,6 +211,7 @@ export class WatchService {
       fetched,
       inserted,
       duplicates,
+      sourceUrlBackfilled,
       skippedRows,
       errors,
       pagesFetched,
