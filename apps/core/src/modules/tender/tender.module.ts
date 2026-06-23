@@ -33,6 +33,7 @@ import {
 } from '../vault/vault.repository';
 import { IntelModule } from '../intel/intel.module';
 import { buildComplianceChecklist } from './compliance.domain';
+import { DossierService } from './dossier.service';
 import { EnrichmentService } from './enrichment.service';
 import { buildInventory } from './inventory.domain';
 import { nextActions } from './orchestrator.domain';
@@ -112,6 +113,7 @@ export class TenderController {
     @Inject(TENDER_REPOSITORY) private readonly repository: TenderRepository,
     @Inject(QualifierService) private readonly qualifier: QualifierService,
     @Inject(EnrichmentService) private readonly enrichment: EnrichmentService,
+    @Inject(DossierService) private readonly dossierService: DossierService,
     @Inject(PricingService) private readonly pricing: PricingService,
     @Inject(VAULT_REPOSITORY) private readonly vault: VaultRepository,
     @Inject(OUTCOME_REPOSITORY) private readonly outcomes: OutcomeRepository,
@@ -194,6 +196,15 @@ export class TenderController {
     return this.enrichment.aiEnrichBatch(parsed.data.limit, {
       onlyActive: parsed.data.onlyActive,
     });
+  }
+
+  /** DCE dossier: downloads the full ZIP from the portal on first call, then
+   *  serves it from MinIO. Returns a short-lived presigned URL. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
+  @Get('tenders/:id/dossier')
+  async dossier(@Param('id') id: string) {
+    return this.dossierService.ensureDossier(id);
   }
 
   /** Run the Qualifier (A3) over all detected/parsed tenders. */
@@ -440,6 +451,7 @@ const eventRepositoryProvider = {
     eventRepositoryProvider,
     QualifierService,
     EnrichmentService,
+    DossierService,
     PricingService,
   ],
   exports: [tenderRepositoryProvider],

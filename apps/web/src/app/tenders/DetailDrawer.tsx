@@ -22,11 +22,14 @@ function ActionButton({
   icon,
   label,
   primary,
+  download,
 }: {
   href?: string;
   icon: IconName;
   label: string;
   primary?: boolean;
+  /** Same-tab file download (Content-Disposition) instead of opening a tab. */
+  download?: boolean;
 }) {
   const base =
     'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-4 py-2.5 text-sm font-semibold transition';
@@ -45,11 +48,13 @@ function ActionButton({
       </button>
     );
   }
+  const linkProps = download
+    ? { download: '' }
+    : { target: '_blank', rel: 'noopener noreferrer' };
   return (
     <a
       href={href}
-      target="_blank"
-      rel="noopener noreferrer"
+      {...linkProps}
       className={`${base} ${
         primary
           ? 'bg-cyan text-paper hover:bg-cyan/90'
@@ -260,10 +265,11 @@ export function DetailDrawer({
 
           <div className="mt-4 flex gap-2">
             <ActionButton
-              href={sourceUrl}
+              href={hasSource ? `/api/tenders/${item.id}/dossier` : undefined}
               icon="download"
               label="Télécharger le dossier"
               primary
+              download
             />
             <ActionButton href={sourceUrl} icon="external" label="Soumission en ligne" />
           </div>

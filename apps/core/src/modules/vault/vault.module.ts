@@ -148,7 +148,9 @@ const objectStorageProvider = {
 @Module({
   controllers: [VaultController],
   providers: [vaultRepositoryProvider, objectStorageProvider],
-  exports: [vaultRepositoryProvider],
+  // OBJECT_STORAGE is exported so the tender module can cache DCE dossiers in
+  // the same MinIO backend (under a dossiers/ prefix).
+  exports: [vaultRepositoryProvider, objectStorageProvider],
 })
 export class VaultModule implements OnModuleInit {
   constructor(
