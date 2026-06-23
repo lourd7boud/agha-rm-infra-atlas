@@ -28,7 +28,7 @@ async function main(): Promise<void> {
     apiKey,
     baseUrl: process.env.OPENROUTER_API_BASE,
     tierModels: { T1: model, T2: model, T3: model },
-    appTitle: 'ATLAS — AGHA RM INFRA',
+    appTitle: 'ATLAS - AGHA RM INFRA',
   });
   const repository = new DrizzleTenderRepository(getDb(databaseUrl));
   const service = new EnrichmentService(repository, llm);

@@ -120,6 +120,24 @@ describe('OpenRouterLlmClient', () => {
     );
   });
 
+  test('sanitises non-ASCII header values (em dash) so fetch cannot throw', async () => {
+    const fn = mockFetch({ choices: [{ message: { content: 'x' } }], model: 'm', usage: {} });
+    const client = new OpenRouterLlmClient({
+      apiKey: 'k',
+      appTitle: 'ATLAS — AGHA RM INFRA', // contains U+2014 em dash (> 255)
+      appUrl: 'https://atlas.marocinfra.com',
+    });
+    await client.complete({ tier: 'T1', prompt: 'x' });
+    const init = fn.mock.calls[0]![1] as unknown as {
+      headers: Record<string, string>;
+    };
+    expect(init.headers['X-Title']).toBe('ATLAS - AGHA RM INFRA');
+    // Every header byte must be Latin-1 representable.
+    for (const value of Object.values(init.headers)) {
+      expect([...value].every((c) => c.charCodeAt(0) <= 255)).toBe(true);
+    }
+  });
+
   test('rejects a non-http(s) or malformed base URL at construction', () => {
     expect(() => new OpenRouterLlmClient({ apiKey: 'k', baseUrl: 'ftp://evil/api' })).toThrow(
       /OPENROUTER_API_BASE/,

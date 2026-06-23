@@ -217,9 +217,12 @@ export class OpenRouterLlmClient implements LlmClient {
     this.baseUrl = base;
     this.tierModels = { ...DEFAULT_TIER_MODELS, ...options.tierModels };
     this.timeoutMs = options.timeoutMs ?? OPENROUTER_TIMEOUT_MS;
+    // HTTP header values must be a ByteString (Latin-1, ≤ 255). Strip any
+    // non-ASCII char (e.g. an em dash in the app title) so fetch() never throws.
+    const asciiHeader = (value: string) => value.replace(/[^\x20-\x7E]/g, '-');
     this.extraHeaders = {
-      ...(options.appUrl ? { 'HTTP-Referer': options.appUrl } : {}),
-      ...(options.appTitle ? { 'X-Title': options.appTitle } : {}),
+      ...(options.appUrl ? { 'HTTP-Referer': asciiHeader(options.appUrl) } : {}),
+      ...(options.appTitle ? { 'X-Title': asciiHeader(options.appTitle) } : {}),
     };
   }
 

@@ -74,7 +74,7 @@ const llmClientProvider = {
         baseUrl: process.env.OPENROUTER_API_BASE,
         tierModels,
         appUrl: process.env.PUBLIC_WEB_URL ?? 'https://atlas.marocinfra.com',
-        appTitle: 'ATLAS — AGHA RM INFRA',
+        appTitle: 'ATLAS - AGHA RM INFRA',
       });
     }
 
