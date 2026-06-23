@@ -34,6 +34,7 @@ import {
 import { IntelModule } from '../intel/intel.module';
 import { buildComplianceChecklist } from './compliance.domain';
 import { DossierService } from './dossier.service';
+import { DossierExtractionService } from './dossier-extraction.service';
 import { EnrichmentService } from './enrichment.service';
 import { buildInventory } from './inventory.domain';
 import { nextActions } from './orchestrator.domain';
@@ -92,6 +93,14 @@ const enrichBatchBodySchema = z.object({
   onlyActive: z.boolean().default(true),
 });
 
+const extractDossierBatchBodySchema = z.object({
+  // Each item downloads a ~MB dossier + an LLM call — keep the per-request fan
+  // bounded; re-run to cover more (already-extracted tenders are skipped).
+  limit: z.coerce.number().int().positive().max(100).default(25),
+  onlyActive: z.boolean().default(true),
+  force: z.boolean().default(false),
+});
+
 function present(record: TenderRecord) {
   return { ...record, daysLeft: daysUntil(record.deadlineAt, new Date()) };
 }
@@ -114,6 +123,8 @@ export class TenderController {
     @Inject(QualifierService) private readonly qualifier: QualifierService,
     @Inject(EnrichmentService) private readonly enrichment: EnrichmentService,
     @Inject(DossierService) private readonly dossierService: DossierService,
+    @Inject(DossierExtractionService)
+    private readonly dossierExtraction: DossierExtractionService,
     @Inject(PricingService) private readonly pricing: PricingService,
     @Inject(VAULT_REPOSITORY) private readonly vault: VaultRepository,
     @Inject(OUTCOME_REPOSITORY) private readonly outcomes: OutcomeRepository,
@@ -205,6 +216,27 @@ export class TenderController {
   @Get('tenders/:id/dossier')
   async dossier(@Param('id') id: string) {
     return this.dossierService.ensureDossier(id);
+  }
+
+  /** Extracts the REAL budget/caution/qualifications/BPU from the DCE dossier. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @Post('tenders/:id/extract-dossier')
+  async extractDossier(@Param('id') id: string) {
+    return this.dossierExtraction.extractTender(id);
+  }
+
+  /** Bulk dossier extraction over the active catalogue (datao-grade fill). */
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 3 } })
+  @Post('extract-dossier-batch')
+  async extractDossierBatch(@Body() body: unknown) {
+    const parsed = extractDossierBatchBodySchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    return this.dossierExtraction.extractBatch(parsed.data.limit, {
+      onlyActive: parsed.data.onlyActive,
+      force: parsed.data.force,
+    });
   }
 
   /** Run the Qualifier (A3) over all detected/parsed tenders. */
@@ -452,6 +484,7 @@ const eventRepositoryProvider = {
     QualifierService,
     EnrichmentService,
     DossierService,
+    DossierExtractionService,
     PricingService,
   ],
   exports: [tenderRepositoryProvider],

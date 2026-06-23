@@ -2,6 +2,10 @@ import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import { daysUntil } from '../../lib/dates';
 import type { TenderRecord } from './tender.repository';
 import { readAiEnrichment, type AiEnrichment } from './ai-enrichment';
+import {
+  readDossierExtraction,
+  type DossierExtraction,
+} from './dossier-extraction';
 
 /**
  * Tender Inventory (جرد) — turns the raw detected-tender stream into a
@@ -421,6 +425,34 @@ export interface InventoryItem {
   };
   reserveAuxPme?: boolean;
   enrichedAt?: string;
+  // ── Dossier extraction (REAL DCE data) — present once the DCE was read ──
+  bpu?: Array<{
+    designation: string;
+    quantite?: number | null;
+    unite?: string | null;
+    prixUnitaireMad?: number | null;
+  }>;
+  qualifications?: Array<{
+    secteur?: string | null;
+    qualification?: string | null;
+    classe?: string | null;
+  }>;
+  chiffreAffairesMinMad?: number | null;
+  delaiExecutionMois?: number | null;
+  /** true when estimationMad came from the real DCE (not the listing). */
+  budgetFromDossier?: boolean;
+  /**
+   * Per-field DCE provenance for the conditions: a non-null value here means
+   * THAT figure was read from the dossier (so the UI can mark only those as
+   * verified, not the AI-fallback ones). Absent when no dossier was extracted.
+   */
+  dossierConditions?: {
+    cautionDefinitivePct: number | null;
+    retenueGarantiePct: number | null;
+    delaiGarantieMois: number | null;
+  };
+  /** ISO timestamp the DCE dossier was read (provenance marker). */
+  dossierExtractedAt?: string;
 }
 
 export interface InventoryFacets {
@@ -465,6 +497,7 @@ interface Classified {
   category: TenderCategory;
   secteur: string;
   ai: AiEnrichment | null;
+  dossier: DossierExtraction | null;
 }
 
 function tallyTop(
@@ -527,6 +560,7 @@ export function buildInventory(
       // AI secteur wins when enriched, else the deterministic ouvrage label.
       secteur: ai?.secteur ?? segmentLabel(inferSegment(record.objet, record.buyerName)),
       ai,
+      dossier: readDossierExtraction(record.raw),
     };
   });
 
@@ -551,7 +585,7 @@ export function buildInventory(
 
   const matched: InventoryItem[] = classified
     .filter((c) => matches(c, filters))
-    .map(({ record, region, ville, location, category, secteur, ai }) => ({
+    .map(({ record, region, ville, location, category, secteur, ai, dossier }) => ({
       id: record.id,
       reference: record.reference,
       buyerName: record.buyerName,
@@ -569,15 +603,42 @@ export function buildInventory(
       location,
       category,
       secteur,
-      // Real lot count from the AI breakdown when available, else parsed.
-      lotCount: ai && ai.lots.length > 0 ? ai.lots.length : inferLotCount(record.objet),
+      // Real lot count: prefer the dossier BPU breadth, then the AI lots, else parsed.
+      lotCount:
+        dossier && dossier.bpu.length > 0
+          ? dossier.bpu.length
+          : ai && ai.lots.length > 0
+            ? ai.lots.length
+            : inferLotCount(record.objet),
       sourceUrl: record.sourceUrl,
       aiResume: ai?.resume,
       faq: ai?.faq,
       lotsDetail: ai?.lots,
-      conditions: ai?.conditions,
+      // Conditions: the real DCE figures win per-field, the AI guess fills gaps.
+      conditions: {
+        cautionDefinitivePct:
+          dossier?.cautionDefinitivePct ?? ai?.conditions?.cautionDefinitivePct ?? null,
+        retenueGarantiePct:
+          dossier?.retenueGarantiePct ?? ai?.conditions?.retenueGarantiePct ?? null,
+        delaiGarantieMois:
+          dossier?.delaiGarantieMois ?? ai?.conditions?.delaiGarantieMois ?? null,
+      },
       reserveAuxPme: ai?.reserveAuxPme,
       enrichedAt: ai?.enrichedAt,
+      // Real DCE extraction (datao-grade) when present.
+      bpu: dossier?.bpu,
+      qualifications: dossier?.qualifications,
+      chiffreAffairesMinMad: dossier?.chiffreAffairesMinMad ?? null,
+      delaiExecutionMois: dossier?.delaiExecutionMois ?? null,
+      budgetFromDossier: dossier?.estimationMad != null,
+      dossierConditions: dossier
+        ? {
+            cautionDefinitivePct: dossier.cautionDefinitivePct ?? null,
+            retenueGarantiePct: dossier.retenueGarantiePct ?? null,
+            delaiGarantieMois: dossier.delaiGarantieMois ?? null,
+          }
+        : undefined,
+      dossierExtractedAt: dossier?.extractedAt,
     }))
     // Deadline ascending; reference breaks ties so order is stable regardless
     // of the repository's row order.

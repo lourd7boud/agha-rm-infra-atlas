@@ -40,6 +40,29 @@ export interface TenderItem {
   };
   reserveAuxPme?: boolean;
   enrichedAt?: string;
+  // ── Real DCE dossier extraction (datao-grade) — present once the DCE was read ──
+  bpu?: Array<{
+    designation: string;
+    quantite?: number | null;
+    unite?: string | null;
+    prixUnitaireMad?: number | null;
+  }>;
+  qualifications?: Array<{
+    secteur?: string | null;
+    qualification?: string | null;
+    classe?: string | null;
+  }>;
+  chiffreAffairesMinMad?: number | null;
+  delaiExecutionMois?: number | null;
+  /** true when the budget (estimation) came from the real DCE (not the listing). */
+  budgetFromDossier?: boolean;
+  /** Per-field DCE provenance — a non-null value means that condition is verified. */
+  dossierConditions?: {
+    cautionDefinitivePct: number | null;
+    retenueGarantiePct: number | null;
+    delaiGarantieMois: number | null;
+  };
+  dossierExtractedAt?: string;
 }
 
 export interface TenderFacet {

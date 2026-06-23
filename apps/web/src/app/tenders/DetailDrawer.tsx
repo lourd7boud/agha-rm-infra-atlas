@@ -156,6 +156,18 @@ export function DetailDrawer({
   const enriched = Boolean(item.enrichedAt);
   const lots = item.lotsDetail ?? [];
   const faq = item.faq ?? [];
+  const bpu = item.bpu ?? [];
+  const quals = item.qualifications ?? [];
+  // Per-field DCE provenance — a value is "verified" only when the dossier
+  // actually supplied THAT field (not when an extraction merely ran). Avoids
+  // labelling AI-fallback figures as officially DCE-confirmed.
+  const dc = item.dossierConditions;
+  const budgetVerified = Boolean(item.budgetFromDossier);
+  const verifiedCautionDef = dc?.cautionDefinitivePct != null;
+  const verifiedRetenue = dc?.retenueGarantiePct != null;
+  const verifiedDelaiGar = dc?.delaiGarantieMois != null;
+  const anyConditionVerified =
+    budgetVerified || verifiedCautionDef || verifiedRetenue || verifiedDelaiGar;
   const tabs: ReadonlyArray<{ key: Tab; label: string }> = [
     { key: 'resume', label: 'Résumé' },
     { key: 'faq', label: 'FAQ' },
@@ -314,11 +326,16 @@ export function DetailDrawer({
                   {item.aiResume ?? buildResume(item)}
                 </p>
                 <div>
-                  <h3 className="mb-1 text-xs font-bold uppercase tracking-wider text-faint">
+                  <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
                     Conditions financières
+                    {anyConditionVerified && (
+                      <span className="rounded bg-emerald px-1 py-0.5 text-[9px] font-bold normal-case text-paper">
+                        DCE
+                      </span>
+                    )}
                   </h3>
                   <ConditionRow
-                    label="Budget estimé"
+                    label={budgetVerified ? 'Estimation (maître d’ouvrage)' : 'Budget estimé'}
                     value={item.estimationMad != null ? fmtMad(item.estimationMad) : '—'}
                   />
                   <ConditionRow
@@ -332,19 +349,60 @@ export function DetailDrawer({
                   <ConditionRow
                     label="Caution définitive"
                     value={fmtPctOrDash(item.conditions?.cautionDefinitivePct)}
-                    aiEstimated
+                    aiEstimated={!verifiedCautionDef}
                   />
                   <ConditionRow
                     label="Retenue de garantie"
                     value={fmtPctOrDash(item.conditions?.retenueGarantiePct)}
-                    aiEstimated
+                    aiEstimated={!verifiedRetenue}
                   />
                   <ConditionRow
                     label="Délai de garantie"
                     value={fmtMoisOrDash(item.conditions?.delaiGarantieMois)}
-                    aiEstimated
+                    aiEstimated={!verifiedDelaiGar}
                   />
+                  {item.delaiExecutionMois != null && (
+                    <ConditionRow
+                      label="Délai d’exécution"
+                      value={fmtMoisOrDash(item.delaiExecutionMois)}
+                    />
+                  )}
+                  {item.chiffreAffairesMinMad != null && (
+                    <ConditionRow
+                      label="Chiffre d’affaires min. exigé"
+                      value={fmtMad(item.chiffreAffairesMinMad)}
+                    />
+                  )}
                 </div>
+
+                {quals.length > 0 && (
+                  <div>
+                    <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
+                      Qualifications requises
+                      <span className="rounded bg-emerald px-1 py-0.5 text-[9px] font-bold normal-case text-paper">
+                        DCE
+                      </span>
+                    </h3>
+                    <ul className="space-y-1.5">
+                      {quals.map((q, i) => (
+                        <li
+                          key={`${i}-${q.qualification ?? q.secteur ?? ''}`}
+                          className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink-2"
+                        >
+                          {q.secteur && <span>{q.secteur}</span>}
+                          {q.qualification && (
+                            <span className="rounded bg-sand px-1.5 py-0.5 font-mono text-xs text-ink">
+                              {q.qualification}
+                            </span>
+                          )}
+                          {q.classe && (
+                            <span className="text-muted">classe {q.classe}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <Link
                   href={`/tenders/${item.id}`}
                   className="inline-flex items-center gap-1 text-sm font-semibold text-cyan hover:underline"
@@ -430,21 +488,60 @@ export function DetailDrawer({
 
             {tab === 'bpu' && (
               <div className="space-y-3">
-                <AiBanner enriched={enriched} />
-                <p className="text-sm text-muted">
-                  Le bordereau des prix unitaires (désignation, quantité, unité) sera
-                  extrait du dossier de consultation.
-                </p>
-                {hasSource && (
-                  <a
-                    href={sourceUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-sm font-semibold text-cyan hover:underline"
-                  >
-                    <Icon name="external" size={15} />
-                    Voir le dossier sur le portail
-                  </a>
+                {bpu.length > 0 ? (
+                  <>
+                    <p className="flex items-start gap-2 rounded-lg bg-emerald-soft/50 px-3 py-2 text-xs text-muted">
+                      <span className="rounded bg-emerald px-1 py-0.5 text-[9px] font-bold text-paper">
+                        DCE
+                      </span>
+                      Bordereau extrait du dossier de consultation officiel ({bpu.length}{' '}
+                      poste{bpu.length > 1 ? 's' : ''}).
+                    </p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead className="border-b border-line text-xs uppercase tracking-wider text-faint">
+                          <tr>
+                            <th className="py-2 pr-2 font-semibold">Désignation</th>
+                            <th className="py-2 px-2 text-right font-semibold">Qté</th>
+                            <th className="py-2 px-2 font-semibold">Unité</th>
+                            <th className="py-2 pl-2 text-right font-semibold">P.U. (DH)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-line">
+                          {bpu.map((row, i) => (
+                            <tr key={`${i}-${row.designation}`} className="align-top">
+                              <td className="py-2 pr-2 text-ink-2">{row.designation}</td>
+                              <td className="py-2 px-2 text-right font-mono tabular-nums text-muted">
+                                {row.quantite ?? '—'}
+                              </td>
+                              <td className="py-2 px-2 text-muted">{row.unite ?? '—'}</td>
+                              <td className="py-2 pl-2 text-right font-mono tabular-nums text-ink">
+                                {row.prixUnitaireMad != null ? fmtMad(row.prixUnitaireMad) : '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm text-muted">
+                      Le bordereau des prix unitaires sera extrait du dossier de
+                      consultation (DCE) lors de l&apos;analyse documentaire.
+                    </p>
+                    {hasSource && (
+                      <a
+                        href={sourceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 text-sm font-semibold text-cyan hover:underline"
+                      >
+                        <Icon name="external" size={15} />
+                        Voir le dossier sur le portail
+                      </a>
+                    )}
+                  </>
                 )}
               </div>
             )}
