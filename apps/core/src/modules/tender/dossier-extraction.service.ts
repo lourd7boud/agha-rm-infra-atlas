@@ -47,11 +47,16 @@ export interface DossierExtractionBatchResult {
 }
 
 /**
- * Low concurrency: each item runs the 4-step portal retrait (~MBs) + a PDF
- * parse + an LLM call. Two in flight keeps the portal polite and memory bounded
- * (no zip is cached to disk — extraction is in-memory only).
+ * Concurrency: each item runs the 4-step portal retrait (~MBs) + a PDF parse +
+ * an LLM call. Kept modest so the government portal stays polite and memory
+ * stays bounded (no zip is cached to disk — extraction is in-memory only).
+ * Tunable via DOSSIER_EXTRACT_CONCURRENCY (1–16) so a full-catalogue sweep can
+ * be sped up or throttled without a redeploy; defaults to 4.
  */
-const EXTRACT_CONCURRENCY = 2;
+const EXTRACT_CONCURRENCY = (() => {
+  const n = Number(process.env.DOSSIER_EXTRACT_CONCURRENCY);
+  return Number.isFinite(n) && n >= 1 && n <= 16 ? Math.floor(n) : 4;
+})();
 
 /** Hard ceiling on a downloaded DCE before we even unzip (OOM guard). */
 const MAX_DCE_ZIP_BYTES = 120 * 1024 * 1024;
