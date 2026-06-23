@@ -13,6 +13,16 @@ import {
 } from './snapshot.repository';
 import { parsePmmpResults } from './watch.parser';
 import { PORTAL_SOURCE, type PortalSource } from './watch.source';
+import { EnrichmentService } from '../tender/enrichment.service';
+import { DossierExtractionService } from '../tender/dossier-extraction.service';
+
+/** Per-run caps for the post-crawl auto-analysis (bounded cost + memory). */
+const DEFAULT_ENRICH_LIMIT = 80;
+const DEFAULT_EXTRACT_LIMIT = 40;
+function envLimit(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
 
 export interface WatchRunSummary {
   fetched: number;
@@ -83,6 +93,12 @@ export class WatchService {
     @Optional()
     @Inject(ResultCrawlerService)
     private readonly resultCrawler: ResultCrawlerService | null = null,
+    @Optional()
+    @Inject(EnrichmentService)
+    private readonly enrichment: EnrichmentService | null = null,
+    @Optional()
+    @Inject(DossierExtractionService)
+    private readonly dossierExtraction: DossierExtractionService | null = null,
   ) {
     // Defensive finite guards: a poisoned env (NaN) must not silently disable
     // the crawl (page <= NaN is false → zero fetches) or the politeness delay.
@@ -280,6 +296,34 @@ export class WatchService {
         this.logger.log(`result harvest ${JSON.stringify(results)}`);
       } catch (error) {
         this.logger.error(`result harvest failed: ${(error as Error).message}`);
+      }
+    }
+    // Stage-4: AI-enrich a bounded batch of newly-detected (still-unenriched)
+    // tenders — secteur/résumé/FAQ/lots. Bounded for cost; failures never fail
+    // the Sentinel. This is what makes new consultations self-analyse each run.
+    if (this.enrichment) {
+      try {
+        const limit = envLimit('WATCH_ENRICH_LIMIT', DEFAULT_ENRICH_LIMIT);
+        if (limit > 0) {
+          const r = await this.enrichment.aiEnrichBatch(limit, { onlyActive: true });
+          this.logger.log(`auto-enrich ${JSON.stringify(r)}`);
+        }
+      } catch (error) {
+        this.logger.error(`auto-enrich failed: ${(error as Error).message}`);
+      }
+    }
+    // Stage-5: extract the real DCE data (budget/caution/qualifications/BPU) for
+    // a bounded batch of still-unextracted tenders. Bounded for portal load +
+    // memory (PDF parsing); failures never fail the Sentinel.
+    if (this.dossierExtraction) {
+      try {
+        const limit = envLimit('WATCH_EXTRACT_LIMIT', DEFAULT_EXTRACT_LIMIT);
+        if (limit > 0) {
+          const r = await this.dossierExtraction.extractBatch(limit, { onlyActive: true });
+          this.logger.log(`auto-extract ${JSON.stringify(r)}`);
+        }
+      } catch (error) {
+        this.logger.error(`auto-extract failed: ${(error as Error).message}`);
       }
     }
     return summary;

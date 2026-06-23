@@ -487,6 +487,9 @@ const eventRepositoryProvider = {
     DossierExtractionService,
     PricingService,
   ],
-  exports: [tenderRepositoryProvider],
+  // EnrichmentService + DossierExtractionService are exported so the Sentinel
+  // (watch module) can chain a bounded enrich+extract after each crawl — making
+  // every newly-detected consultation analysed automatically.
+  exports: [tenderRepositoryProvider, EnrichmentService, DossierExtractionService],
 })
 export class TenderModule {}
