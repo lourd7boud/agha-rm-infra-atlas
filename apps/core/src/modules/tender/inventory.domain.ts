@@ -78,18 +78,30 @@ const REGION_MATCHERS: ReadonlyArray<
   keywords.map(buildMatcher),
 ]);
 
-/**
- * Best-effort region from buyer + objet text, matched on whole-word
- * boundaries. Returns the region label, or `null` when no keyword matches
- * (the caller buckets these under "Non localisé"). First region with a hit
- * wins, so REGION_KEYWORDS stays ordered most- to least-specific.
- */
-export function inferRegion(buyerName: string, objet = ''): string | null {
-  const haystack = normalize(`${buyerName} ${objet}`);
+function regionFromText(haystack: string): string | null {
   for (const [region, matchers] of REGION_MATCHERS) {
     if (matchers.some((re) => re.test(haystack))) return region;
   }
   return null;
+}
+
+/**
+ * Best-effort region, matched on whole-word boundaries; `null` when nothing
+ * matches (the caller buckets these under "Non localisé"). The lieu d'exécution
+ * (location) is the authoritative geographic signal, so it is tried first; only
+ * when it yields nothing do we fall back to buyer + objet text. First region
+ * with a hit wins, so REGION_KEYWORDS stays ordered most- to least-specific.
+ */
+export function inferRegion(
+  buyerName: string,
+  objet = '',
+  location = '',
+): string | null {
+  if (location) {
+    const fromLocation = regionFromText(normalize(location));
+    if (fromLocation) return fromLocation;
+  }
+  return regionFromText(normalize(`${buyerName} ${objet}`));
 }
 
 /**
@@ -301,12 +313,24 @@ const CITY_KEYWORDS: ReadonlyArray<readonly [city: string, keywords: readonly st
 const CITY_MATCHERS: ReadonlyArray<readonly [city: string, matchers: RegExp[]]> =
   CITY_KEYWORDS.map(([city, keywords]) => [city, keywords.map(buildMatcher)]);
 
-export function inferVille(buyerName: string, objet = ''): string | null {
-  const haystack = normalize(`${buyerName} ${objet}`);
+function villeFromText(haystack: string): string | null {
   for (const [city, matchers] of CITY_MATCHERS) {
     if (matchers.some((re) => re.test(haystack))) return city;
   }
   return null;
+}
+
+export function inferVille(
+  buyerName: string,
+  objet = '',
+  location = '',
+): string | null {
+  // Lieu d'exécution is the precise geographic signal — prefer it.
+  if (location) {
+    const fromLocation = villeFromText(normalize(location));
+    if (fromLocation) return fromLocation;
+  }
+  return villeFromText(normalize(`${buyerName} ${objet}`));
 }
 
 /** Spelled-out French lot counts that appear in objets ("en deux lots"). */
@@ -378,6 +402,8 @@ export interface InventoryItem {
   daysLeft: number;
   region: string;
   ville: string | null;
+  /** Lieu d'exécution as printed on the portal (precise; may list several). */
+  location: string | null;
   category: TenderCategory;
   secteur: string;
   /** Best-effort number of lots parsed from the objet (defaults to 1). */
@@ -435,6 +461,7 @@ interface Classified {
   record: TenderRecord;
   region: string;
   ville: string | null;
+  location: string | null;
   category: TenderCategory;
   secteur: string;
   ai: AiEnrichment | null;
@@ -493,8 +520,9 @@ export function buildInventory(
     const ai = readAiEnrichment(record.raw);
     return {
       record,
-      region: inferRegion(record.buyerName, record.objet) ?? UNLOCATED,
-      ville: inferVille(record.buyerName, record.objet),
+      region: inferRegion(record.buyerName, record.objet, record.location) ?? UNLOCATED,
+      ville: inferVille(record.buyerName, record.objet, record.location),
+      location: record.location ?? null,
       category: inferCategory(record.objet),
       // AI secteur wins when enriched, else the deterministic ouvrage label.
       secteur: ai?.secteur ?? segmentLabel(inferSegment(record.objet, record.buyerName)),
@@ -523,7 +551,7 @@ export function buildInventory(
 
   const matched: InventoryItem[] = classified
     .filter((c) => matches(c, filters))
-    .map(({ record, region, ville, category, secteur, ai }) => ({
+    .map(({ record, region, ville, location, category, secteur, ai }) => ({
       id: record.id,
       reference: record.reference,
       buyerName: record.buyerName,
@@ -538,6 +566,7 @@ export function buildInventory(
       daysLeft: daysUntil(record.deadlineAt, now),
       region,
       ville,
+      location,
       category,
       secteur,
       // Real lot count from the AI breakdown when available, else parsed.

@@ -8,6 +8,7 @@ import {
   CATEGORY_TONES,
   buildResume,
   fmtDateTime,
+  hasRegion,
   safeHttpUrl,
   type TenderItem,
 } from '@/lib/tenders';
@@ -254,11 +255,20 @@ export function DetailDrawer({
               <dd className="text-ink">{fmtDateTime(item.deadlineAt)}</dd>
             </div>
             <div className="col-span-2">
-              <dt className="text-xs text-faint">Localisation</dt>
-              <dd className="flex items-center gap-1 text-ink">
-                <Icon name="pin" size={13} className="text-faint" />
-                {item.region}
-                {item.ville ? ` · ${item.ville}` : ''}
+              <dt className="text-xs text-faint">Lieu d&apos;exécution</dt>
+              <dd className="flex items-start gap-1 text-ink">
+                <Icon name="pin" size={13} className="mt-0.5 shrink-0 text-faint" />
+                <span>
+                  {item.location ?? item.region}
+                  {!item.location && item.ville ? ` · ${item.ville}` : ''}
+                  {/* Append the region only when it is a real, located value
+                      distinct from the precise location — never "Non localisé". */}
+                  {item.location &&
+                  hasRegion(item.region) &&
+                  item.region !== item.location ? (
+                    <span className="text-faint"> · {item.region}</span>
+                  ) : null}
+                </span>
               </dd>
             </div>
           </dl>

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "tender_source_url_uniq" ON "tender"."tender" USING btree ("source_url") WHERE "tender"."tender"."source_url" IS NOT NULL;

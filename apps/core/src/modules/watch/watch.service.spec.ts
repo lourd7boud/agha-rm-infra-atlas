@@ -52,7 +52,8 @@ function rowsTable(rows: ReadonlyArray<[ref: string, objet: string]>): string {
         <tr>
           <td><input type="checkbox" /></td>
           <td>AOO Appel d'offres ouvert Travaux</td>
-          <td><a href="d?ref=${ref}">${ref}</a> - <span>Objet : ${objet}</span></td>
+          <td><a href="d?ref=${ref}">${ref}</a> - <span>Objet : ${objet}</span>
+            <div id="x_panelBlocDenomination"><strong>Acheteur public :</strong> ORMVA du Souss Massa</div></td>
           <td>- ORMVA du Souss Massa</td>
           <td>15/07/202610:00</td>
           <td></td><td>: 0 : 0</td>
@@ -71,6 +72,7 @@ describe('WatchService.runOnce', () => {
       fetched: 3,
       inserted: 3,
       duplicates: 0,
+      healed: 0,
       sourceUrlBackfilled: 0,
       skippedRows: 1,
       errors: 0,
@@ -84,20 +86,74 @@ describe('WatchService.runOnce', () => {
     ]);
   });
 
-  test('second run detects only duplicates (idempotent watching)', async () => {
+  test('second run is a true no-op when nothing changed (idempotent watching)', async () => {
     const repository = new InMemoryTenderRepository();
     const service = makeService(repository);
     await service.runOnce();
     const second = await service.runOnce();
 
+    // The fixture tenders carry a canonical sourceUrl, so the re-crawl matches
+    // the stored rows on that stable key — but since no listing field changed,
+    // the heal is a no-op (the field-diff WHERE matches nothing: no write churn),
+    // and each row then confirms as an existing duplicate. Nothing is inserted.
     expect(second.inserted).toBe(0);
+    expect(second.healed).toBe(0);
     expect(second.duplicates).toBe(3);
     expect(await repository.findAll()).toHaveLength(3);
   });
 
+  test('heals a legacy messy row in place when a clean crawl shares its sourceUrl', async () => {
+    const repo = new InMemoryTenderRepository();
+    const sourceUrl =
+      'https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=977311&orgAcronyme=m8x';
+    // A legacy row as the OLD positional parser stored it: reference glued to the
+    // objet, buyer_name holding the lieu d'exécution. Inserted directly because
+    // the NEW parser can no longer produce that shape.
+    await repo.create({
+      reference: '06/BR/RGON/2026 - travaux',
+      buyerName: 'GUELMIM',
+      procedure: 'AOO',
+      objet: 'Travaux',
+      deadlineAt: new Date('2026-07-15T09:00:00Z'),
+      sourceUrl,
+    });
+
+    // A clean crawl of the SAME consultation (same canonical détails link). The
+    // source reports the real PMMP base so the parser's rebuilt canonical
+    // sourceUrl matches the stored one (buildDetailUrl is base-relative).
+    const clean = `<html><body><table class="table-results"><tbody><tr>
+      <td><input /></td><td>AOO Appel d'offres ouvert</td>
+      <td><span class="ref">06/BR/RGON/2026</span>
+        <div id="x_panelBlocObjet"><strong>Objet :</strong> Travaux de construction d'un ouvrage</div>
+        <div id="x_panelBlocDenomination"><strong>Acheteur public :</strong> REGION DE GUELMIM - OUED NOUN</div></td>
+      <td><div id="x_panelBlocLieuxExec">GUELMIM<div class="info-bulle"><div>GUELMIM</div></div></div></td>
+      <td>15/07/202610:00</td>
+      <td><a href="${sourceUrl}&retraits">0</a></td>
+    </tr></tbody></table></body></html>`;
+    const cleanSource: PortalSource = {
+      async fetch(page = 1) {
+        return {
+          html: page > 1 ? '<html><body></body></html>' : clean,
+          sourceUrl: 'https://www.marchespublics.gov.ma/',
+        };
+      },
+    };
+
+    const second = await new WatchService(cleanSource, repo).runOnce();
+    expect(second.healed).toBe(1);
+    expect(second.inserted).toBe(0);
+    expect(second.duplicates).toBe(0);
+
+    const after = await repo.findAll();
+    expect(after).toHaveLength(1); // healed in place — no duplicate row
+    expect(after[0]!.reference).toBe('06/BR/RGON/2026');
+    expect(after[0]!.buyerName).toBe('REGION DE GUELMIM - OUED NOUN');
+    expect(after[0]!.location).toBe('GUELMIM');
+  });
+
   test('heals a legacy NULL source_url on a later crawl that exposes the link', async () => {
     const repo = new InMemoryTenderRepository();
-    const cell2 = `<td><a href="javascript:popUp('x')">12/2026/AB</a> - <span>Objet : Travaux</span></td>`;
+    const cell2 = `<td><a href="javascript:popUp('x')">12/2026/AB</a> - <span>Objet : Travaux</span><div id="x_panelBlocDenomination"><strong>Acheteur public :</strong> Commune X</div></td>`;
     const rowNoLink = `<html><body><table class="table-results"><tbody><tr>
       <td><input /></td><td>AOO Appel d'offres ouvert</td>${cell2}
       <td>Commune X</td><td>15/07/202610:00</td><td></td>

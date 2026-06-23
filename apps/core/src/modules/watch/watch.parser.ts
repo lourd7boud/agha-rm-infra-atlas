@@ -135,35 +135,86 @@ function parseFixtureLayout(
   return { tenders, skippedRows };
 }
 
+/** A `$(...)` / `.find(...)` element selection — typed without naming AnyNode. */
+type CheerioSelection = ReturnType<cheerio.CheerioAPI>;
+
 /**
- * Live PMMP layout (table.table-results, Atexo MPE), column order verified
- * against the live portal: [0] checkbox, [1] procédure, [2] référence +
- * "Objet :"objet, [3] acheteur, [4] date+heure (often concatenated),
- * [5..] noise. Reference is the anchor in the objet cell, falling back to
- * the leading token before " - " or "Objet".
+ * Reads an Atexo result-panel value. Long objets/buyers/locations are shown
+ * truncated inline (ending in an "…" `.info-suite` link) with the full text
+ * repeated in a hidden `.info-bulle` tooltip; short ones sit inline after a
+ * `<strong>` label. Prefer the tooltip's complete value, else the visible text
+ * minus the label and the "…" link. This is why the legacy parser stored a
+ * doubled "GUELMIM … GUELMIM, …" — it concatenated both halves verbatim.
+ */
+function panelValue($el: CheerioSelection): string {
+  if ($el.length === 0) return '';
+  const full = $el.find('.info-bulle').first().text().replace(/\s+/g, ' ').trim();
+  if (full) return full;
+  const clone = $el.clone();
+  clone.find('strong, .info-suite, .info-bulle').remove();
+  // A multi-value panel separates entries with <br> and no whitespace; cheerio's
+  // .text() would glue them ("RabatSaleKenitra"). Turn line breaks into commas,
+  // then squeeze/trim repeated separators (consecutive <br><br> are common).
+  clone.find('br').replaceWith(', ');
+  return clone
+    .text()
+    .replace(/\s+/g, ' ')
+    .replace(/(?:,\s*)+/g, ', ')
+    .replace(/^[\s,]+|[\s,]+$/g, '')
+    .trim();
+}
+
+/**
+ * Live PMMP layout (table.table-results, Atexo MPE). Each result row carries
+ * stable, id-suffixed panels we read by preference — far more robust than the
+ * old positional-cell guesswork that mistook the lieu d'exécution for the
+ * acheteur and glued the objet onto the référence:
+ *   • span.ref                     → clean référence (no glued objet suffix)
+ *   • [id$=panelBlocDenomination]  → real acheteur ("Acheteur public : …")
+ *   • [id$=panelBlocObjet]         → objet (full, from the tooltip when long)
+ *   • [id$=panelBlocLieuxExec]     → lieu d'exécution (location)
+ * Procédure stays in cell [1], the deadline in cell [4] (date+heure, often
+ * concatenated). Positional-cell fallbacks remain so a markup change degrades
+ * instead of breaking. The référence anchor is a javascript:popUp(...), so the
+ * canonical sourceUrl is mined from the row's détails/retraits links.
  */
 function parseLiveLayout($: cheerio.CheerioAPI, baseUrl: string): ParseOutcome {
   const tenders: CreateTender[] = [];
   let skippedRows = 0;
 
   $('table.table-results tbody tr').each((_, row) => {
-    const cells = $(row).find('td');
+    const $row = $(row);
+    const cells = $row.find('td');
     if (cells.length < 5) {
       skippedRows += 1;
       return;
     }
-    const procedure = mapProcedure(cells.eq(1).text());
     const refCell = cells.eq(2);
     const refText = refCell.text();
-    const anchor = refCell.find('a').first();
+    const procedure = mapProcedure(cells.eq(1).text());
+
     const reference =
-      anchor.text().trim() ||
+      $row.find('span.ref').first().text().trim() ||
+      refCell.find('a').first().text().trim() ||
       cleanCell(refText.split(/ - |objet\s*:/i)[0] ?? '');
-    const href = anchor.attr('href');
+
+    // Real acheteur from the denomination panel ONLY. We deliberately do NOT
+    // fall back to a positional cell: cell [3] is the lieu d'exécution, so a
+    // fallback there would silently re-introduce the buyer==location bug (and,
+    // via the source_url heal, overwrite a previously-correct acheteur). If the
+    // panel is absent the row is skipped below — better dropped than mislabeled.
+    const buyerName = panelValue($row.find('[id$="panelBlocDenomination"]').first());
+
     const objetMatch = /objet\s*:\s*(.+)/is.exec(refText);
-    const objet = objetMatch?.[1] ? cleanCell(objetMatch[1]) : '';
-    const buyerName = cleanCell(cells.eq(3).text());
+    const objet =
+      panelValue($row.find('[id$="panelBlocObjet"]').first()) ||
+      (objetMatch?.[1] ? cleanCell(objetMatch[1]) : '');
+
+    const location =
+      panelValue($row.find('[id$="panelBlocLieuxExec"]').first()) || undefined;
+
     const deadlineAt = firstPmmpDate(cells.eq(4).text());
+    const href = refCell.find('a').first().attr('href');
 
     if (!reference || !procedure || !objet || !buyerName || !deadlineAt) {
       skippedRows += 1;
@@ -174,8 +225,9 @@ function parseLiveLayout($: cheerio.CheerioAPI, baseUrl: string): ParseOutcome {
       buyerName,
       procedure,
       objet,
+      location,
       deadlineAt,
-      sourceUrl: resolveSourceUrl($(row).html() ?? '', href, baseUrl),
+      sourceUrl: resolveSourceUrl($row.html() ?? '', href, baseUrl),
     });
   });
 

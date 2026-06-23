@@ -40,7 +40,7 @@ const COLUMNS: readonly Column[] = [
   { key: 'category', label: 'Catégorie', sortKey: 'category', width: 120 },
   { key: 'secteur', label: 'Secteur', sortKey: 'secteur', width: 180 },
   { key: 'region', label: 'Région', sortKey: 'region', width: 170 },
-  { key: 'ville', label: 'Ville', sortKey: 'ville', width: 130 },
+  { key: 'ville', label: "Lieu d'exécution", sortKey: 'ville', width: 160 },
   { key: 'lots', label: 'Lots', sortKey: 'lots', width: 80, align: 'right' },
   { key: 'budget', label: 'Budget', sortKey: 'budget', width: 140, align: 'right' },
   { key: 'caution', label: 'Caution prov.', sortKey: 'caution', width: 140, align: 'right' },
@@ -246,7 +246,12 @@ export function DataTable({
                     {item.region}
                   </span>
                 </td>
-                <td className="truncate px-3 py-2.5 text-muted">{item.ville ?? '—'}</td>
+                <td
+                  className="truncate px-3 py-2.5 text-muted"
+                  title={item.location ?? item.ville ?? undefined}
+                >
+                  {item.location ?? item.ville ?? '—'}
+                </td>
                 <td className="px-3 py-2.5 text-right font-mono tabular-nums text-muted">
                   {item.lotCount}
                 </td>

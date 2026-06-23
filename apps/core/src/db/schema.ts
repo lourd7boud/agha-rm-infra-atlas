@@ -450,6 +450,9 @@ export const tenders = tender.table('tender', {
   buyerName: text('buyer_name').notNull(),
   procedure: text('procedure').notNull(),
   objet: text('objet').notNull(),
+  // Lieu d'exécution (panelBlocLieuxExec) — the real geographic field, distinct
+  // from buyer_name (the acheteur). Nullable: legacy rows + sources without it.
+  location: text('location'),
   estimationMad: numeric('estimation_mad', { precision: 14, scale: 2 }),
   cautionProvisoireMad: numeric('caution_provisoire_mad', { precision: 14, scale: 2 }),
   deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
@@ -459,7 +462,16 @@ export const tenders = tender.table('tender', {
   raw: jsonb('raw'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => [
+  // source_url (the canonical EntrepriseDetailsConsultation URL carrying
+  // refConsultation) is the STABLE dedup + heal key. Enforce one row per
+  // consultation so a heal can never silently mass-overwrite twins and create()
+  // can never duplicate an existing consultation. Partial: legacy/source-less
+  // rows keep NULL (Postgres treats NULLs as distinct anyway).
+  uniqueIndex('tender_source_url_uniq')
+    .on(table.sourceUrl)
+    .where(sql`${table.sourceUrl} IS NOT NULL`),
+]);
 
 // ── Phase 0 — Socle de vérité ────────────────────────────────────────────────
 

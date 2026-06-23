@@ -23,6 +23,8 @@ export interface TenderItem {
   daysLeft: number;
   region: string;
   ville: string | null;
+  /** Lieu d'exécution as printed on the portal (precise; may list several). */
+  location: string | null;
   category: TenderCategory;
   secteur: string;
   lotCount: number;
@@ -61,6 +63,15 @@ export interface TenderInventory {
   returnedCount: number;
   facets: TenderFacets;
   items: TenderItem[];
+}
+
+/** Region sentinel for tenders whose geography could not be inferred (mirrors
+ *  UNLOCATED in the core inventory domain). Used to suppress meaningless suffixes. */
+export const UNLOCATED_REGION = 'Non localisé';
+
+/** True when the region is a real, located value (not the UNLOCATED sentinel). */
+export function hasRegion(region: string | null | undefined): boolean {
+  return Boolean(region) && region !== UNLOCATED_REGION;
 }
 
 /** Category chip tones — mirrors the procedure/state palette in labels.ts. */
@@ -111,7 +122,9 @@ export function safeHttpUrl(url: string | undefined | null): string | undefined 
  * downloaded and summarised.
  */
 export function buildResume(item: TenderItem): string {
-  const place = item.ville ? `${item.ville} (${item.region})` : item.region;
+  const place =
+    item.location ??
+    (item.ville ? `${item.ville} (${item.region})` : item.region);
   return [
     `Marché de ${item.category.toLowerCase()} lancé par ${item.buyerName} — ${place}.`,
     `Objet : ${item.objet}.`,

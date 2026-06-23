@@ -46,7 +46,11 @@ function primaryCompare(a: TenderItem, b: TenderItem, key: SortKey): number {
     case 'region':
       return a.region.localeCompare(b.region, 'fr');
     case 'ville':
-      return (a.ville ?? '').localeCompare(b.ville ?? '', 'fr');
+      // The "Lieu d'exécution" column prefers the precise portal location.
+      return (a.location ?? a.ville ?? '').localeCompare(
+        b.location ?? b.ville ?? '',
+        'fr',
+      );
     default:
       return 0;
   }
@@ -68,7 +72,7 @@ function matchesFilters(item: TenderItem, f: FilterState): boolean {
     const hay = norm(
       `${item.reference} ${item.objet} ${item.buyerName} ${item.region} ${
         item.ville ?? ''
-      } ${item.secteur}`,
+      } ${item.location ?? ''} ${item.secteur}`,
     );
     if (!hay.includes(needle)) return false;
   }

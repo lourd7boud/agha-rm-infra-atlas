@@ -16,6 +16,7 @@ function rec(overrides: Partial<TenderRecord> & { reference: string }): TenderRe
     buyerName: overrides.buyerName ?? 'Acheteur',
     procedure: (overrides.procedure ?? 'AOO') as TenderProcedure,
     objet: overrides.objet ?? 'Travaux divers',
+    location: overrides.location,
     estimationMad: overrides.estimationMad,
     cautionProvisoireMad: overrides.cautionProvisoireMad,
     deadlineAt: overrides.deadlineAt ?? new Date('2026-08-01T09:00:00Z'),
@@ -64,6 +65,17 @@ describe('inferRegion', () => {
       'Guelmim-Oued Noun',
     );
   });
+
+  test("prefers the lieu d'exécution over buyer/objet for the region", () => {
+    // National buyer with no regional keyword; the work is in Dakhla.
+    expect(
+      inferRegion("Ministère de l'Intérieur", 'Travaux divers', 'Dakhla'),
+    ).toBe('Dakhla-Oued Ed-Dahab');
+    // Location wins even when the buyer name points at another region.
+    expect(inferRegion('Wilaya de Rabat', 'Travaux', 'Agadir')).toBe(
+      'Souss-Massa',
+    );
+  });
 });
 
 describe('buildInventory', () => {
@@ -106,6 +118,24 @@ describe('buildInventory', () => {
     expect(buildInventory(records, { q: 'agadir' }, NOW).filteredCount).toBe(1);
     expect(buildInventory(records, { q: 'rabat' }, NOW).filteredCount).toBe(2);
     expect(buildInventory(records, { q: 'C/1' }, NOW).filteredCount).toBe(1);
+  });
+
+  test('surfaces the lieu d\'exécution and uses it for the region', () => {
+    const inv = buildInventory(
+      [
+        rec({
+          reference: 'L/1',
+          buyerName: 'Ministère central',
+          objet: 'Travaux divers',
+          location: 'Guelmim',
+        }),
+      ],
+      {},
+      NOW,
+    );
+    expect(inv.items[0]!.location).toBe('Guelmim');
+    // Buyer/objet have no regional keyword; the region comes from the location.
+    expect(inv.items[0]!.region).toBe('Guelmim-Oued Noun');
   });
 
   test('orders items by deadline and exposes daysLeft + region', () => {

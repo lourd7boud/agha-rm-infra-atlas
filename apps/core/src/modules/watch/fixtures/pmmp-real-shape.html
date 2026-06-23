@@ -1,45 +1,87 @@
-<!-- Sanitized real-shape sample of the PMMP entreprise.EntrepriseAdvancedSearch
-     results page (Atexo MPE / ASP.NET), captured live from the portal.
-     References, buyers and objets are synthetic but the DOM mirrors the live
-     structure: table.table-results > tbody, 7-column rows with data in cells
-     [1] procédure, [2] référence + "Objet :"objet, [3] acheteur, [4] date+heure
-     CONCATENATED with no separator ("15/07/202910:00"), [0]/[5]/[6] noise. -->
+<!-- Faithful real-shape sample of the PMMP entreprise.EntrepriseAdvancedSearch
+     results page (Atexo MPE / PRADO), captured live from the portal. References,
+     buyers, objets and locations are synthetic but the DOM mirrors the live
+     structure exactly: table.table-results > tbody, and each result row carries
+     stable id-suffixed panels read by the parser:
+       • span.ref                    → clean référence
+       • [id$=panelBlocObjet]        → objet (full text repeated in .info-bulle)
+       • [id$=panelBlocDenomination] → acheteur ("Acheteur public : …")
+       • [id$=panelBlocLieuxExec]    → lieu d'exécution (full list in .info-bulle)
+     The référence anchor is a javascript:popUp(...) (no usable href); the
+     canonical sourceUrl is mined from the détails link. Cell [4] is the deadline
+     (date+heure CONCATENATED, "15/07/202610:00"). -->
 <html>
 <body>
 <table class="table-results">
   <thead>
-    <tr><th></th><th></th><th>Procédure</th><th>Référence</th><th>Type</th><th>Date limite</th><th>Actions</th></tr>
+    <tr><th></th><th>Procédure</th><th>Référence / Objet</th><th>Lieu</th><th>Date limite</th><th></th><th>Actions</th></tr>
   </thead>
   <tbody>
     <tr class="">
       <td><input type="checkbox" /></td>
       <td>AOO <span>Appel d'offres ouvert</span> Travaux 04/03/2026</td>
-      <td><a href="index.php?page=entreprise.EntrepriseDetailsConsultation&refConsultation=11111&orgAcronyme=m8x">12/BR/AGADIR/2026</a>
-          - <span>Objet : Construction d'un ouvrage hydraulique sur oued, province d'Agadir</span></td>
-      <td>- ORMVA du Souss Massa</td>
+      <td>
+        <span id="r1_reference" class="ref">12/BR/AGADIR/2026</span>
+        <a href="javascript:popUp('index.php?page=commun.PopUpDetailLots&orgAccronyme=m8x&refConsultation=11111&lang=','yes')">12/BR/AGADIR/2026</a>
+        <div id="r1_panelBlocObjet" class="objet-line"><strong> Objet : </strong> Construction d'un ouvrage hydraulique sur oued, province d'Agadir
+          <span class="info-suite">...</span>
+          <div id="r1_infosBullesObjet" class="info-bulle"><div> Construction d'un ouvrage hydraulique sur oued, province d'Agadir </div></div>
+        </div>
+        <div id="r1_panelBlocDenomination" class="objet-line"><strong> Acheteur public : </strong> ORMVA du Souss Massa </div>
+      </td>
+      <td>
+        <div id="r1_panelBlocLieuxExec" style="display:;"> Agadir<br /><br />
+          <div class="bloc-info-bulle"><a class="info-suite" href="javascript:void(0);">...</a>
+            <div id="r1_ctl15_infosLieuExecution" class="info-bulle"><div>Agadir</div></div>
+          </div>
+        </div>
+      </td>
       <td>15/07/202610:00</td>
       <td></td>
-      <td>: 0 : 0</td>
+      <td><a href="index.php?page=entreprise.EntrepriseDetailsConsultation&refConsultation=11111&orgAcronyme=m8x&code=&retraits">0</a></td>
     </tr>
     <tr class="on">
       <td><input type="checkbox" /></td>
       <td>AOR <span>Appel d'offres restreint</span> Travaux 06/03/2026</td>
-      <td><a href="index.php?page=entreprise.EntrepriseDetailsConsultation&refConsultation=22222&orgAcronyme=d4q">34/DRE/2026</a>
-          - <span>Objet : Travaux d'assainissement et conduite d'eau potable, commune rurale</span></td>
-      <td>- Direction Régionale de l'Équipement</td>
+      <td>
+        <span id="r2_reference" class="ref">34/DRE/2026</span>
+        <a href="javascript:popUp('index.php?page=commun.PopUpDetailLots&orgAccronyme=d4q&refConsultation=22222&lang=','yes')">34/DRE/2026</a>
+        <div id="r2_panelBlocObjet" class="objet-line"><strong> Objet : </strong> Travaux d'assainissement et conduite d'eau potable
+          <span class="info-suite">...</span>
+          <div id="r2_infosBullesObjet" class="info-bulle"><div> Travaux d'assainissement et conduite d'eau potable, commune rurale </div></div>
+        </div>
+        <div id="r2_panelBlocDenomination" class="objet-line"><strong> Acheteur public : </strong> Direction Régionale de l'Équipement </div>
+      </td>
+      <td>
+        <div id="r2_panelBlocLieuxExec" style="display:;"> Rabat<br /><br />
+          <div class="bloc-info-bulle"><a class="info-suite" href="javascript:void(0);">...</a>
+            <div id="r2_ctl15_infosLieuExecution" class="info-bulle"><div>Rabat, Salé, Kénitra</div></div>
+          </div>
+        </div>
+      </td>
       <td>22/07/202609:30</td>
       <td></td>
-      <td>: 0 : 0</td>
+      <td><a href="index.php?page=entreprise.EntrepriseDetailsConsultation&refConsultation=22222&orgAcronyme=d4q&code=&retraits">0</a></td>
     </tr>
     <tr class="">
       <td><input type="checkbox" /></td>
       <td>Concours <span>Concours</span> Services 01/03/2026</td>
-      <td><a href="index.php?page=entreprise.EntrepriseDetailsConsultation&refConsultation=33333&orgAcronyme=q1s">99/AUSM/2026</a>
-          - <span>Objet : Concours d'architecture pour un siège administratif</span></td>
-      <td>- Agence Urbaine</td>
+      <td>
+        <span id="r3_reference" class="ref">99/AUSM/2026</span>
+        <a href="javascript:popUp('index.php?page=commun.PopUpDetailLots&orgAccronyme=q1s&refConsultation=33333&lang=','yes')">99/AUSM/2026</a>
+        <div id="r3_panelBlocObjet" class="objet-line"><strong> Objet : </strong> Concours d'architecture pour un siège administratif </div>
+        <div id="r3_panelBlocDenomination" class="objet-line"><strong> Acheteur public : </strong> Agence Urbaine </div>
+      </td>
+      <td>
+        <div id="r3_panelBlocLieuxExec" style="display:;"> Marrakech<br /><br />
+          <div class="bloc-info-bulle"><a class="info-suite" href="javascript:void(0);">...</a>
+            <div id="r3_ctl15_infosLieuExecution" class="info-bulle"><div>Marrakech</div></div>
+          </div>
+        </div>
+      </td>
       <td>30/07/202612:00</td>
       <td></td>
-      <td>: 0 : 0</td>
+      <td><a href="index.php?page=entreprise.EntrepriseDetailsConsultation&refConsultation=33333&orgAcronyme=q1s&code=&retraits">0</a></td>
     </tr>
   </tbody>
 </table>

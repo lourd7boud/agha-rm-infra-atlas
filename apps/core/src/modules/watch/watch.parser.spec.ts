@@ -77,6 +77,7 @@ describe('parsePmmpResults', () => {
         <td>
           <a href="javascript:popUp('index.php?page=commun.PopUpDetailLots&orgAccronyme=m8x&refConsultation=977311&lang=','yes')">06/BR/RGON/2026</a>
           <span>Objet : Travaux de construction d'un ouvrage hydraulique</span>
+          <div id="x_panelBlocDenomination"><strong>Acheteur public :</strong> Commune de Guelmim</div>
         </td>
         <td>Commune de Guelmim</td>
         <td>15/07/202610:00</td>
@@ -91,19 +92,49 @@ describe('parsePmmpResults', () => {
     );
   });
 
-  test('falls back to the live Atexo layout (table.table-results)', () => {
+  test('extracts clean reference / acheteur / objet / location from the live Atexo layout', () => {
     const { tenders } = parsePmmpResults(REAL_SHAPE, BASE_URL);
     expect(tenders).toHaveLength(3);
 
     const hydraulique = tenders[0]!;
+    // Reference from span.ref — clean, no glued objet suffix.
     expect(hydraulique.reference).toBe('12/BR/AGADIR/2026');
     expect(hydraulique.procedure).toBe('AOO');
+    // Buyer is the real acheteur (panelBlocDenomination), NOT the lieu d'exécution.
     expect(hydraulique.buyerName).toBe('ORMVA du Souss Massa');
     expect(hydraulique.objet).toContain('ouvrage hydraulique');
+    // Location is the lieu d'exécution, captured as its own field.
+    expect(hydraulique.location).toBe('Agadir');
     expect(hydraulique.deadlineAt.toISOString()).toBe('2026-07-15T09:00:00.000Z');
-    expect(hydraulique.sourceUrl).toContain('EntrepriseDetailsConsultation');
+    expect(hydraulique.sourceUrl).toContain('refConsultation=11111&orgAcronyme=m8x');
 
+    // Multi-location rows expose the full comma list via the info-bulle tooltip.
     expect(tenders[1]!.procedure).toBe('AOR');
+    expect(tenders[1]!.buyerName).toBe("Direction Régionale de l'Équipement");
+    expect(tenders[1]!.location).toBe('Rabat, Salé, Kénitra');
+
     expect(tenders[2]!.procedure).toBe('concours');
+    expect(tenders[2]!.buyerName).toBe('Agence Urbaine');
+    expect(tenders[2]!.location).toBe('Marrakech');
+  });
+
+  test('joins <br>-separated multi-locations with commas when there is no tooltip', () => {
+    // Degraded path: a lieu panel listing several places inline (<br>, no
+    // .info-bulle). cheerio's .text() would glue them ("RabatSaléKénitra"); the
+    // parser must turn the line breaks into a clean comma-separated list.
+    const html = `<table class="table-results"><tbody><tr>
+      <td><input /></td>
+      <td>AOO Appel d'offres ouvert</td>
+      <td><span class="ref">99/X/2026</span>
+        <div id="x_panelBlocObjet"><strong>Objet :</strong> Travaux divers</div>
+        <div id="x_panelBlocDenomination"><strong>Acheteur public :</strong> Commune Y</div></td>
+      <td><div id="x_panelBlocLieuxExec">Rabat<br /><br />Salé<br />Kénitra</div></td>
+      <td>15/07/202610:00</td>
+      <td><a href="https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=5&orgAcronyme=z9z&retraits">0</a></td>
+    </tr></tbody></table>`;
+    const { tenders } = parsePmmpResults(html, BASE_URL);
+    expect(tenders).toHaveLength(1);
+    expect(tenders[0]!.location).toBe('Rabat, Salé, Kénitra');
+    expect(tenders[0]!.buyerName).toBe('Commune Y');
   });
 });

@@ -18,6 +18,12 @@ export interface WatchRunSummary {
   fetched: number;
   inserted: number;
   duplicates: number;
+  /**
+   * Existing rows refreshed in place via the stable canonical sourceUrl —
+   * the migration path that rewrites legacy messy reference/buyer-as-location
+   * rows to clean values without inserting a duplicate.
+   */
+  healed: number;
   /** Legacy rows whose NULL source_url was healed from the canonical detail link. */
   sourceUrlBackfilled: number;
   skippedRows: number;
@@ -92,6 +98,7 @@ export class WatchService {
     let fetched = 0;
     let inserted = 0;
     let duplicates = 0;
+    let healed = 0;
     let sourceUrlBackfilled = 0;
     let skippedRows = 0;
     let errors = 0;
@@ -167,6 +174,38 @@ export class WatchService {
 
       fetched += tenders.length;
       for (const tender of tenders) {
+        // Source_url-first heal: an existing row matched on the STABLE canonical
+        // URL is refreshed in place. This rewrites legacy messy rows (reference
+        // glued to the objet, buyerName holding the lieu d'exécution) AND avoids
+        // the duplicate that create()'s reference+buyer match would insert now
+        // that the parser emits clean, different values for the same row.
+        if (tender.sourceUrl) {
+          let didHeal = false;
+          try {
+            didHeal = await this.tenders.healListingBySourceUrl(tender.sourceUrl, {
+              reference: tender.reference,
+              buyerName: tender.buyerName,
+              procedure: tender.procedure,
+              objet: tender.objet,
+              location: tender.location,
+              deadlineAt: tender.deadlineAt,
+            });
+          } catch (healError) {
+            // A row with this source_url likely already exists; falling through
+            // to create() could insert a duplicate (the clean reference won't
+            // match the legacy reference+buyer dedup key). Skip and let the next
+            // run retry the heal cleanly.
+            errors += 1;
+            this.logger.warn(
+              `heal failed for ${tender.reference}: ${(healError as Error).message}`,
+            );
+            continue;
+          }
+          if (didHeal) {
+            healed += 1;
+            continue;
+          }
+        }
         try {
           await this.tenders.create(tender);
           inserted += 1;
@@ -176,17 +215,17 @@ export class WatchService {
         } catch (error) {
           if (error instanceof DuplicateTenderError) {
             duplicates += 1;
-            // Self-heal: an already-stored tender that predates canonical
-            // sourceUrl capture gets its NULL source_url filled in place. Never
-            // overwrites a known value; a backfill failure must not fail the run.
+            // No row matched the canonical sourceUrl but reference+buyer
+            // collided — a source that carries no canonical URL. Backfill the
+            // source_url when we have one. A failure must not fail the run.
             if (tender.sourceUrl) {
               try {
-                const healed = await this.tenders.backfillSourceUrl(
+                const filled = await this.tenders.backfillSourceUrl(
                   tender.reference,
                   tender.buyerName,
                   tender.sourceUrl,
                 );
-                if (healed) sourceUrlBackfilled += 1;
+                if (filled) sourceUrlBackfilled += 1;
               } catch (backfillError) {
                 this.logger.warn(
                   `sourceUrl backfill failed for ${tender.reference}: ${(backfillError as Error).message}`,
@@ -211,6 +250,7 @@ export class WatchService {
       fetched,
       inserted,
       duplicates,
+      healed,
       sourceUrlBackfilled,
       skippedRows,
       errors,

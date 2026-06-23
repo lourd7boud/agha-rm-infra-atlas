@@ -169,6 +169,20 @@
       "when": 1782069012474,
       "tag": "0023_purchase_order_lines",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1782227965055,
+      "tag": "0024_tender_location",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1782230178902,
+      "tag": "0025_tender_source_url_uniq",
+      "breakpoints": true
     }
   ]
 }

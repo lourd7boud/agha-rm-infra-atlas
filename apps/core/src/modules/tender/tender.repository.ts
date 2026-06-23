@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import type { Db } from '../../db/client';
 import { tenders } from '../../db/schema';
@@ -10,11 +10,23 @@ export interface CreateTender {
   buyerName: string;
   procedure: TenderProcedure;
   objet: string;
+  /** Lieu d'exécution (panelBlocLieuxExec) — the real geographic field. */
+  location?: string;
   estimationMad?: number;
   cautionProvisoireMad?: number;
   deadlineAt: Date;
   sourceUrl?: string;
 }
+
+/**
+ * Listing-derived fields a re-crawl refreshes in place. The dedup-safe heal key
+ * is sourceUrl (carries refConsultation; never changes for a consultation), so
+ * the heal can rewrite even reference/buyerName without risking a duplicate row.
+ */
+export type ListingFields = Pick<
+  CreateTender,
+  'reference' | 'buyerName' | 'procedure' | 'objet' | 'location' | 'deadlineAt'
+>;
 
 export interface TenderRecord extends CreateTender {
   id: string;
@@ -52,6 +64,17 @@ export interface TenderRepository {
     reference: string,
     buyerName: string,
     sourceUrl: string,
+  ): Promise<boolean>;
+  /**
+   * Refreshes the listing-derived fields of an existing tender matched on the
+   * STABLE sourceUrl. Heals legacy rows whose reference was glued to the objet
+   * and whose buyerName held the lieu d'exécution — in place, with zero
+   * duplicate-row risk (a reference+buyer match would re-insert once the parser
+   * emits the clean values). Returns whether a row was updated.
+   */
+  healListingBySourceUrl(
+    sourceUrl: string,
+    fields: ListingFields,
   ): Promise<boolean>;
   updateState(id: string, state: PipelineState): Promise<TenderRecord | null>;
   updateQualification(
@@ -111,6 +134,36 @@ export class InMemoryTenderRepository implements TenderRepository {
         return { ...r, sourceUrl };
       }
       return r;
+    });
+    return changed;
+  }
+
+  async healListingBySourceUrl(
+    sourceUrl: string,
+    fields: ListingFields,
+  ): Promise<boolean> {
+    let changed = false;
+    this.records = this.records.map((r) => {
+      if (r.sourceUrl !== sourceUrl) return r;
+      // Mirror the DB diff: only a real change counts as a heal.
+      const differs =
+        r.reference !== fields.reference ||
+        r.buyerName !== fields.buyerName ||
+        r.procedure !== fields.procedure ||
+        r.objet !== fields.objet ||
+        r.deadlineAt.getTime() !== fields.deadlineAt.getTime() ||
+        (fields.location !== undefined && r.location !== fields.location);
+      if (!differs) return r;
+      changed = true;
+      return {
+        ...r,
+        reference: fields.reference,
+        buyerName: fields.buyerName,
+        procedure: fields.procedure,
+        objet: fields.objet,
+        deadlineAt: fields.deadlineAt,
+        ...(fields.location !== undefined ? { location: fields.location } : {}),
+      };
     });
     return changed;
   }
@@ -182,6 +235,7 @@ export class DrizzleTenderRepository implements TenderRepository {
         buyerName: input.buyerName,
         procedure: input.procedure,
         objet: input.objet,
+        location: input.location,
         estimationMad: input.estimationMad?.toString(),
         cautionProvisoireMad: input.cautionProvisoireMad?.toString(),
         deadlineAt: input.deadlineAt,
@@ -224,6 +278,42 @@ export class DrizzleTenderRepository implements TenderRepository {
           isNull(tenders.sourceUrl),
         ),
       )
+      .returning({ id: tenders.id });
+    return rows.length > 0;
+  }
+
+  async healListingBySourceUrl(
+    sourceUrl: string,
+    fields: ListingFields,
+  ): Promise<boolean> {
+    // Only rewrite a row whose listing fields actually differ — keeps the heal
+    // a true no-op on an unchanged re-crawl (no write churn, no updated_at
+    // thrashing) and makes the `healed` count reflect real changes. location is
+    // included in the diff only when this crawl captured one (matching the SET).
+    const changed = [
+      ne(tenders.reference, fields.reference),
+      ne(tenders.buyerName, fields.buyerName),
+      ne(tenders.procedure, fields.procedure),
+      ne(tenders.objet, fields.objet),
+      ne(tenders.deadlineAt, fields.deadlineAt),
+      ...(fields.location !== undefined
+        ? [sql`${tenders.location} IS DISTINCT FROM ${fields.location}`]
+        : []),
+    ];
+    const rows = await this.db
+      .update(tenders)
+      .set({
+        reference: fields.reference,
+        buyerName: fields.buyerName,
+        procedure: fields.procedure,
+        objet: fields.objet,
+        deadlineAt: fields.deadlineAt,
+        // Only overwrite location when this crawl actually captured one, so a
+        // transient parse miss never blanks a previously stored value.
+        ...(fields.location !== undefined ? { location: fields.location } : {}),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(tenders.sourceUrl, sourceUrl), or(...changed)))
       .returning({ id: tenders.id });
     return rows.length > 0;
   }
@@ -284,6 +374,7 @@ function toRecord(row: TenderRow): TenderRecord {
     buyerName: row.buyerName,
     procedure: row.procedure as TenderProcedure,
     objet: row.objet,
+    location: row.location ?? undefined,
     // != null (not truthiness) so a legitimate stored 0 is preserved.
     estimationMad: row.estimationMad != null ? Number(row.estimationMad) : undefined,
     cautionProvisoireMad:
