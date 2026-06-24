@@ -19,8 +19,11 @@ import {
   MIN_READABLE_FILE_CHARS,
   MIN_READABLE_TOTAL_CHARS,
 } from './dossier-text';
+import { pdfParseExtract } from './pdf-ocr';
+import { buildVisionInput } from './dossier-vision';
 import {
   aiExtractDossier,
+  aiExtractDossierVision,
   readDossierExtraction,
   type DossierExtraction,
 } from './dossier-extraction';
@@ -174,28 +177,42 @@ export class DossierExtractionService {
         `Dossier trop volumineux (${Math.round(dossier.bytes.length / 1e6)} Mo) — extraction ignorée`,
       );
     }
-    const { text, files } = await extractDossierText(dossier.bytes);
-    // Mass-based readability gate: anything below the total threshold OR with
-    // no single file above the per-file floor is essentially a scanned dossier
-    // whose text layer is empty (pdf-parse returns only the page sentinel).
-    // Without this, we used to persist a "successful" all-null extraction that
-    // blocked the row from ever being retried by the batch.
+    // 1) Fast digital pass — pdf-parse + DOCX text only, NO tesseract (which is
+    //    the slow CPU-bound step). Digital DCEs are resolved here cheaply.
+    const { text, files } = await extractDossierText(dossier.bytes, pdfParseExtract);
     const biggestFileChars = files.reduce((m, f) => Math.max(m, f.chars), 0);
-    const looksReadable =
+    const digitalReadable =
       text.length >= MIN_READABLE_TOTAL_CHARS &&
       biggestFileChars >= MIN_READABLE_FILE_CHARS;
-    if (!looksReadable) {
-      throw new ServiceUnavailableException(
-        `Dossier sans texte exploitable (${text.length} chars, plus gros fichier ${biggestFileChars} — PDF probablement scanné, OCR requis)`,
-      );
-    }
 
-    const fresh = await aiExtractDossier(
-      llm,
-      text,
-      files.map((f) => f.name),
-      { reference: tender.reference, objet: tender.objet },
-    );
+    let fresh: DossierExtraction;
+    let sourceNames: string[];
+    let mode: 'text' | 'vision';
+    if (digitalReadable) {
+      // Digital text layer present → cheap text→LLM path (unchanged behaviour).
+      mode = 'text';
+      sourceNames = files.map((f) => f.name);
+      fresh = await aiExtractDossier(llm, text, sourceNames, {
+        reference: tender.reference,
+        objet: tender.objet,
+      });
+    } else {
+      // 2) Scanned → VISION path: render pages to images and let the multimodal
+      //    model OCR + understand + extract in one call (datao-grade; replaces
+      //    the slow tesseract path). Throws only when nothing could be rendered.
+      mode = 'vision';
+      const vis = await buildVisionInput(dossier.bytes);
+      if (vis.images.length === 0) {
+        throw new ServiceUnavailableException(
+          `Dossier illisible (aucun texte ni page rendue) — ${files.length} fichiers`,
+        );
+      }
+      sourceNames = vis.sourceFiles;
+      fresh = await aiExtractDossierVision(llm, vis.images, vis.digitalText, vis.sourceFiles, {
+        reference: tender.reference,
+        objet: tender.objet,
+      });
+    }
     // A forced re-run must never regress a previously richer extraction.
     const extraction = existing ? mergeExtractions(existing, fresh) : fresh;
 
@@ -223,17 +240,11 @@ export class DossierExtractionService {
     });
 
     this.logger.log(
-      `dossier.extract ${tender.reference} → budget ${extraction.estimationMad ?? '—'} MAD, ` +
+      `dossier.extract[${mode}] ${tender.reference} → budget ${extraction.estimationMad ?? '—'} MAD, ` +
         `caution ${extraction.cautionProvisoireMad ?? '—'}, ${extraction.bpu.length} BPU, ` +
-        `${extraction.qualifications.length} qualif (${files.map((f) => f.name).join(', ')})`,
+        `${extraction.qualifications.length} qualif (${sourceNames.join(', ')})`,
     );
-    return this.toResult(
-      tender.id,
-      tender.reference,
-      true,
-      extraction,
-      files.map((f) => f.name),
-    );
+    return this.toResult(tender.id, tender.reference, true, extraction, sourceNames);
   }
 
   /**

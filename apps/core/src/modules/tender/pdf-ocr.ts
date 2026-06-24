@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -56,6 +56,57 @@ export async function pdfParseExtract(bytes: Uint8Array): Promise<string> {
     return result.text ?? '';
   } finally {
     await parser.destroy().catch(() => {});
+  }
+}
+
+/** DPI for PDF→image rendering fed to the vision LLM. 150 keeps text crisp
+ *  enough for the model to read FR/AR + table cells while bounding payload size
+ *  (~150-300 KB/page JPEG). */
+export const VISION_RENDER_DPI = 150;
+
+/** Renders a PDF's first pages to JPEG (base64) via poppler's pdftoppm — the
+ *  input to the vision-LLM extraction path. Far faster than tesseract OCR (no
+ *  per-page text recognition on CPU; the model reads the image directly) and
+ *  higher quality on scans + tables. Returns [] on any failure so the caller
+ *  can fall back. */
+export async function renderPdfToJpegBase64(
+  bytes: Uint8Array,
+  firstPage: number,
+  lastPage: number,
+  dpi: number = VISION_RENDER_DPI,
+): Promise<string[]> {
+  const stamp = `${process.pid}-${(globalThis as { __ocrSeq?: number }).__ocrSeq ?? 0}`;
+  (globalThis as { __ocrSeq?: number }).__ocrSeq =
+    ((globalThis as { __ocrSeq?: number }).__ocrSeq ?? 0) + 1;
+  const dir = await mkdtemp(join(tmpdir(), `atlas-render-${stamp}-`));
+  const inPath = join(dir, 'in.pdf');
+  const outPrefix = join(dir, 'page');
+  try {
+    await writeFile(inPath, bytes);
+    // -jpeg: JPEG output; -r dpi; -f/-l page range. pdftoppm writes
+    // page-1.jpg, page-2.jpg … (or zero-padded for >9 pages).
+    await execFileAsync(
+      'pdftoppm',
+      ['-jpeg', '-r', String(dpi), '-f', String(firstPage), '-l', String(lastPage), inPath, outPrefix],
+      { timeout: OCR_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
+    );
+    const names = (await readdir(dir))
+      .filter((n) => /\.jpg$/i.test(n))
+      .sort((a, b) => {
+        const na = Number(a.replace(/\D+/g, '')) || 0;
+        const nb = Number(b.replace(/\D+/g, '')) || 0;
+        return na - nb;
+      });
+    const out: string[] = [];
+    for (const n of names) {
+      const buf = await readFile(join(dir, n));
+      out.push(Buffer.from(buf).toString('base64'));
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 

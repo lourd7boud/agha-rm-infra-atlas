@@ -78,7 +78,17 @@ function bucketOf(name: string): Bucket {
  * line is never the one starved/truncated by the char budget. The BPU/détail
  * estimatif (prices+quantities) and CPS follow; the avis is the thinnest.
  */
-function docPriority(name: string): number {
+/** True when a zip entry is a data-bearing RC/CPS/BPU/avis doc (not a folder,
+ *  not a bidder-fillable template). Shared with the vision-render path so both
+ *  the text and image pipelines select the same documents. */
+export function isDataBearingDoc(name: string): boolean {
+  if (name.endsWith('/')) return false;
+  if (!DATA_DOC_NAME.test(name)) return false;
+  if (TEMPLATE_NAME.test(name)) return false;
+  return true;
+}
+
+export function docPriority(name: string): number {
   const n = name.toLowerCase();
   if (/(^|[^a-z])rc([^a-z]|$)|reglement|règlement/.test(n)) return 0;
   if (n.includes('bpu') || n.includes('bordereau') || n.includes('estimatif')) return 1;

@@ -1,6 +1,6 @@
 import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import { z } from 'zod';
-import type { LlmClient } from '../brain/llm.client';
+import type { LlmClient, LlmVisionDocImage } from '../brain/llm.client';
 import { parseModelJson } from '../brain/extractor';
 
 /**
@@ -14,6 +14,14 @@ import { parseModelJson } from '../brain/extractor';
 
 const moneyMad = z.number().min(0).max(100_000_000_000).nullish();
 const pct = z.number().min(0).max(100).nullish();
+
+/** Truncating string field: NEVER rejects on length. A zod `.max()` on a string
+ *  is a validation ERROR, so a single over-long value (e.g. a long legal-article
+ *  citation the model emits) would fail the WHOLE parse and discard the budget,
+ *  caution and everything else — the same trap the arrays warn about. We trim +
+ *  slice to a bound instead, so over-length never costs us the extraction. */
+const boundedStr = (max: number) => z.string().transform((s) => s.trim().slice(0, max));
+const boundedStrNullish = (max: number) => boundedStr(max).nullish();
 
 export const dossierExtractionSchema = z.object({
   /** Estimation des coûts établie par le maître d'ouvrage (DH TTC). */
@@ -31,9 +39,9 @@ export const dossierExtractionSchema = z.object({
   qualifications: z
     .array(
       z.object({
-        secteur: z.string().trim().max(120).nullish(),
-        qualification: z.string().trim().max(120).nullish(),
-        classe: z.string().trim().max(40).nullish(),
+        secteur: boundedStrNullish(120),
+        qualification: boundedStrNullish(120),
+        classe: boundedStrNullish(40),
       }),
     )
     // No .max() here: a hard cap would REJECT the whole extraction (zod array
@@ -44,9 +52,9 @@ export const dossierExtractionSchema = z.object({
   bpu: z
     .array(
       z.object({
-        designation: z.string().trim().min(1).max(300),
+        designation: boundedStr(300),
         quantite: z.number().nullish(),
-        unite: z.string().trim().max(24).nullish(),
+        unite: boundedStrNullish(24),
         prixUnitaireMad: moneyMad,
       }),
     )
@@ -54,15 +62,15 @@ export const dossierExtractionSchema = z.object({
   /** Contact du maître d'ouvrage (du RC/avis): nom, email, téléphone. */
   contact: z
     .object({
-      nom: z.string().trim().max(160).nullish(),
-      email: z.string().trim().max(160).nullish(),
-      telephone: z.string().trim().max(60).nullish(),
+      nom: boundedStrNullish(160),
+      email: boundedStrNullish(160),
+      telephone: boundedStrNullish(60),
     })
     .nullish(),
   /** Références réglementaires citées (décrets, CCAG, textes de loi). */
-  conditionsLegales: z.array(z.string().trim().min(3).max(240)).default([]),
+  conditionsLegales: z.array(boundedStr(240)).default([]),
   /** Autres conditions notables (dépôt électronique, variantes, délais clés…). */
-  autres: z.array(z.string().trim().min(3).max(240)).default([]),
+  autres: z.array(boundedStr(240)).default([]),
 });
 
 /** Post-parse element caps (cost/payload bound; truncation, never rejection). */
@@ -179,32 +187,117 @@ export async function aiExtractDossier(
     );
     throw new ServiceUnavailableException('Extraction IA invalide — réessayer');
   }
-  const data = result.data;
-  const textDigits = digitsOnly(dossierText);
+  return finalizeDossier(result.data, dossierText, completion.model, sourceFiles, false);
+}
+
+/** Caps for the conditionsLegales/autres lists (truncation, never rejection). */
+const MAX_LEGALES = 12;
+const MAX_AUTRES = 12;
+
+/**
+ * Shared post-parse finalisation for both the text and vision extraction paths.
+ * Headline money is trusted only when corroborated by `corroborationText` AND
+ * within a plausible band — EXCEPT in `trustModelNumbers` mode (the vision path
+ * on a pure scan, where there is no OCR text to match against): there the model
+ * read the printed figure directly off the image, so we keep it on the
+ * plausibility floor alone. Over-long lists are truncated, never rejected.
+ */
+function finalizeDossier(
+  data: DossierExtractionData,
+  corroborationText: string,
+  model: string,
+  sourceFiles: readonly string[],
+  trustModelNumbers: boolean,
+): DossierExtraction {
+  const textDigits = digitsOnly(corroborationText);
+  const money = (value: number | null | undefined, min: number): number | null => {
+    if (trustModelNumbers && textDigits.length === 0) {
+      return typeof value === 'number' && Number.isFinite(value) && value >= min
+        ? value
+        : null;
+    }
+    return corroborateMoney(value, textDigits, min);
+  };
   return {
     ...data,
-    // Headline money is trusted only when corroborated by the dossier text and
-    // within a plausible band — else null (kept off the persisted columns).
-    estimationMad: corroborateMoney(data.estimationMad, textDigits, MIN_ESTIMATION_MAD),
-    cautionProvisoireMad: corroborateMoney(
-      data.cautionProvisoireMad,
-      textDigits,
-      MIN_CAUTION_MAD,
-    ),
-    chiffreAffairesMinMad: corroborateMoney(
-      data.chiffreAffairesMinMad,
-      textDigits,
-      MIN_ESTIMATION_MAD,
-    ),
-    // Truncate (never reject) over-long lists so the scalar facts always survive.
-    bpu: data.bpu.slice(0, MAX_BPU),
-    qualifications: data.qualifications.slice(0, MAX_QUALIFICATIONS),
-    conditionsLegales: data.conditionsLegales.slice(0, 12),
-    autres: data.autres.slice(0, 12),
-    model: completion.model,
+    estimationMad: money(data.estimationMad, MIN_ESTIMATION_MAD),
+    cautionProvisoireMad: money(data.cautionProvisoireMad, MIN_CAUTION_MAD),
+    chiffreAffairesMinMad: money(data.chiffreAffairesMinMad, MIN_ESTIMATION_MAD),
+    // Drop rows/entries emptied by truncation, then bound the list lengths.
+    bpu: data.bpu.filter((b) => b.designation.length > 0).slice(0, MAX_BPU),
+    qualifications: data.qualifications
+      .filter((q) => q.secteur || q.qualification || q.classe)
+      .slice(0, MAX_QUALIFICATIONS),
+    conditionsLegales: data.conditionsLegales.filter((s) => s.length >= 3).slice(0, MAX_LEGALES),
+    autres: data.autres.filter((s) => s.length >= 3).slice(0, MAX_AUTRES),
+    model,
     extractedAt: new Date().toISOString(),
     sourceFiles: [...sourceFiles],
   };
+}
+
+/** Builds the user message for the VISION extraction call: the model is handed
+ *  the scanned page IMAGES separately; this text frames the task + supplies any
+ *  digital text-layer content found in the same dossier (hybrid DCEs). */
+export function buildVisionExtractionPrompt(
+  digitalText: string,
+  context?: { reference?: string; objet?: string },
+): string {
+  const header: string[] = [];
+  if (context?.reference) header.push(`Référence: ${context.reference}`);
+  if (context?.objet) header.push(`Objet: ${context.objet}`);
+  const parts = [
+    header.join('\n'),
+    'Les pages du dossier de consultation (DCE) sont fournies en IMAGES ci-jointes. ' +
+      "Lis-les attentivement (français + arabe), y compris les tableaux (bordereau des prix), et renvoie l'objet JSON demandé.",
+  ];
+  if (digitalText.trim()) {
+    parts.push(`=== TEXTE ADDITIONNEL (couche texte d'autres pièces) ===\n${digitalText}`);
+  }
+  return parts.filter(Boolean).join('\n\n');
+}
+
+/**
+ * VISION extraction — the datao-grade fast path for SCANNED dossiers. Instead of
+ * tesseract→text→LLM (CPU-bound, lossy on tables/Arabic), the page images are
+ * sent straight to the multimodal model, which does OCR + layout understanding +
+ * extraction in ONE call. Same schema + finalisation as the text path; money is
+ * trusted on the plausibility floor when there is no text layer to corroborate.
+ */
+export async function aiExtractDossierVision(
+  llm: LlmClient,
+  images: readonly LlmVisionDocImage[],
+  digitalText: string,
+  sourceFiles: readonly string[],
+  context?: { reference?: string; objet?: string },
+): Promise<DossierExtraction> {
+  if (images.length === 0) {
+    throw new ServiceUnavailableException('Aucune page à analyser (rendu vide)');
+  }
+  const completion = await llm.completeVisionDoc({
+    tier: 'T1',
+    system: DOSSIER_EXTRACTION_SYSTEM_PROMPT,
+    prompt: buildVisionExtractionPrompt(digitalText, context),
+    images: [...images],
+    maxTokens: 8000,
+    jsonMode: true,
+  });
+  let parsed: unknown;
+  try {
+    parsed = parseModelJson(completion.text);
+  } catch {
+    throw new ServiceUnavailableException('Réponse IA non-JSON — réessayer');
+  }
+  const result = dossierExtractionSchema.safeParse(parsed);
+  if (!result.success) {
+    new Logger('DossierExtraction').warn(
+      `extraction vision invalide: ${result.error.issues
+        .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
+        .join('; ')}`,
+    );
+    throw new ServiceUnavailableException('Extraction IA invalide — réessayer');
+  }
+  return finalizeDossier(result.data, digitalText, completion.model, sourceFiles, true);
 }
 
 /** Reads a previously-stored dossier extraction from a tender's raw JSONB. */

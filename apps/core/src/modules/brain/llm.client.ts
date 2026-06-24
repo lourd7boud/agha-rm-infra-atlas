@@ -47,10 +47,32 @@ export interface LlmVisionRequest {
   maxTokens?: number;
 }
 
+export interface LlmVisionDocImage {
+  /** Base64-encoded image bytes (no data: prefix). */
+  base64: string;
+  mediaType: LlmImageMediaType;
+}
+
+export interface LlmVisionDocRequest {
+  tier: LlmTier;
+  system?: string;
+  prompt: string;
+  /** One or more page images (e.g. a scanned DCE rendered page-by-page). */
+  images: LlmVisionDocImage[];
+  maxTokens?: number;
+  /** Ask the provider for a JSON object response (OpenAI response_format). */
+  jsonMode?: boolean;
+}
+
 export interface LlmClient {
   complete(request: LlmRequest): Promise<LlmCompletion>;
   /** Vision read of a single image (scanned notices, plans…) → text. */
   completeVision(request: LlmVisionRequest): Promise<LlmCompletion>;
+  /** Multi-image document read (scanned DCE pages) → structured answer. The
+   *  model does OCR + layout understanding + extraction in ONE call, which is
+   *  both faster (no local CPU OCR) and higher quality on scans/tables than
+   *  tesseract→text→LLM. */
+  completeVisionDoc(request: LlmVisionDocRequest): Promise<LlmCompletion>;
 }
 
 export const LLM_CLIENT = Symbol('LLM_CLIENT');
@@ -144,6 +166,43 @@ export class AnthropicLlmClient implements LlmClient {
       const status = error instanceof Anthropic.APIError ? error.status : undefined;
       new Logger('LlmClient').error(
         `LLM vision call failed (${model}): ${(error as Error).message}`,
+      );
+      throw new ServiceUnavailableException(
+        `Service IA momentanément indisponible${status ? ` (HTTP ${status})` : ''} — réessayer dans quelques instants`,
+      );
+    }
+    const text = response.content
+      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+      .map((block) => block.text)
+      .join('');
+    return {
+      text,
+      model: response.model,
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+    };
+  }
+
+  async completeVisionDoc(request: LlmVisionDocRequest): Promise<LlmCompletion> {
+    const model = this.tierModels[request.tier];
+    const content: Anthropic.ContentBlockParam[] = request.images.map((img) => ({
+      type: 'image',
+      source: { type: 'base64', media_type: img.mediaType, data: img.base64 },
+    }));
+    content.push({ type: 'text', text: request.prompt });
+    let response: Anthropic.Message;
+    try {
+      response = await this.client.messages.create({
+        model,
+        max_tokens: request.maxTokens ?? 1024,
+        temperature: 0,
+        system: request.system,
+        messages: [{ role: 'user', content }],
+      });
+    } catch (error) {
+      const status = error instanceof Anthropic.APIError ? error.status : undefined;
+      new Logger('LlmClient').error(
+        `LLM vision-doc call failed (${model}): ${(error as Error).message}`,
       );
       throw new ServiceUnavailableException(
         `Service IA momentanément indisponible${status ? ` (HTTP ${status})` : ''} — réessayer dans quelques instants`,
@@ -282,6 +341,38 @@ export class OpenRouterLlmClient implements LlmClient {
     };
   }
 
+  async completeVisionDoc(request: LlmVisionDocRequest): Promise<LlmCompletion> {
+    const model = this.tierModels[request.tier];
+    const userContent: Array<Record<string, unknown>> = [
+      { type: 'text', text: request.prompt },
+    ];
+    for (const img of request.images) {
+      userContent.push({
+        type: 'image_url',
+        image_url: { url: `data:${img.mediaType};base64,${img.base64}` },
+      });
+    }
+    const messages: Array<{ role: string; content: unknown }> = [];
+    if (request.system) messages.push({ role: 'system', content: request.system });
+    messages.push({ role: 'user', content: userContent });
+    const data = await this.post(
+      {
+        model,
+        temperature: 0,
+        max_tokens: request.maxTokens ?? 1024,
+        messages,
+        ...(request.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+      },
+      model,
+    );
+    return {
+      text: data.choices?.[0]?.message?.content ?? '',
+      model: data.model ?? model,
+      inputTokens: data.usage?.prompt_tokens ?? 0,
+      outputTokens: data.usage?.completion_tokens ?? 0,
+    };
+  }
+
   private async post(body: unknown, model: string): Promise<OpenAiChatResponse> {
     let res: Response;
     try {
@@ -348,6 +439,18 @@ export class FakeLlmClient implements LlmClient {
     return {
       text,
       model: `fake-vision-${request.tier}`,
+      inputTokens: 10,
+      outputTokens: 10,
+    };
+  }
+
+  async completeVisionDoc(request: LlmVisionDocRequest): Promise<LlmCompletion> {
+    this.requests.push({ tier: request.tier, prompt: request.prompt, system: request.system });
+    const text = this.queue.shift();
+    if (text === undefined) throw new Error('FakeLlmClient queue exhausted');
+    return {
+      text,
+      model: `fake-vision-doc-${request.tier}`,
       inputTokens: 10,
       outputTokens: 10,
     };

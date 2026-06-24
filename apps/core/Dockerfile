@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-fra \
     tesseract-ocr-ara \
     ghostscript \
+    poppler-utils \
     wget \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
