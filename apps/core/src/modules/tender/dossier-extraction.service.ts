@@ -14,7 +14,11 @@ import {
   downloadDce,
   parsePortalRef,
 } from '../watch/dossier.crawler';
-import { extractDossierText } from './dossier-text';
+import {
+  extractDossierText,
+  MIN_READABLE_FILE_CHARS,
+  MIN_READABLE_TOTAL_CHARS,
+} from './dossier-text';
 import {
   aiExtractDossier,
   readDossierExtraction,
@@ -139,9 +143,18 @@ export class DossierExtractionService {
       );
     }
     const { text, files } = await extractDossierText(dossier.bytes);
-    if (!text) {
+    // Mass-based readability gate: anything below the total threshold OR with
+    // no single file above the per-file floor is essentially a scanned dossier
+    // whose text layer is empty (pdf-parse returns only the page sentinel).
+    // Without this, we used to persist a "successful" all-null extraction that
+    // blocked the row from ever being retried by the batch.
+    const biggestFileChars = files.reduce((m, f) => Math.max(m, f.chars), 0);
+    const looksReadable =
+      text.length >= MIN_READABLE_TOTAL_CHARS &&
+      biggestFileChars >= MIN_READABLE_FILE_CHARS;
+    if (!looksReadable) {
       throw new ServiceUnavailableException(
-        'Dossier sans texte exploitable (PDF probablement scanné)',
+        `Dossier sans texte exploitable (${text.length} chars, plus gros fichier ${biggestFileChars} — PDF probablement scanné, OCR requis)`,
       );
     }
 

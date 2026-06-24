@@ -155,6 +155,19 @@ export class InMemoryTenderRepository implements TenderRepository {
         (fields.location !== undefined && r.location !== fields.location);
       if (!differs) return r;
       changed = true;
+      // Mirror the DB scrub: when objet OR buyerName change, purge stale AI/
+      // dossier enrichments computed on the old (wrong) text so the batch
+      // re-eligibilises the row. See Drizzle impl for full reasoning.
+      const objetOrBuyerChanged =
+        r.objet !== fields.objet || r.buyerName !== fields.buyerName;
+      const scrubbedRaw =
+        objetOrBuyerChanged && r.raw && typeof r.raw === 'object'
+          ? Object.fromEntries(
+              Object.entries(r.raw as Record<string, unknown>).filter(
+                ([k]) => k !== 'aiEnrichment' && k !== 'dossierExtraction',
+              ),
+            )
+          : r.raw;
       return {
         ...r,
         reference: fields.reference,
@@ -163,6 +176,7 @@ export class InMemoryTenderRepository implements TenderRepository {
         objet: fields.objet,
         deadlineAt: fields.deadlineAt,
         ...(fields.location !== undefined ? { location: fields.location } : {}),
+        raw: scrubbedRaw,
       };
     });
     return changed;
@@ -300,6 +314,19 @@ export class DrizzleTenderRepository implements TenderRepository {
         ? [sql`${tenders.location} IS DISTINCT FROM ${fields.location}`]
         : []),
     ];
+    // When the heal CORRECTS objet or buyerName, any previously stored AI
+    // enrichment / dossier extraction was computed on the OLD (wrong) text and
+    // describes a different tender — purge those JSONB sub-keys so the batch
+    // re-eligibilises the row (aiEnrichBatch skips rows that already have
+    // raw.aiEnrichment). Crawler-side facts (reference / deadline / location)
+    // change without invalidating AI outputs and are NOT in this gate.
+    const objetOrBuyerChanged = or(
+      ne(tenders.objet, fields.objet),
+      ne(tenders.buyerName, fields.buyerName),
+    );
+    const rawAfterScrub = sql`CASE WHEN ${objetOrBuyerChanged} THEN
+      COALESCE(${tenders.raw}, '{}'::jsonb) - 'aiEnrichment' - 'dossierExtraction'
+    ELSE ${tenders.raw} END`;
     const rows = await this.db
       .update(tenders)
       .set({
@@ -311,6 +338,7 @@ export class DrizzleTenderRepository implements TenderRepository {
         // Only overwrite location when this crawl actually captured one, so a
         // transient parse miss never blanks a previously stored value.
         ...(fields.location !== undefined ? { location: fields.location } : {}),
+        raw: rawAfterScrub,
         updatedAt: new Date(),
       })
       .where(and(eq(tenders.sourceUrl, sourceUrl), or(...changed)))

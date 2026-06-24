@@ -59,13 +59,28 @@ const defaultPdfExtractor: PdfTextExtractor = async (bytes) => {
   }
 };
 
+/** pdf-parse emits a per-page sentinel like "-- 1 of 1 --" even when the page
+ *  has zero text layer (scanned PDF). Strip those lines so a 4-file scanned
+ *  dossier doesn't masquerade as "163 chars of text" — was letting the LLM
+ *  return null for everything while we marked the extraction "done". */
+const SENTINEL_LINE = /^\s*--\s*\d+\s+of\s+\d+\s*--\s*$/gm;
+
 /** Collapses runs of spaces/blank lines so the bounded budget holds real words. */
 function normalize(text: string): string {
   return text
+    .replace(SENTINEL_LINE, '')
     .replace(/[ \t\f\v]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+
+/** Minimum chars per individual file to count as "readable" — anything under
+ *  this is almost certainly an image-only scan whose text layer is empty. */
+export const MIN_READABLE_FILE_CHARS = 200;
+/** Minimum total chars across all files to bother sending to the LLM. Below
+ *  this the response is invariably all-nulls and we'd just persist an empty
+ *  extraction that blocks the row from ever retrying. */
+export const MIN_READABLE_TOTAL_CHARS = 500;
 
 export async function extractDossierText(
   zipBytes: Uint8Array,
