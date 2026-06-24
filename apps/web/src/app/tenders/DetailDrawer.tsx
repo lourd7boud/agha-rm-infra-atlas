@@ -490,6 +490,77 @@ export function DetailDrawer({
                     </ul>
                   </div>
                 )}
+
+                {/* Conditions légales — datao "Conditions légales :" */}
+                {item.conditionsLegales && item.conditionsLegales.length > 0 && (
+                  <div>
+                    <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
+                      Conditions légales
+                      <span className="rounded bg-emerald px-1 py-0.5 text-[9px] font-bold normal-case text-paper">
+                        DCE
+                      </span>
+                    </h3>
+                    <ul className="list-disc space-y-1 pl-4 text-sm text-ink-2 marker:text-faint">
+                      {item.conditionsLegales.map((c, i) => (
+                        <li key={i}>{c}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Contact — datao "Contact :" */}
+                {item.contact &&
+                  (item.contact.nom ||
+                    item.contact.email ||
+                    item.contact.telephone) && (
+                    <div>
+                      <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
+                        Contact
+                        <span className="rounded bg-emerald px-1 py-0.5 text-[9px] font-bold normal-case text-paper">
+                          DCE
+                        </span>
+                      </h3>
+                      <div className="space-y-0.5 text-sm text-ink-2">
+                        {item.contact.nom && (
+                          <p className="font-medium text-ink">{item.contact.nom}</p>
+                        )}
+                        {item.contact.email && (
+                          <a
+                            href={`mailto:${item.contact.email}`}
+                            className="block text-cyan hover:underline"
+                          >
+                            {item.contact.email}
+                          </a>
+                        )}
+                        {item.contact.telephone && (
+                          <a
+                            href={`tel:${item.contact.telephone.replace(/\s+/g, '')}`}
+                            className="block font-mono text-muted hover:text-ink"
+                          >
+                            {item.contact.telephone}
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                {/* Autres — datao "Autres :" */}
+                {item.autres && item.autres.length > 0 && (
+                  <div>
+                    <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
+                      Autres
+                      <span className="rounded bg-emerald px-1 py-0.5 text-[9px] font-bold normal-case text-paper">
+                        DCE
+                      </span>
+                    </h3>
+                    <ul className="list-disc space-y-1 pl-4 text-sm text-ink-2 marker:text-faint">
+                      {item.autres.map((a, i) => (
+                        <li key={i}>{a}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 <Link
                   href={`/tenders/${item.id}`}
                   className="inline-flex items-center gap-1 text-sm font-semibold text-cyan hover:underline"

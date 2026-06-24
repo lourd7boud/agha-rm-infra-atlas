@@ -62,6 +62,16 @@ export interface TenderItem {
     retenueGarantiePct: number | null;
     delaiGarantieMois: number | null;
   };
+  /** Maître d'ouvrage contact (datao "Contact :"). */
+  contact?: {
+    nom?: string | null;
+    email?: string | null;
+    telephone?: string | null;
+  } | null;
+  /** Regulatory references cited in the DCE (datao "Conditions légales :"). */
+  conditionsLegales?: string[];
+  /** Other notable conditions (datao "Autres :"). */
+  autres?: string[];
   dossierExtractedAt?: string;
   // ── Consultation-side lifecycle + result (datao "Résultat de l'appel d'offre") ──
   lifecycleStatus: LifecycleStatus;

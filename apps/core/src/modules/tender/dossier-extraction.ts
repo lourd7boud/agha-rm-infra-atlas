@@ -51,6 +51,18 @@ export const dossierExtractionSchema = z.object({
       }),
     )
     .default([]),
+  /** Contact du maître d'ouvrage (du RC/avis): nom, email, téléphone. */
+  contact: z
+    .object({
+      nom: z.string().trim().max(160).nullish(),
+      email: z.string().trim().max(160).nullish(),
+      telephone: z.string().trim().max(60).nullish(),
+    })
+    .nullish(),
+  /** Références réglementaires citées (décrets, CCAG, textes de loi). */
+  conditionsLegales: z.array(z.string().trim().min(3).max(240)).default([]),
+  /** Autres conditions notables (dépôt électronique, variantes, délais clés…). */
+  autres: z.array(z.string().trim().min(3).max(240)).default([]),
 });
 
 /** Post-parse element caps (cost/payload bound; truncation, never rejection). */
@@ -105,7 +117,10 @@ export const DOSSIER_EXTRACTION_SYSTEM_PROMPT = `Tu es analyste de marchés publ
   "delaiExecutionMois": null,
   "chiffreAffairesMinMad": null,
   "qualifications": [{"secteur": "...", "qualification": "...", "classe": "..."}],
-  "bpu": [{"designation": "...", "quantite": null, "unite": "...", "prixUnitaireMad": null}]
+  "bpu": [{"designation": "...", "quantite": null, "unite": "...", "prixUnitaireMad": null}],
+  "contact": {"nom": null, "email": null, "telephone": null},
+  "conditionsLegales": ["..."],
+  "autres": ["..."]
 }
 Règles STRICTES:
 - Tous les montants en dirhams (DH/MAD) comme NOMBRES sans séparateur ni devise: "Trois cent soixante-dix-neuf mille cent quatre dirhams (379 104,00 Dhs)" -> 379104. "Sept Mille (7 000,00) dirhams" -> 7000.
@@ -115,6 +130,9 @@ Règles STRICTES:
 - "chiffreAffairesMinMad": chiffre d'affaires annuel minimum exigé en DH, sinon null.
 - "qualifications": chaque (secteur/activité, qualification, classe) exigé. Aucune exigée: [].
 - "bpu": les postes du bordereau des prix / détail estimatif visibles dans le texte (désignation + quantité + unité + prix unitaire si présent). Si non visible: [].
+- "contact": le contact du maître d'ouvrage indiqué dans le RC/avis (personne à contacter, e-mail, téléphone). Champs absents = null.
+- "conditionsLegales": les références réglementaires CITÉES dans le dossier (ex: "Décret n° 2-22-431 du 8 mars 2023 relatif aux marchés publics", "CCAG-T approuvé par décret n° 2-14-394"). Chaque texte une chaîne. Aucune citée: [].
+- "autres": 2 à 5 conditions notables NON déjà couvertes ci-dessus, en phrases courtes (ex: "Dépôt électronique obligatoire", "Variantes non autorisées", "Visite des lieux obligatoire", "Échantillons exigés", "Livraison sous 30 jours"). Rien de notable: [].
 - N'INVENTE RIEN. Ce qui n'est pas EXPLICITEMENT dans le texte = null / [].
 - Réponds en français. JSON pur uniquement.`;
 
@@ -181,6 +199,8 @@ export async function aiExtractDossier(
     // Truncate (never reject) over-long lists so the scalar facts always survive.
     bpu: data.bpu.slice(0, MAX_BPU),
     qualifications: data.qualifications.slice(0, MAX_QUALIFICATIONS),
+    conditionsLegales: data.conditionsLegales.slice(0, 12),
+    autres: data.autres.slice(0, 12),
     model: completion.model,
     extractedAt: new Date().toISOString(),
     sourceFiles: [...sourceFiles],

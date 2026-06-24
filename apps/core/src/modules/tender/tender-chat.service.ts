@@ -121,6 +121,17 @@ function buildTenderContext(tender: TenderRecord): { text: string; chars: number
         lines.push(`  … (${dossier.bpu.length - 30} autres postes)`);
       }
     }
+    if (dossier.contact && (dossier.contact.nom || dossier.contact.email || dossier.contact.telephone)) {
+      lines.push(
+        `Contact: ${[dossier.contact.nom, dossier.contact.email, dossier.contact.telephone].filter(Boolean).join(' · ')}`,
+      );
+    }
+    if (dossier.conditionsLegales.length > 0) {
+      lines.push(`Conditions légales: ${dossier.conditionsLegales.join(' ; ')}`);
+    }
+    if (dossier.autres.length > 0) {
+      lines.push(`Autres: ${dossier.autres.join(' ; ')}`);
+    }
   }
 
   const full = lines.join('\n');

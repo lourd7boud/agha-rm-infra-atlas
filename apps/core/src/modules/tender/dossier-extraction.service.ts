@@ -104,6 +104,10 @@ function mergeExtractions(
     chiffreAffairesMinMad: next.chiffreAffairesMinMad ?? prev.chiffreAffairesMinMad ?? null,
     bpu: next.bpu.length > 0 ? next.bpu : prev.bpu,
     qualifications: next.qualifications.length > 0 ? next.qualifications : prev.qualifications,
+    contact: next.contact ?? prev.contact ?? null,
+    conditionsLegales:
+      next.conditionsLegales.length > 0 ? next.conditionsLegales : prev.conditionsLegales,
+    autres: next.autres.length > 0 ? next.autres : prev.autres,
   };
 }
 

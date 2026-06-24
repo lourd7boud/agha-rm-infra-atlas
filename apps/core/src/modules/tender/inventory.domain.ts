@@ -506,6 +506,16 @@ export interface InventoryItem {
     retenueGarantiePct: number | null;
     delaiGarantieMois: number | null;
   };
+  /** Maître d'ouvrage contact from the DCE (datao's "Contact :" section). */
+  contact?: {
+    nom?: string | null;
+    email?: string | null;
+    telephone?: string | null;
+  } | null;
+  /** Regulatory references cited in the DCE (datao's "Conditions légales :"). */
+  conditionsLegales?: string[];
+  /** Other notable conditions (datao's "Autres :" — bullet list). */
+  autres?: string[];
   /** ISO timestamp the DCE dossier was read (provenance marker). */
   dossierExtractedAt?: string;
   // ── Consultation-side lifecycle + result (datao "Résultat de l'appel d'offre") ──
@@ -753,6 +763,9 @@ export function buildInventory(
             delaiGarantieMois: dossier.delaiGarantieMois ?? null,
           }
         : undefined,
+      contact: dossier?.contact ?? undefined,
+      conditionsLegales: dossier?.conditionsLegales,
+      autres: dossier?.autres,
       dossierExtractedAt: dossier?.extractedAt,
       // ── Lifecycle + competitors (datao "Résultat de l'appel d'offre") ──
       lifecycleStatus: lifecycle,
