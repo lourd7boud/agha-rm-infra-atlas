@@ -211,7 +211,12 @@ function finalizeDossier(
 ): DossierExtraction {
   const textDigits = digitsOnly(corroborationText);
   const money = (value: number | null | undefined, min: number): number | null => {
-    if (trustModelNumbers && textDigits.length === 0) {
+    // Vision path: the model read the figure straight off the page IMAGES, so we
+    // trust it on the plausibility floor alone. We must NOT corroborate against
+    // `corroborationText` here — on a hybrid dossier that text is only the
+    // DIGITAL pieces (e.g. the BPU), so a real estimation read from a SCANNED RC
+    // image would be wrongly nulled because its digits aren't in the text layer.
+    if (trustModelNumbers) {
       return typeof value === 'number' && Number.isFinite(value) && value >= min
         ? value
         : null;

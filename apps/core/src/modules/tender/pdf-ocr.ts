@@ -3,6 +3,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { Logger } from '@nestjs/common';
 import { PDFParse } from 'pdf-parse';
 
 const execFileAsync = promisify(execFile);
@@ -103,7 +104,10 @@ export async function renderPdfToJpegBase64(
       out.push(Buffer.from(buf).toString('base64'));
     }
     return out;
-  } catch {
+  } catch (err) {
+    // Resilient (caller falls back), but log so a poppler install/config
+    // regression surfaces as a real error instead of a silent "unreadable".
+    new Logger('PdfOcr').warn(`pdftoppm render failed: ${(err as Error).message}`);
     return [];
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
