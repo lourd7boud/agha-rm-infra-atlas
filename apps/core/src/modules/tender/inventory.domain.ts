@@ -553,9 +553,14 @@ export interface InventoryPaging {
 
 /** Top N buyers by tender count are surfaced as facets; the rest stay searchable. */
 const BUYER_FACET_LIMIT = 30;
-/** Default and hard ceiling on rows returned per request (payload guard). */
+/** Default and hard ceiling on rows returned per request (payload guard).
+ *  MAX_ITEM_LIMIT must stay in sync with inventoryQuerySchema.limit's .max()
+ *  in tender.module.ts — they're two halves of the same guard. Current
+ *  catalogue is ~4264 active rows (datao parity), 5000 leaves ~700 head-room.
+ *  When live count approaches MAX_ITEM_LIMIT a WARN is logged from the route
+ *  handler so we notice before users see a silent truncation. */
 const DEFAULT_ITEM_LIMIT = 300;
-const MAX_ITEM_LIMIT = 1000;
+const MAX_ITEM_LIMIT = 5000;
 
 interface Classified {
   record: TenderRecord;
