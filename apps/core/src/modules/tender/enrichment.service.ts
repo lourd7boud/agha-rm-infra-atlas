@@ -427,6 +427,8 @@ export class EnrichmentService {
       const pending = all
         .filter((t) => !readAiEnrichment(t.raw))
         .filter((t) => !onlyActive || t.deadlineAt.getTime() >= now)
+        // Newest-detected first so a fresh tender is enriched the same sweep.
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
         .slice(0, Math.max(0, Math.floor(limit)));
 
       let succeeded = 0;

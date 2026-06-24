@@ -247,6 +247,10 @@ export class DossierExtractionService {
         // the same unreadable scans from monopolising every sweep's slots.
         .filter((t) => opts.force || !attemptedRecently(t.raw, now))
         .filter((t) => !onlyActive || t.deadlineAt.getTime() >= now)
+        // Newest-detected first so a freshly-crawled tender is analysed within
+        // the same sweep (datao-style "filled the moment it drops"), instead of
+        // waiting behind the historical backlog.
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
         .slice(0, Math.max(0, Math.floor(limit)));
 
       let succeeded = 0;
