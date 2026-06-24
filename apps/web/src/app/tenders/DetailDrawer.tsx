@@ -14,7 +14,7 @@ import {
 } from '@/lib/tenders';
 import { fmtMad } from '@/lib/projects';
 
-type Tab = 'resume' | 'faq' | 'lots' | 'bpu';
+type Tab = 'resume' | 'faq' | 'lots' | 'bpu' | 'chat';
 
 /** A primary/secondary action that degrades to a disabled button when there is
  *  no safe URL — keeps keyboard + screen-reader semantics correct. */
@@ -180,6 +180,7 @@ export function DetailDrawer({
     { key: 'faq', label: 'FAQ' },
     { key: 'lots', label: `Lots (${item.lotCount})` },
     { key: 'bpu', label: 'BPU' },
+    { key: 'chat', label: 'Chat IA' },
   ];
 
   return (
@@ -626,9 +627,139 @@ export function DetailDrawer({
                 )}
               </div>
             )}
+
+            {tab === 'chat' && <TenderChat tenderId={item.id} reference={item.reference} />}
           </div>
         </div>
       </aside>
+    </div>
+  );
+}
+
+interface ChatMsg {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/**
+ * Per-tender chat panel — datao's "agent IA va parcourir le dossier" surface.
+ * State is local to the drawer (so closing the drawer clears the thread, like
+ * datao's Nouveau chat button). Hits POST /api/tenders/:id/chat which is
+ * single-flight on the backend (no streaming, < 5s typical) and grounded only
+ * in the tender's stored context — never the web.
+ */
+function TenderChat({ tenderId, reference }: { tenderId: string; reference: string }) {
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [input, setInput] = useState('');
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function send(): Promise<void> {
+    const q = input.trim();
+    if (!q || pending) return;
+    setError(null);
+    const next: ChatMsg[] = [...messages, { role: 'user', content: q }];
+    setMessages(next);
+    setInput('');
+    setPending(true);
+    try {
+      const res = await fetch(`/api/tenders/${tenderId}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: q,
+          history: messages.slice(-12),
+        }),
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}${detail ? ' — ' + detail.slice(0, 200) : ''}`);
+      }
+      const data = (await res.json()) as { answer: string };
+      setMessages([...next, { role: 'assistant', content: data.answer }]);
+    } catch (e) {
+      setError((e as Error).message);
+      // Roll back the optimistic user message on failure so the user can edit/retry.
+      setMessages(messages);
+      setInput(q);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="flex items-start gap-2 rounded-lg bg-cyan-soft/50 px-3 py-2 text-xs text-muted">
+        <span className="rounded bg-cyan px-1 py-0.5 text-[9px] font-bold text-paper">IA</span>
+        Posez une question sur ce marché ({reference}) — l&apos;agent répond
+        uniquement à partir des informations extraites du dossier (objet, lots,
+        BPU, conditions, qualifications…). Ne pas utiliser pour des conseils
+        juridiques.
+      </p>
+      {messages.length === 0 && (
+        <p className="rounded-md border border-dashed border-line p-4 text-center text-sm text-faint">
+          Aucun message. Essayez : « Quelles sont les qualifications exigées ? »
+        </p>
+      )}
+      <ul className="space-y-2">
+        {messages.map((m, i) => (
+          <li
+            key={i}
+            className={`rounded-lg p-3 text-sm ${
+              m.role === 'user'
+                ? 'border border-line bg-paper-2 text-ink'
+                : 'bg-cyan-soft/30 text-ink-2'
+            }`}
+          >
+            <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-faint">
+              {m.role === 'user' ? 'Vous' : 'Assistant'}
+            </p>
+            <p className="whitespace-pre-wrap leading-relaxed">{m.content}</p>
+          </li>
+        ))}
+        {pending && (
+          <li className="rounded-lg bg-cyan-soft/30 p-3 text-sm text-muted">
+            <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-faint">
+              Assistant
+            </p>
+            <p className="italic">L&apos;agent lit le dossier…</p>
+          </li>
+        )}
+      </ul>
+      {error && (
+        <p className="rounded-md border border-ochre-deep/30 bg-ochre-soft/40 px-3 py-2 text-xs text-ochre-deep">
+          Erreur : {error}
+        </p>
+      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send();
+        }}
+        className="flex items-end gap-2"
+      >
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              void send();
+            }
+          }}
+          placeholder="Saisissez votre question…"
+          rows={2}
+          disabled={pending}
+          className="flex-1 resize-none rounded-lg border border-line bg-paper-2 px-3 py-2 text-sm text-ink placeholder:text-faint focus:border-cyan focus:outline-none focus:ring-2 focus:ring-cyan/15 disabled:opacity-50"
+        />
+        <button
+          type="submit"
+          disabled={pending || !input.trim()}
+          className="rounded-lg bg-cyan px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan/90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Envoyer
+        </button>
+      </form>
     </div>
   );
 }

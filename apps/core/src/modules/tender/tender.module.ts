@@ -36,6 +36,20 @@ import { buildComplianceChecklist } from './compliance.domain';
 import { DossierService } from './dossier.service';
 import { DossierExtractionService } from './dossier-extraction.service';
 import { EnrichmentService } from './enrichment.service';
+import { TenderChatService } from './tender-chat.service';
+
+const chatBodySchema = z.object({
+  question: z.string().trim().min(1).max(1500),
+  history: z
+    .array(
+      z.object({
+        role: z.enum(['user', 'assistant']),
+        content: z.string().min(1).max(4000),
+      }),
+    )
+    .max(20)
+    .optional(),
+});
 import { buildInventory } from './inventory.domain';
 import {
   INTEL_REPOSITORY,
@@ -138,6 +152,7 @@ export class TenderController {
     @Inject(DossierExtractionService)
     private readonly dossierExtraction: DossierExtractionService,
     @Inject(INTEL_REPOSITORY) private readonly intel: IntelRepository,
+    @Inject(TenderChatService) private readonly chat: TenderChatService,
     @Inject(PricingService) private readonly pricing: PricingService,
     @Inject(VAULT_REPOSITORY) private readonly vault: VaultRepository,
     @Inject(OUTCOME_REPOSITORY) private readonly outcomes: OutcomeRepository,
@@ -237,6 +252,17 @@ export class TenderController {
   @Post('tenders/:id/extract-dossier')
   async extractDossier(@Param('id') id: string) {
     return this.dossierExtraction.extractTender(id);
+  }
+
+  /** Per-tender AI chat (datao "agent IA va parcourir le dossier"). Stateless:
+   *  the client sends the bounded history each turn. */
+  @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
+  @Throttle({ default: { ttl: 60_000, limit: 30 } })
+  @Post('tenders/:id/chat')
+  async chatOnTender(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = chatBodySchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    return this.chat.ask(id, parsed.data.question, parsed.data.history ?? []);
   }
 
   /** Bulk dossier extraction over the active catalogue (datao-grade fill). */
@@ -504,6 +530,7 @@ const eventRepositoryProvider = {
     EnrichmentService,
     DossierService,
     DossierExtractionService,
+    TenderChatService,
     PricingService,
   ],
   // EnrichmentService + DossierExtractionService are exported so the Sentinel
