@@ -100,24 +100,26 @@ export function DataTable({
     setRenderCount(INITIAL_RENDER);
   }, [resetKey]);
 
-  const sentinelRef = useRef<HTMLTableRowElement | null>(null);
   const hasMore = renderCount < items.length;
+  // Grow the window as the user nears the bottom. A scroll listener on the
+  // window (catches the document scrolling element) is more robust here than an
+  // IntersectionObserver on a <tr> sentinel, which didn't fire reliably on
+  // table rows. We also poll once on attach so a not-yet-scrollable page (few
+  // rows tall) keeps filling until it overflows.
   useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting) {
-          setRenderCount((c) => Math.min(items.length, c + RENDER_STEP));
-        }
-      },
-      // Load the next page well before the sentinel is actually on screen so
-      // scrolling feels continuous (no visible "pop").
-      { rootMargin: '800px 0px' },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [items.length, hasMore]);
+    if (!hasMore) return;
+    const grow = () => {
+      const ds = document.scrollingElement ?? document.documentElement;
+      const nearBottom =
+        ds.scrollHeight - ds.scrollTop - ds.clientHeight < 1200;
+      if (nearBottom) {
+        setRenderCount((c) => Math.min(items.length, c + RENDER_STEP));
+      }
+    };
+    window.addEventListener('scroll', grow, { passive: true });
+    grow(); // fill the viewport if the current window isn't tall enough yet
+    return () => window.removeEventListener('scroll', grow);
+  }, [items.length, hasMore, renderCount]);
 
   const rendered = items.slice(0, renderCount);
 
@@ -340,7 +342,7 @@ export function DataTable({
             );
           })}
           {hasMore && (
-            <tr ref={sentinelRef}>
+            <tr>
               <td
                 colSpan={COLUMNS.length}
                 className="px-3 py-4 text-center text-xs text-faint"
