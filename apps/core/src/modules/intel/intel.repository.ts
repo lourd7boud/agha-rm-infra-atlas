@@ -51,6 +51,13 @@ export interface IntelRepository {
   ): Promise<'inserted' | 'updated'>;
   listResults(limit: number): Promise<CompetitorBidRecord[]>;
   /**
+   * All recorded bids — used by the tender inventory to attach the winner +
+   * losing-bidder list to each tender row (the "Résultat de l'appel d'offre"
+   * datao surface). One full scan instead of N+1 per-tender queries; cheap
+   * because competitor_bid scales with results harvested, not with tenders.
+   */
+  listAllBids(): Promise<CompetitorBidRecord[]>;
+  /**
    * Returns only the WINNER bids (`isWinner`) whose reference matches one of the
    * given canonical reference keys (folded with {@link canonicalReferenceKey}:
    * lowercased, every non-alphanumeric run collapsed to a single space, trimmed).
@@ -238,6 +245,10 @@ export class InMemoryIntelRepository implements IntelRepository {
       .slice(0, limit);
   }
 
+  async listAllBids(): Promise<CompetitorBidRecord[]> {
+    return [...this.bids];
+  }
+
   async findWinnersByReferences(
     canonicalKeys: readonly string[],
   ): Promise<CompetitorBidRecord[]> {
@@ -358,6 +369,11 @@ export class DrizzleIntelRepository implements IntelRepository {
       .from(competitorBids)
       .orderBy(desc(competitorBids.createdAt))
       .limit(limit);
+    return rows.map(mapBidRow);
+  }
+
+  async listAllBids(): Promise<CompetitorBidRecord[]> {
+    const rows = await this.db.select().from(competitorBids);
     return rows.map(mapBidRow);
   }
 

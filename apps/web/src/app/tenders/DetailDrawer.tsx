@@ -158,6 +158,13 @@ export function DetailDrawer({
   const faq = item.faq ?? [];
   const bpu = item.bpu ?? [];
   const quals = item.qualifications ?? [];
+  const competitors = item.competitors ?? [];
+  const winner = item.winner;
+  const isAttribue = item.lifecycleStatus === 'attribue';
+  const isInfructueux = item.lifecycleStatus === 'infructueux';
+  const isCloture = item.lifecycleStatus === 'cloture';
+  const hasResult = isAttribue || isInfructueux;
+  const otherBidders = competitors.filter((c) => !c.isWinner);
   // Per-field DCE provenance — a value is "verified" only when the dossier
   // actually supplied THAT field (not when an extraction merely ran). Avoids
   // labelling AI-fallback figures as officially DCE-confirmed.
@@ -219,6 +226,22 @@ export function DetailDrawer({
           </h2>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
+            {/* Lifecycle chip (datao spine) — colored by status, distinct from
+                our internal funnel state chip that follows it. */}
+            <span
+              className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                isAttribue
+                  ? 'bg-emerald-soft text-emerald'
+                  : isInfructueux
+                    ? 'bg-sand text-faint'
+                    : isCloture
+                      ? 'bg-ochre-soft text-ochre-deep'
+                      : 'bg-cyan-soft text-cyan'
+              }`}
+              title="Statut de la consultation sur le portail"
+            >
+              {item.lifecycleLabel}
+            </span>
             <span
               className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${state.classes}`}
             >
@@ -242,6 +265,64 @@ export function DetailDrawer({
               {overdue ? 'Échu' : `J-${item.daysLeft}`}
             </span>
           </div>
+
+          {hasResult && (
+            <section className="mt-4 rounded-xl border border-emerald-soft bg-emerald-soft/30 px-4 py-3">
+              <h3 className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-emerald">
+                <Icon name="check" size={13} />
+                Résultat de l&apos;appel d&apos;offre
+              </h3>
+              {isAttribue && winner ? (
+                <>
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                    <div>
+                      <dt className="text-xs text-faint">Attribué à</dt>
+                      <dd className="font-semibold text-ink">{winner.bidderName}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-faint">Montant</dt>
+                      <dd className="font-mono font-semibold text-ink">
+                        {winner.amountMad != null ? fmtMad(winner.amountMad) : '—'}
+                      </dd>
+                    </div>
+                    {item.resultDate && (
+                      <div className="col-span-2">
+                        <dt className="text-xs text-faint">Date du résultat</dt>
+                        <dd className="text-ink">{fmtDateTime(item.resultDate)}</dd>
+                      </div>
+                    )}
+                  </dl>
+                  {otherBidders.length > 0 && (
+                    <details className="mt-3">
+                      <summary className="cursor-pointer text-xs font-semibold text-emerald hover:underline">
+                        Voir les {otherBidders.length} autre
+                        {otherBidders.length > 1 ? 's' : ''} concurrent
+                        {otherBidders.length > 1 ? 's' : ''}
+                      </summary>
+                      <ul className="mt-2 space-y-1">
+                        {otherBidders.map((c, i) => (
+                          <li
+                            key={`${i}-${c.bidderName}`}
+                            className="flex items-center justify-between gap-2 border-t border-line py-1.5 text-sm"
+                          >
+                            <span className="text-ink-2">{c.bidderName}</span>
+                            <span className="rounded bg-sand px-1.5 py-0.5 text-[10px] font-medium text-faint">
+                              Non retenu
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-muted">
+                  Marché déclaré <span className="font-semibold">infructueux</span> —
+                  aucune offre retenue.
+                </p>
+              )}
+            </section>
+          )}
 
           <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
             <div>

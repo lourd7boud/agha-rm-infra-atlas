@@ -6,7 +6,14 @@ import { PIPELINE_LABELS } from '@/lib/labels';
 import type { PipelineState } from '@atlas/contracts';
 import type { TenderFacet, TenderFacets } from '@/lib/tenders';
 
-export type Statut = 'en_cours' | 'echus' | 'tous';
+/**
+ * The datao spine: every consultation falls into one of these on the portal.
+ *   • tous       — full catalogue, no lifecycle filter
+ *   • en_cours   — deadline still ahead, no result harvested
+ *   • clotures   — deadline past, no result yet (the "Clôturés" datao count)
+ *   • resultats  — a winner OR a "no-bid" verdict is published (Attribué/Infructueux)
+ */
+export type Statut = 'tous' | 'en_cours' | 'clotures' | 'resultats';
 export type MultiKey =
   | 'procedures'
   | 'categories'
@@ -29,7 +36,7 @@ export interface FilterState {
 }
 
 export const EMPTY_FILTERS: FilterState = {
-  statut: 'en_cours',
+  statut: 'tous',
   search: '',
   procedures: [],
   categories: [],
@@ -42,9 +49,10 @@ export const EMPTY_FILTERS: FilterState = {
 };
 
 const STATUTS: ReadonlyArray<{ key: Statut; label: string }> = [
-  { key: 'en_cours', label: 'En cours' },
-  { key: 'echus', label: 'Échus' },
   { key: 'tous', label: 'Tous' },
+  { key: 'en_cours', label: 'En cours' },
+  { key: 'clotures', label: 'Clôturés' },
+  { key: 'resultats', label: 'Résultats' },
 ];
 
 function toggle(list: string[], value: string): string[] {
@@ -211,7 +219,7 @@ export function FilterSidebar({
 
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="grid grid-cols-3 gap-1 rounded-lg border border-line bg-paper-2 p-1">
+      <div className="grid grid-cols-4 gap-1 rounded-lg border border-line bg-paper-2 p-1">
         {STATUTS.map((s) => (
           <button
             key={s.key}

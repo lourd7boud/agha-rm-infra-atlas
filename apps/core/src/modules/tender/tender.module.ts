@@ -37,6 +37,17 @@ import { DossierService } from './dossier.service';
 import { DossierExtractionService } from './dossier-extraction.service';
 import { EnrichmentService } from './enrichment.service';
 import { buildInventory } from './inventory.domain';
+import {
+  INTEL_REPOSITORY,
+  type IntelRepository,
+} from '../intel/intel.repository';
+
+const lifecycleStatusSchema = z.enum([
+  'en_cours',
+  'cloture',
+  'attribue',
+  'infructueux',
+]);
 import { nextActions } from './orchestrator.domain';
 import { PricingService } from './pricing.service';
 import { QualifierService } from './qualifier.service';
@@ -76,6 +87,7 @@ const inventoryQuerySchema = z.object({
   buyer: z.string().max(200).optional(),
   region: z.string().max(100).optional(),
   state: pipelineStateSchema.optional(),
+  lifecycle: lifecycleStatusSchema.optional(),
   q: z.string().max(200).optional(),
   limit: z.coerce.number().int().positive().max(1000).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
@@ -125,6 +137,7 @@ export class TenderController {
     @Inject(DossierService) private readonly dossierService: DossierService,
     @Inject(DossierExtractionService)
     private readonly dossierExtraction: DossierExtractionService,
+    @Inject(INTEL_REPOSITORY) private readonly intel: IntelRepository,
     @Inject(PricingService) private readonly pricing: PricingService,
     @Inject(VAULT_REPOSITORY) private readonly vault: VaultRepository,
     @Inject(OUTCOME_REPOSITORY) private readonly outcomes: OutcomeRepository,
@@ -310,8 +323,14 @@ export class TenderController {
     const parsed = inventoryQuerySchema.safeParse(query);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const { limit, offset, ...filters } = parsed.data;
-    const records = await this.repository.findAll();
-    return buildInventory(records, filters, new Date(), { limit, offset });
+    // One scan of competitor_bid joined to every tender by canonical reference
+    // — powers the lifecycle status (en_cours / cloture / attribue / infructueux)
+    // and the "Résultat de l'appel d'offre" surface in the drawer.
+    const [records, bids] = await Promise.all([
+      this.repository.findAll(),
+      this.intel.listAllBids(),
+    ]);
+    return buildInventory(records, filters, new Date(), { limit, offset }, bids);
   }
 
   /** Buyer Observatory: aggregated demand-side profile of every acheteur. */

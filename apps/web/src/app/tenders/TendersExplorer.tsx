@@ -57,8 +57,19 @@ function primaryCompare(a: TenderItem, b: TenderItem, key: SortKey): number {
 }
 
 function matchesFilters(item: TenderItem, f: FilterState): boolean {
-  if (f.statut === 'en_cours' && item.daysLeft < 0) return false;
-  if (f.statut === 'echus' && item.daysLeft >= 0) return false;
+  // Lifecycle tabs (datao spine) drive off the server-computed lifecycleStatus,
+  // NOT the client's daysLeft alone — that way "Clôturés" includes past-deadline
+  // rows still in our DB even if the portal dropped them, and "Résultats" only
+  // matches consultations whose winner/no-bid verdict was actually harvested.
+  if (f.statut === 'en_cours' && item.lifecycleStatus !== 'en_cours') return false;
+  if (f.statut === 'clotures' && item.lifecycleStatus !== 'cloture') return false;
+  if (
+    f.statut === 'resultats' &&
+    item.lifecycleStatus !== 'attribue' &&
+    item.lifecycleStatus !== 'infructueux'
+  ) {
+    return false;
+  }
   if (f.procedures.length && !f.procedures.includes(item.procedure)) return false;
   if (f.categories.length && !f.categories.includes(item.category)) return false;
   if (f.secteurs.length && !f.secteurs.includes(item.secteur)) return false;

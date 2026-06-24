@@ -6,6 +6,56 @@ import {
   readDossierExtraction,
   type DossierExtraction,
 } from './dossier-extraction';
+import {
+  canonicalReferenceKey,
+  type CompetitorBidRecord,
+} from '../intel/intel.repository';
+
+/**
+ * Consultation-side lifecycle (datao spine: En cours / Clôturés / Résultats),
+ * distinct from `pipelineState` which is OUR internal bid funnel. Computed at
+ * read-time from deadline + harvested results (no extra column to maintain).
+ */
+export type LifecycleStatus = 'en_cours' | 'cloture' | 'attribue' | 'infructueux';
+
+export const LIFECYCLE_LABELS: Record<LifecycleStatus, string> = {
+  en_cours: 'En cours',
+  cloture: 'Clôturé',
+  attribue: 'Attribué',
+  infructueux: 'Infructueux',
+};
+
+/** Public shape of a winner/loser on a tender — what the drawer renders. */
+export interface TenderCompetitor {
+  bidderName: string;
+  amountMad: number | null;
+  isWinner: boolean;
+}
+
+function lifecycleStatus(
+  deadlineAt: Date,
+  competitors: readonly TenderCompetitor[],
+  now: Date,
+): LifecycleStatus {
+  if (competitors.length > 0) {
+    return competitors.some((c) => c.isWinner) ? 'attribue' : 'infructueux';
+  }
+  return deadlineAt.getTime() >= now.getTime() ? 'en_cours' : 'cloture';
+}
+
+/** Indexes bids by canonical reference key so a single scan answers all tenders. */
+function indexBidsByReference(
+  bids: readonly CompetitorBidRecord[],
+): Map<string, CompetitorBidRecord[]> {
+  const out = new Map<string, CompetitorBidRecord[]>();
+  for (const bid of bids) {
+    const key = canonicalReferenceKey(bid.reference);
+    const list = out.get(key);
+    if (list) list.push(bid);
+    else out.set(key, [bid]);
+  }
+  return out;
+}
 
 /**
  * Tender Inventory (جرد) — turns the raw detected-tender stream into a
@@ -379,6 +429,11 @@ export interface InventoryFilters {
   buyer?: string;
   region?: string;
   state?: PipelineState;
+  /**
+   * Consultation-side status — the datao spine (En cours / Clôturé / Attribué /
+   * Infructueux). Distinct from `state` (our internal bid funnel).
+   */
+  lifecycle?: LifecycleStatus;
   /** Free-text search across reference, objet and buyer. */
   q?: string;
 }
@@ -453,6 +508,17 @@ export interface InventoryItem {
   };
   /** ISO timestamp the DCE dossier was read (provenance marker). */
   dossierExtractedAt?: string;
+  // ── Consultation-side lifecycle + result (datao "Résultat de l'appel d'offre") ──
+  /** Where the consultation stands on the portal (NOT our internal funnel). */
+  lifecycleStatus: LifecycleStatus;
+  /** Label for the lifecycle (En cours / Clôturé / Attribué / Infructueux). */
+  lifecycleLabel: string;
+  /** Winning bidder when known, else null. Drives the "Attribué à" surface. */
+  winner: TenderCompetitor | null;
+  /** All bidders we know about (winner + losers), empty when no result harvested. */
+  competitors: TenderCompetitor[];
+  /** ISO date the result was published (from the PV/notice), when known. */
+  resultDate?: string;
 }
 
 export interface InventoryFacets {
@@ -462,6 +528,8 @@ export interface InventoryFacets {
   regions: InventoryFacet[];
   buyers: InventoryFacet[];
   states: InventoryFacet[];
+  /** Tous / En cours / Clôturé / Attribué / Infructueux — the datao spine. */
+  lifecycles: InventoryFacet[];
 }
 
 export interface Inventory {
@@ -498,6 +566,9 @@ interface Classified {
   secteur: string;
   ai: AiEnrichment | null;
   dossier: DossierExtraction | null;
+  lifecycle: LifecycleStatus;
+  competitors: TenderCompetitor[];
+  resultDate: Date | null;
 }
 
 function tallyTop(
@@ -521,6 +592,7 @@ function matches(c: Classified, filters: InventoryFilters): boolean {
   if (filters.buyer && c.record.buyerName !== filters.buyer) return false;
   if (filters.region && c.region !== filters.region) return false;
   if (filters.state && c.record.pipelineState !== filters.state) return false;
+  if (filters.lifecycle && c.lifecycle !== filters.lifecycle) return false;
   if (filters.q) {
     const needle = normalize(filters.q);
     const haystack = normalize(
@@ -542,6 +614,7 @@ export function buildInventory(
   filters: InventoryFilters,
   now: Date,
   paging: InventoryPaging = {},
+  bids: readonly CompetitorBidRecord[] = [],
 ): Inventory {
   const limit = Math.min(
     MAX_ITEM_LIMIT,
@@ -549,8 +622,27 @@ export function buildInventory(
   );
   const offset = Math.max(0, Math.floor(paging.offset ?? 0));
 
+  // Index ALL bids once by canonical reference key, then attach to each tender
+  // by tender_id OR reference fallback (tender_id is sparsely populated until
+  // the back-fill runs at scale).
+  const bidsByRef = indexBidsByReference(bids);
+
   const classified: Classified[] = records.map((record) => {
     const ai = readAiEnrichment(record.raw);
+    // Reference-keyed lookup: competitor_bid.tender_id is sparsely populated
+    // in practice, so the canonical reference is the join key that actually
+    // links the harvested PV data to the tender row.
+    const matchedBids = bidsByRef.get(canonicalReferenceKey(record.reference)) ?? [];
+    const competitors: TenderCompetitor[] = matchedBids.map((b) => ({
+      bidderName: b.bidderName,
+      amountMad: b.amountMad ?? null,
+      isWinner: b.isWinner,
+    }));
+    const latestResult = matchedBids
+      .map((b) => b.resultDate)
+      .filter((d): d is Date => d instanceof Date)
+      .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+
     return {
       record,
       region: inferRegion(record.buyerName, record.objet, record.location) ?? UNLOCATED,
@@ -561,6 +653,9 @@ export function buildInventory(
       secteur: ai?.secteur ?? segmentLabel(inferSegment(record.objet, record.buyerName)),
       ai,
       dossier: readDossierExtraction(record.raw),
+      lifecycle: lifecycleStatus(record.deadlineAt, competitors, now),
+      competitors,
+      resultDate: latestResult,
     };
   });
 
@@ -574,6 +669,20 @@ export function buildInventory(
     }))
     .filter((facet) => facet.count > 0);
 
+  // Lifecycle facet — surfaced in the order datao uses (En cours → Clôturé →
+  // Attribué → Infructueux), with empty buckets dropped.
+  const LIFECYCLE_ORDER: LifecycleStatus[] = [
+    'en_cours',
+    'cloture',
+    'attribue',
+    'infructueux',
+  ];
+  const lifecycles: InventoryFacet[] = LIFECYCLE_ORDER.map((key) => ({
+    key,
+    label: LIFECYCLE_LABELS[key],
+    count: classified.filter((c) => c.lifecycle === key).length,
+  })).filter((facet) => facet.count > 0);
+
   const facets: InventoryFacets = {
     procedures,
     categories: tallyTop(classified, (c) => c.category),
@@ -581,11 +690,12 @@ export function buildInventory(
     regions: tallyTop(classified, (c) => c.region),
     buyers: tallyTop(classified, (c) => c.record.buyerName, BUYER_FACET_LIMIT),
     states: tallyTop(classified, (c) => c.record.pipelineState),
+    lifecycles,
   };
 
   const matched: InventoryItem[] = classified
     .filter((c) => matches(c, filters))
-    .map(({ record, region, ville, location, category, secteur, ai, dossier }) => ({
+    .map(({ record, region, ville, location, category, secteur, ai, dossier, lifecycle, competitors, resultDate }) => ({
       id: record.id,
       reference: record.reference,
       buyerName: record.buyerName,
@@ -639,6 +749,12 @@ export function buildInventory(
           }
         : undefined,
       dossierExtractedAt: dossier?.extractedAt,
+      // ── Lifecycle + competitors (datao "Résultat de l'appel d'offre") ──
+      lifecycleStatus: lifecycle,
+      lifecycleLabel: LIFECYCLE_LABELS[lifecycle],
+      winner: competitors.find((c) => c.isWinner) ?? null,
+      competitors,
+      resultDate: resultDate ? resultDate.toISOString() : undefined,
     }))
     // Deadline ascending; reference breaks ties so order is stable regardless
     // of the repository's row order.

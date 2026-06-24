@@ -63,6 +63,21 @@ export interface TenderItem {
     delaiGarantieMois: number | null;
   };
   dossierExtractedAt?: string;
+  // ── Consultation-side lifecycle + result (datao "Résultat de l'appel d'offre") ──
+  lifecycleStatus: LifecycleStatus;
+  lifecycleLabel: string;
+  winner: TenderCompetitor | null;
+  competitors: TenderCompetitor[];
+  resultDate?: string;
+}
+
+/** Mirrors the core LifecycleStatus (en_cours/cloture/attribue/infructueux). */
+export type LifecycleStatus = 'en_cours' | 'cloture' | 'attribue' | 'infructueux';
+
+export interface TenderCompetitor {
+  bidderName: string;
+  amountMad: number | null;
+  isWinner: boolean;
 }
 
 export interface TenderFacet {
@@ -78,6 +93,8 @@ export interface TenderFacets {
   regions: TenderFacet[];
   buyers: TenderFacet[];
   states: TenderFacet[];
+  /** Tous / En cours / Clôturé / Attribué / Infructueux — the datao spine. */
+  lifecycles?: TenderFacet[];
 }
 
 export interface TenderInventory {
