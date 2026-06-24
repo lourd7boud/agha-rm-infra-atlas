@@ -289,9 +289,25 @@ export class ResultCrawlerService {
         // image"), so we route through OCR and feed text to a text model.
         extractAvisText: async (bytes) => {
           const text = await ocrBytesToText(bytes);
+          // Mass-based readability gate — when OCR returns < 200 chars of body
+          // text the page is essentially blank (scanner artefact / failed OCR).
+          // Without this the text LLM hallucinated identical answers from an
+          // empty prompt (1177913.89 MAD × 20 fake winners on first sweep).
+          const measure = text.replace(/\s+/g, ' ').trim();
+          if (measure.length < 200) {
+            throw new Error(
+              `avis text too short for extraction (${measure.length} chars)`,
+            );
+          }
           return (
             await llm.complete({
               tier: 'T1',
+              system:
+                'Tu extrais des données factuelles d\'un avis de résultat scanné. ' +
+                'RÈGLE STRICTE: si le texte est illisible, partiel, ou ne contient pas ' +
+                'le montant / le titulaire / la référence DEMANDÉS, renvoie null pour ' +
+                'le champ concerné. NE DEVINE JAMAIS. NE REUTILISE JAMAIS de valeurs ' +
+                'd\'autres avis. Le texte OCR fourni est la SEULE source autorisée.',
               prompt: `${RESULT_VISION_PROMPT}\n\n--- TEXTE EXTRAIT DE L'AVIS (OCR) ---\n${text.slice(0, 8000)}`,
               maxTokens: 500,
             })
