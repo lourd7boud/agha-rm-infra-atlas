@@ -41,9 +41,16 @@ export const OCR_MAX_PAGES = 30;
 const SENTINEL_LINE = /^\s*--\s*\d+\s+of\s+\d+\s*--\s*$/gm;
 
 /** Pure pdf-parse text-layer extraction — fast, free, works on any PDF that
- *  has actual embedded text (digital exports from Word, LibreOffice, etc.). */
+ *  has actual embedded text (digital exports from Word, LibreOffice, etc.).
+ *
+ *  CRITICAL: pdf-parse v2 hands the input to a Worker via postMessage, which
+ *  TRANSFERS (detaches) the underlying ArrayBuffer. If the caller reuses the
+ *  same bytes afterwards (e.g. defaultPdfExtractor calls this, then passes the
+ *  same bytes to the OCR fallback) it would get a 0-length detached buffer —
+ *  which is exactly why scanned DCEs silently produced empty OCR (ocrmypdf got
+ *  a 0-byte file). We pass a fresh copy so the caller's buffer always survives. */
 export async function pdfParseExtract(bytes: Uint8Array): Promise<string> {
-  const parser = new PDFParse({ data: bytes });
+  const parser = new PDFParse({ data: new Uint8Array(bytes) });
   try {
     const result = await parser.getText();
     return result.text ?? '';
