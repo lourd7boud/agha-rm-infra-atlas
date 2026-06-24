@@ -28,6 +28,13 @@ export const MIN_TEXT_LAYER_CHARS = 200;
  *  CPS without hanging the whole batch when a single doc is pathological. */
 export const OCR_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** Cap OCR to the first N pages. The headline facts (estimation, cautions,
+ *  qualifications/classe, délais) live in the RC + the opening articles of the
+ *  CPS — never on page 120 of a 140-page scan. Limiting pages turns a fragile
+ *  multi-minute marathon (which errored out entirely on big DCEs) into a fast,
+ *  reliable pass. BPU detail, when present, is usually its own short BDP file. */
+export const OCR_MAX_PAGES = 30;
+
 /** pdf-parse emits a per-page sentinel like "-- 1 of 1 --" even when the page
  *  has zero text layer (scanned PDF). Strip those lines so a 4-file scanned
  *  dossier doesn't masquerade as "163 chars of text". */
@@ -59,16 +66,23 @@ export async function ocrFallback(bytes: Uint8Array): Promise<string> {
   try {
     await writeFile(inPath, bytes);
     // --force-ocr: re-OCR even pages with a (broken) text layer.
-    // --rotate-pages + --deskew: straighten misoriented scans before OCR.
-    // --tesseract-timeout: cap per-page time so a noisy scan can't stall.
+    // --pages 1-N: only OCR the opening pages (headline facts live there); a
+    //   140-page scan otherwise errored out entirely ("[tesseract] Error during
+    //   processing") and produced NO output, leaving every field empty.
+    // --skip-big: pass through pages whose raster exceeds N megapixels instead
+    //   of choking tesseract — another source of the whole-doc failure.
+    // NOTE: --rotate-pages / --deskew were REMOVED — on multi-page Moroccan DCE
+    //   scans they triggered the tesseract processing error that killed the run.
+    // --tesseract-timeout: cap per-page time so a noisy page is skipped, not fatal.
     // -l fra+ara: French + Arabic (Moroccan PMP DCEs are bilingual).
-    // --output-type pdf: keep as PDF for re-parsing (not pdfa).
     await execFileAsync(
       'ocrmypdf',
       [
         '--force-ocr',
-        '--rotate-pages',
-        '--deskew',
+        '--pages',
+        `1-${OCR_MAX_PAGES}`,
+        '--skip-big',
+        '50',
         '--tesseract-timeout',
         '90',
         '-l',
@@ -150,14 +164,15 @@ async function ocrImageBytes(bytes: Uint8Array, ext: RasterFmt['ext']): Promise<
   try {
     await writeFile(inPath, bytes);
     // --image-dpi 300: assume a sensible scan DPI when the image embeds none
-    // (typical for portal-issued TIFF/JPEG). Other flags mirror ocrFallback.
+    // (typical for portal-issued TIFF/JPEG). --skip-big guards huge rasters.
+    // --rotate-pages/--deskew removed (same tesseract failure as ocrFallback).
     await execFileAsync(
       'ocrmypdf',
       [
         '--image-dpi',
         '300',
-        '--rotate-pages',
-        '--deskew',
+        '--skip-big',
+        '50',
         '--tesseract-timeout',
         '90',
         '-l',

@@ -65,6 +65,24 @@ const EXTRACT_CONCURRENCY = (() => {
 /** Hard ceiling on a downloaded DCE before we even unzip (OOM guard). */
 const MAX_DCE_ZIP_BYTES = 120 * 1024 * 1024;
 
+/** After a failed extraction we stamp raw.dossierExtractAttempt so the batch
+ *  stops re-picking the SAME unreadable dossiers first on every sweep (that
+ *  clog wasted ~60% of capacity and pinned coverage at ~6%). The row becomes
+ *  eligible again only after this cooldown — long enough to drain the backlog,
+ *  short enough that a later pipeline improvement (e.g. better OCR) retries it. */
+const EXTRACT_ATTEMPT_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** True when a prior extraction attempt failed within the cooldown window. */
+function attemptedRecently(raw: unknown, now: number): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const a = (raw as Record<string, unknown>)['dossierExtractAttempt'] as
+    | { at?: string }
+    | undefined;
+  if (!a?.at) return false;
+  const t = Date.parse(a.at);
+  return Number.isFinite(t) && now - t < EXTRACT_ATTEMPT_COOLDOWN_MS;
+}
+
 /**
  * Merges a fresh extraction over a previous one so a forced re-run can only
  * improve, never regress: each scalar keeps the fresh value or falls back to the
@@ -225,6 +243,9 @@ export class DossierExtractionService {
       const pending = all
         .filter((t) => t.sourceUrl)
         .filter((t) => opts.force || !readDossierExtraction(t.raw))
+        // Skip dossiers whose last extraction attempt failed recently — keeps
+        // the same unreadable scans from monopolising every sweep's slots.
+        .filter((t) => opts.force || !attemptedRecently(t.raw, now))
         .filter((t) => !onlyActive || t.deadlineAt.getTime() >= now)
         .slice(0, Math.max(0, Math.floor(limit)));
 
@@ -239,6 +260,15 @@ export class DossierExtractionService {
           this.logger.warn(
             `dossier.extract failed ${t.reference}: ${(error as Error).message}`,
           );
+          // Stamp the attempt so this row drops out of the candidate set for
+          // the cooldown window instead of being re-picked first next sweep.
+          try {
+            await this.repository.updateEnrichment(t.id, {}, {
+              dossierExtractAttempt: { at: new Date().toISOString() },
+            });
+          } catch {
+            /* a marker write failure must not fail the batch */
+          }
         }
       });
 
