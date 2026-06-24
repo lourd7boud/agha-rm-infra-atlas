@@ -19,6 +19,8 @@ import { DossierExtractionService } from '../tender/dossier-extraction.service';
 /** Per-run caps for the post-crawl auto-analysis (bounded cost + memory). */
 const DEFAULT_ENRICH_LIMIT = 80;
 const DEFAULT_EXTRACT_LIMIT = 40;
+/** Per-run cap on Résultats notices read with the vision LLM (slow + paid). */
+const DEFAULT_RESULT_LIMIT = 25;
 function envLimit(name: string, fallback: number): number {
   const n = Number(process.env[name]);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
@@ -292,8 +294,15 @@ export class WatchService {
     // competitor wins). Bounded to cap vision cost; failures never fail the run.
     if (this.resultCrawler) {
       try {
-        const results = await this.resultCrawler.crawlOnce({ maxResults: 3 });
-        this.logger.log(`result harvest ${JSON.stringify(results)}`);
+        // Was hard-coded 3 — way too low to ever reach datao's ~45k catalogue
+        // of attribution notices. Env-tunable; default 25/sweep ≈ 600/day at
+        // hourly Sentinel, still polite + bounded by the vision LLM cost.
+        const maxResults = envLimit('WATCH_RESULT_LIMIT', DEFAULT_RESULT_LIMIT);
+        const maxPages = envLimit('WATCH_RESULT_MAX_PAGES', 5);
+        if (maxResults > 0) {
+          const results = await this.resultCrawler.crawlOnce({ maxResults, maxPages });
+          this.logger.log(`result harvest ${JSON.stringify(results)}`);
+        }
       } catch (error) {
         this.logger.error(`result harvest failed: ${(error as Error).message}`);
       }

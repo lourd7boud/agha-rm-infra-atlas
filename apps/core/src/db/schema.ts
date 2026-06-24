@@ -509,6 +509,78 @@ export const tenderEvents = tender.table('tender_event', {
   occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── Listes & recherches sauvegardées (datao "Listes" + "Recherches sauvegardées") ──
+// A user organizes tenders into named folders (Privée by default; visibility
+// extendable to Partagée later) and saves complex filter sets as named searches.
+// Owned by the application user id (Keycloak sub) — multi-tenant via companyId.
+export const tenderLists = tender.table(
+  'list',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    companyId: text('company_id').notNull().default('agha-rm-infra'),
+    /** Keycloak `sub` of the owner. Multi-user team sharing builds on this later. */
+    ownerSub: text('owner_sub').notNull(),
+    name: text('name').notNull(),
+    /** 'private' (only owner) | 'shared' (everyone in the company). */
+    visibility: text('visibility').notNull().default('private'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // One list-name per (company, owner) so re-saving the same name updates the
+    // list instead of duplicating it.
+    uniqueIndex('tender_list_owner_name_uniq').on(
+      table.companyId,
+      table.ownerSub,
+      table.name,
+    ),
+    index('tender_list_owner_idx').on(table.ownerSub),
+  ],
+);
+
+export const tenderListMembers = tender.table(
+  'list_member',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    listId: uuid('list_id')
+      .notNull()
+      .references(() => tenderLists.id, { onDelete: 'cascade' }),
+    tenderId: uuid('tender_id')
+      .notNull()
+      .references(() => tenders.id, { onDelete: 'cascade' }),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // One row per (list, tender) — re-adding is a no-op via ON CONFLICT.
+    uniqueIndex('tender_list_member_uniq').on(table.listId, table.tenderId),
+    index('tender_list_member_list_idx').on(table.listId),
+    index('tender_list_member_tender_idx').on(table.tenderId),
+  ],
+);
+
+export const tenderSavedSearches = tender.table(
+  'saved_search',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    companyId: text('company_id').notNull().default('agha-rm-infra'),
+    ownerSub: text('owner_sub').notNull(),
+    name: text('name').notNull(),
+    visibility: text('visibility').notNull().default('private'),
+    /** The full FilterState as JSON — opaque to the server, replayed by the web. */
+    filters: jsonb('filters').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('tender_saved_search_owner_name_uniq').on(
+      table.companyId,
+      table.ownerSub,
+      table.name,
+    ),
+    index('tender_saved_search_owner_idx').on(table.ownerSub),
+  ],
+);
+
 // ── Portal mirror — read-only image of the authenticated MPE account ─────────
 // A faithful, idempotent mirror of what the AGHID CONSTRUCTION account itself
 // shows on marchespublics.gov.ma: "Mes réponses" and "Mes cautions". This is

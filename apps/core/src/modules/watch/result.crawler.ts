@@ -21,6 +21,7 @@ import {
   extractAvisDownloadUrl,
   parseResultNoticeJson,
 } from './result.parser';
+import { parseFormInputs } from './prado';
 
 export interface ResultCrawlSummary {
   resultsFound: number;
@@ -33,6 +34,13 @@ export interface ResultCrawlSummary {
 export interface ResultCrawlOptions {
   maxResults?: number;
   delayMs?: number;
+  /**
+   * Number of Résultats listing pages to walk (PRADO postback "next"). 1 means
+   * the current behaviour (first page only — the historical bottleneck that
+   * starved the catalogue). Default 5 widens the harvest without flooding the
+   * portal in one sweep.
+   */
+  maxPages?: number;
 }
 
 export interface StoredResult {
@@ -47,8 +55,14 @@ export interface StoredResult {
 }
 
 export interface ResultCrawlDeps {
-  /** GET the search form + POST the result filter → the result listing. */
+  /** GET the search form + POST the result filter → the first result listing page. */
   search: () => Promise<{ listingHtml: string; baseUrl: string }>;
+  /**
+   * Optional: PRADO postback to advance to the next page of the Résultats
+   * listing (uses the cookie + PRADO_PAGESTATE captured by search). Returns the
+   * next page's HTML, or null when there are no more pages.
+   */
+  nextPage?: () => Promise<{ listingHtml: string; baseUrl: string } | null>;
   fetchDetail: (url: string) => Promise<string>;
   fetchImage: (url: string) => Promise<{ base64: string; mediaType: LlmImageMediaType }>;
   visionExtract: (base64: string, mediaType: LlmImageMediaType) => Promise<string>;
@@ -80,10 +94,31 @@ export async function crawlResults(
   opts: ResultCrawlOptions = {},
 ): Promise<ResultCrawlSummary> {
   const maxResults = Math.max(0, Math.floor(opts.maxResults ?? 12));
+  const maxPages = Math.max(1, Math.floor(opts.maxPages ?? 1));
   const delayMs = Math.max(0, Math.floor(opts.delayMs ?? 1200));
 
-  const { listingHtml, baseUrl } = await deps.search();
-  const links = extractDetailLinks(listingHtml, baseUrl).slice(0, maxResults);
+  // Walk pages, accumulating UNIQUE detail links until we either hit maxResults
+  // or run out of pages. Dedup on detailUrl because the portal sometimes
+  // surfaces the same consultation on multiple pages during a re-issue.
+  const all: ReturnType<typeof extractDetailLinks> = [];
+  const seen = new Set<string>();
+  const first = await deps.search();
+  let baseUrl = first.baseUrl;
+  let pageHtml = first.listingHtml;
+  for (let page = 1; page <= maxPages; page += 1) {
+    for (const link of extractDetailLinks(pageHtml, baseUrl)) {
+      if (seen.has(link.detailUrl)) continue;
+      seen.add(link.detailUrl);
+      all.push(link);
+      if (all.length >= maxResults) break;
+    }
+    if (all.length >= maxResults || page === maxPages || !deps.nextPage) break;
+    const next = await deps.nextPage();
+    if (!next) break;
+    baseUrl = next.baseUrl;
+    pageHtml = next.listingHtml;
+  }
+  const links = all;
 
   let notices = 0;
   let extracted = 0;
@@ -175,6 +210,30 @@ export class ResultCrawlerService {
     }
     const searchUrl = process.env.RESULT_SEARCH_URL ?? DEFAULT_SEARCH_URL;
     let cookie = '';
+    // PRADO state captured by search() and updated by each nextPage(): the
+    // ~100KB PRADO_PAGESTATE + the "Aller à la page suivante" postback target
+    // for the result-listing pager. Replayed verbatim every postback.
+    let lastFields: Record<string, string> | null = null;
+    let nextTarget: string | null = null;
+
+    const captureNext = (html: string): void => {
+      lastFields = parseFormInputs(html);
+      // Standard Atexo MPE "next page" pager control id — same shape the
+      // listing crawler uses (CONTENU_PAGE + resultSearch + pager step).
+      const m = /<a id="([^"]+)"[^>]*>\s*<img[^>]*Aller à la page suivante/i.exec(html);
+      if (!m) {
+        nextTarget = null;
+        return;
+      }
+      const id = m[1]!;
+      const sample = Object.keys(lastFields).find((n) => n.includes('$resultSearch$'));
+      const prefix = sample
+        ? sample.slice(0, sample.indexOf('$resultSearch$') + '$resultSearch$'.length)
+        : 'ctl0$CONTENU_PAGE$resultSearch$';
+      const clientPrefix = prefix.replace(/\$/g, '_');
+      const suffix = id.startsWith(clientPrefix) ? id.slice(clientPrefix.length) : id;
+      nextTarget = prefix + suffix.replace(/_/g, '$');
+    };
 
     const search = async (): Promise<{ listingHtml: string; baseUrl: string }> => {
       const formRes = await fetch(searchUrl, {
@@ -195,12 +254,38 @@ export class ResultCrawlerService {
         body,
         signal: AbortSignal.timeout(TIMEOUT),
       });
-      return { listingHtml: await postRes.text(), baseUrl: searchUrl };
+      const html = await postRes.text();
+      captureNext(html);
+      return { listingHtml: html, baseUrl: searchUrl };
+    };
+
+    const nextPage = async (): Promise<{ listingHtml: string; baseUrl: string } | null> => {
+      if (!lastFields || !nextTarget) return null;
+      const body = new URLSearchParams(lastFields);
+      body.set('PRADO_POSTBACK_TARGET', nextTarget);
+      body.set('PRADO_POSTBACK_PARAMETER', '');
+      const res = await fetch(searchUrl, {
+        method: 'POST',
+        headers: {
+          'User-Agent': UA,
+          Accept: 'text/html',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Referer: searchUrl,
+          ...(cookie ? { Cookie: cookie } : {}),
+        },
+        body,
+        signal: AbortSignal.timeout(TIMEOUT),
+      });
+      if (!res.ok) return null;
+      const html = await res.text();
+      captureNext(html);
+      return { listingHtml: html, baseUrl: searchUrl };
     };
 
     const summary = await crawlResults(
       {
         search,
+        nextPage,
         fetchDetail: (url) => this.fetchText(url, cookie),
         fetchImage: (url) => this.fetchImage(url, cookie),
         visionExtract: async (base64, mediaType) =>

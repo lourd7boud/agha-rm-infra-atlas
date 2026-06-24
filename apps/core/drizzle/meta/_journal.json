@@ -183,6 +183,13 @@
       "when": 1782230178902,
       "tag": "0025_tender_source_url_uniq",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1782261314541,
+      "tag": "0026_lists_and_saved_searches",
+      "breakpoints": true
     }
   ]
 }

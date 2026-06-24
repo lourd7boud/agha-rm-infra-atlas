@@ -253,6 +253,29 @@ export function TendersExplorer({ inventory }: { inventory: TenderInventory }) {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={async () => {
+              const name = window.prompt('Nom de la recherche :');
+              if (!name?.trim()) return;
+              const res = await fetch('/api/tender/saved-searches', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name.trim(), filters }),
+              });
+              if (!res.ok) {
+                const detail = await res.text().catch(() => '');
+                window.alert(`Erreur : HTTP ${res.status}${detail ? ' — ' + detail.slice(0, 200) : ''}`);
+              } else {
+                window.alert(`Recherche « ${name.trim()} » sauvegardée.`);
+              }
+            }}
+            className="flex items-center gap-1.5 rounded-lg border border-line bg-paper-2 px-3 py-2 text-sm font-medium text-muted transition hover:bg-sand hover:text-ink"
+            title="Sauvegarder le jeu de filtres courant"
+          >
+            <Icon name="check" size={15} />
+            Sauvegarder
+          </button>
+          <button
+            type="button"
             onClick={() =>
               downloadCsv(
                 visible,
