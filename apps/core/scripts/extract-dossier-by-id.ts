@@ -35,7 +35,7 @@ async function main(): Promise<void> {
   for (const id of ids) {
     const t0 = Date.now();
     try {
-      const r = await service.extractForTender(id, { force: true });
+      const r = await service.extractTender(id, { force: true });
       const dur = Math.round((Date.now() - t0) / 1000);
       console.log(
         JSON.stringify({
