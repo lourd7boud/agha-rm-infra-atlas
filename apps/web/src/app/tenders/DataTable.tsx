@@ -67,6 +67,8 @@ interface DataTableProps {
   onSortChange: (key: SortKey) => void;
   selectedId: string | null;
   onSelect: (item: TenderItem) => void;
+  /** Predicate from the parent's localStorage-backed read-tracking. */
+  isSeen?: (id: string) => boolean;
 }
 
 export function DataTable({
@@ -75,6 +77,7 @@ export function DataTable({
   onSortChange,
   selectedId,
   onSelect,
+  isSeen,
 }: DataTableProps) {
   const [widths, setWidths] = useState<Record<string, number>>({});
   const drag = useRef<{ key: string; startX: number; startW: number } | null>(null);
@@ -203,8 +206,17 @@ export function DataTable({
                 }`}
               >
                 <td className="px-3 py-2.5">
-                  <div className="truncate font-medium text-ink" title={item.buyerName}>
-                    {item.buyerName}
+                  <div className="flex items-center gap-1.5">
+                    {isSeen && !isSeen(item.id) && (
+                      <span
+                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan"
+                        title="Nouveau (jamais ouvert)"
+                        aria-label="Nouveau"
+                      />
+                    )}
+                    <div className="truncate font-medium text-ink" title={item.buyerName}>
+                      {item.buyerName}
+                    </div>
                   </div>
                   <div className="truncate font-mono text-xs text-faint">
                     {item.reference}

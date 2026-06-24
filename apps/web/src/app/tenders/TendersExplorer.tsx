@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { PIPELINE_LABELS, PROCEDURE_LABELS } from '@/lib/labels';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
@@ -78,6 +78,12 @@ function matchesFilters(item: TenderItem, f: FilterState): boolean {
   if (f.states.length && !f.states.includes(item.pipelineState)) return false;
   if (f.budgetOnly && item.estimationMad == null) return false;
   if (f.cautionOnly && item.cautionProvisoireMad == null) return false;
+  if (f.bpuOnly && !(item.bpu && item.bpu.length > 0)) return false;
+  // Date range filters (operate on the ISO timestamps; empty string = unset).
+  if (f.publishedFrom && item.publishedAt < f.publishedFrom) return false;
+  if (f.publishedTo && item.publishedAt > f.publishedTo + 'T23:59:59') return false;
+  if (f.deadlineFrom && item.deadlineAt < f.deadlineFrom) return false;
+  if (f.deadlineTo && item.deadlineAt > f.deadlineTo + 'T23:59:59') return false;
   if (f.search.trim()) {
     const needle = norm(f.search);
     const hay = norm(
@@ -96,19 +102,98 @@ interface ActiveChip {
   label: string;
 }
 
+const SEEN_KEY = 'atlas.tenders.seen.v1';
+
+/** Read-tracking via localStorage — Nouveaux vs Déjà vu without server round-trip. */
+function useSeenIds(): {
+  seen: Set<string>;
+  markSeen: (id: string) => void;
+  isSeen: (id: string) => boolean;
+} {
+  const [seen, setSeen] = useState<Set<string>>(() => new Set());
+  // Hydrate after mount (localStorage is client-only).
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SEEN_KEY);
+      if (raw) setSeen(new Set(JSON.parse(raw) as string[]));
+    } catch {
+      /* ignore quota / privacy-mode failures */
+    }
+  }, []);
+  const markSeen = useCallback((id: string) => {
+    setSeen((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      try {
+        window.localStorage.setItem(SEEN_KEY, JSON.stringify([...next]));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
+  const isSeen = useCallback((id: string) => seen.has(id), [seen]);
+  return { seen, markSeen, isSeen };
+}
+
+/** Convert a row to a single CSV cell, escaping commas/quotes/newlines. */
+function csvCell(value: unknown): string {
+  const s = value == null ? '' : String(value);
+  return /[",\n\r;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function downloadCsv(items: readonly TenderItem[], filename: string): void {
+  const cols: ReadonlyArray<[label: string, get: (i: TenderItem) => unknown]> = [
+    ['Référence', (i) => i.reference],
+    ['Acheteur', (i) => i.buyerName],
+    ['Objet', (i) => i.objet],
+    ['Procédure', (i) => i.procedureLabel],
+    ['Catégorie', (i) => i.category],
+    ['Secteur', (i) => i.secteur],
+    ['Région', (i) => i.region],
+    ['Lieu d\'exécution', (i) => i.location ?? i.ville ?? ''],
+    ['Date publication', (i) => i.publishedAt],
+    ['Date limite', (i) => i.deadlineAt],
+    ['Budget (MAD)', (i) => i.estimationMad ?? ''],
+    ['Caution (MAD)', (i) => i.cautionProvisoireMad ?? ''],
+    ['Lots', (i) => i.lotCount],
+    ['Statut', (i) => i.lifecycleLabel],
+    ['Fournisseur retenu', (i) => i.winner?.bidderName ?? ''],
+    ['Montant attribution (MAD)', (i) => i.winner?.amountMad ?? ''],
+    ['URL portail', (i) => i.sourceUrl ?? ''],
+  ];
+  const header = cols.map(([h]) => csvCell(h)).join(',');
+  const rows = items.map((i) => cols.map(([, get]) => csvCell(get(i))).join(','));
+  // BOM so Excel auto-detects UTF-8 (French accents) on open.
+  const blob = new Blob(['﻿', [header, ...rows].join('\n')], {
+    type: 'text/csv;charset=utf-8',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export function TendersExplorer({ inventory }: { inventory: TenderInventory }) {
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [sort, setSort] = useState<SortState>({ key: 'deadline', dir: 'asc' });
   const [selected, setSelected] = useState<TenderItem | null>(null);
   const [showFilters, setShowFilters] = useState(true);
+  const { markSeen, isSeen } = useSeenIds();
 
   const visible = useMemo(() => {
-    const filtered = inventory.items.filter((i) => matchesFilters(i, filters));
+    const filtered = inventory.items.filter((i) => {
+      if (filters.unseenOnly && isSeen(i.id)) return false;
+      return matchesFilters(i, filters);
+    });
     return [...filtered].sort((a, b) => {
       const primary = primaryCompare(a, b, sort.key) * (sort.dir === 'asc' ? 1 : -1);
       return primary || a.reference.localeCompare(b.reference);
     });
-  }, [inventory.items, filters, sort]);
+  }, [inventory.items, filters, sort, isSeen]);
 
   const patch = (p: Partial<FilterState>) => setFilters((prev) => ({ ...prev, ...p }));
   const reset = () => setFilters(EMPTY_FILTERS);
@@ -165,14 +250,31 @@ export function TendersExplorer({ inventory }: { inventory: TenderInventory }) {
             </p>
           )}
         </div>
-        <button
-          type="button"
-          onClick={() => setShowFilters((s) => !s)}
-          className="flex items-center gap-1.5 rounded-lg border border-line bg-paper-2 px-3 py-2 text-sm font-medium text-muted transition hover:bg-sand hover:text-ink"
-        >
-          <Icon name="filter" size={15} />
-          {showFilters ? 'Cacher les filtres' : 'Afficher les filtres'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              downloadCsv(
+                visible,
+                `atlas-marches-${new Date().toISOString().slice(0, 10)}.csv`,
+              )
+            }
+            disabled={visible.length === 0}
+            className="flex items-center gap-1.5 rounded-lg border border-line bg-paper-2 px-3 py-2 text-sm font-medium text-muted transition hover:bg-sand hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            title={`Exporter ${visible.length} ligne(s) en CSV`}
+          >
+            <Icon name="download" size={15} />
+            Exporter CSV
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowFilters((s) => !s)}
+            className="flex items-center gap-1.5 rounded-lg border border-line bg-paper-2 px-3 py-2 text-sm font-medium text-muted transition hover:bg-sand hover:text-ink"
+          >
+            <Icon name="filter" size={15} />
+            {showFilters ? 'Cacher les filtres' : 'Afficher les filtres'}
+          </button>
+        </div>
       </div>
 
       {hasChips && (
@@ -240,7 +342,11 @@ export function TendersExplorer({ inventory }: { inventory: TenderInventory }) {
             sort={sort}
             onSortChange={onSortChange}
             selectedId={selected?.id ?? null}
-            onSelect={setSelected}
+            onSelect={(item) => {
+              markSeen(item.id);
+              setSelected(item);
+            }}
+            isSeen={isSeen}
           />
           {visible.length === 0 && (
             <p className="p-10 text-center text-muted">

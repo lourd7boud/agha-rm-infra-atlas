@@ -33,6 +33,15 @@ export interface FilterState {
   states: string[];
   budgetOnly: boolean;
   cautionOnly: boolean;
+  /** Only tenders for which the DCE bordereau-des-prix has been extracted. */
+  bpuOnly: boolean;
+  /** Date range filters (ISO YYYY-MM-DD) — empty string means unset. */
+  publishedFrom: string;
+  publishedTo: string;
+  deadlineFrom: string;
+  deadlineTo: string;
+  /** Only tenders the user hasn't yet opened (read-tracking via localStorage). */
+  unseenOnly: boolean;
 }
 
 export const EMPTY_FILTERS: FilterState = {
@@ -46,6 +55,12 @@ export const EMPTY_FILTERS: FilterState = {
   states: [],
   budgetOnly: false,
   cautionOnly: false,
+  bpuOnly: false,
+  publishedFrom: '',
+  publishedTo: '',
+  deadlineFrom: '',
+  deadlineTo: '',
+  unseenOnly: false,
 };
 
 const STATUTS: ReadonlyArray<{ key: Statut; label: string }> = [
@@ -323,6 +338,64 @@ export function FilterSidebar({
         on={value.cautionOnly}
         onClick={() => onChange({ cautionOnly: !value.cautionOnly })}
       />
+      <Toggle
+        label="Bordereau des prix"
+        icon="boxes"
+        on={value.bpuOnly}
+        onClick={() => onChange({ bpuOnly: !value.bpuOnly })}
+      />
+      <Toggle
+        label="Non vus uniquement"
+        icon="check"
+        on={value.unseenOnly}
+        onClick={() => onChange({ unseenOnly: !value.unseenOnly })}
+      />
+
+      <CollapsibleGroup title="Date de publication" icon="check">
+        <div className="space-y-2">
+          <label className="flex flex-col gap-1 text-xs text-muted">
+            Du
+            <input
+              type="date"
+              value={value.publishedFrom}
+              onChange={(e) => onChange({ publishedFrom: e.target.value })}
+              className="rounded-md border border-line-2 bg-paper px-2 py-1.5 text-xs text-ink focus:border-cyan focus:outline-none"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-muted">
+            Au
+            <input
+              type="date"
+              value={value.publishedTo}
+              onChange={(e) => onChange({ publishedTo: e.target.value })}
+              className="rounded-md border border-line-2 bg-paper px-2 py-1.5 text-xs text-ink focus:border-cyan focus:outline-none"
+            />
+          </label>
+        </div>
+      </CollapsibleGroup>
+
+      <CollapsibleGroup title="Date limite" icon="check">
+        <div className="space-y-2">
+          <label className="flex flex-col gap-1 text-xs text-muted">
+            Du
+            <input
+              type="date"
+              value={value.deadlineFrom}
+              onChange={(e) => onChange({ deadlineFrom: e.target.value })}
+              className="rounded-md border border-line-2 bg-paper px-2 py-1.5 text-xs text-ink focus:border-cyan focus:outline-none"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-muted">
+            Au
+            <input
+              type="date"
+              value={value.deadlineTo}
+              onChange={(e) => onChange({ deadlineTo: e.target.value })}
+              className="rounded-md border border-line-2 bg-paper px-2 py-1.5 text-xs text-ink focus:border-cyan focus:outline-none"
+            />
+          </label>
+        </div>
+      </CollapsibleGroup>
 
       <button
         type="button"
