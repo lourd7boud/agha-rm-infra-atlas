@@ -756,11 +756,14 @@ export function buildInventory(
       competitors,
       resultDate: resultDate ? resultDate.toISOString() : undefined,
     }))
-    // Deadline ascending; reference breaks ties so order is stable regardless
-    // of the repository's row order.
+    // Publication DESC (newest first) — matches datao's UX and ensures freshly
+    // detected tenders appear on page 1 even when their deadlines are weeks
+    // away. The previous deadline-ASC default hid every new posting behind the
+    // 1000-row cap because new postings have far-future deadlines. Reference
+    // breaks ties so order is stable regardless of the repository's row order.
     .sort(
       (a, b) =>
-        a.deadlineAt.getTime() - b.deadlineAt.getTime() ||
+        b.publishedAt.getTime() - a.publishedAt.getTime() ||
         a.reference.localeCompare(b.reference),
     );
 

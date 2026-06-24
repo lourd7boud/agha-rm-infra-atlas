@@ -24,7 +24,7 @@ function rec(overrides: Partial<TenderRecord> & { reference: string }): TenderRe
     pipelineState: (overrides.pipelineState ?? 'detected') as PipelineState,
     qualification: null,
     raw: null,
-    createdAt: new Date('2026-06-01T00:00:00Z'),
+    createdAt: overrides.createdAt ?? new Date('2026-06-01T00:00:00Z'),
   };
 }
 
@@ -138,15 +138,26 @@ describe('buildInventory', () => {
     expect(inv.items[0]!.region).toBe('Guelmim-Oued Noun');
   });
 
-  test('orders items by deadline and exposes daysLeft + region', () => {
-    const soon = rec({
-      reference: 'SOON',
+  test('orders items by publication DESC (newest first) and exposes daysLeft + region', () => {
+    // Newer publication wins over deadline urgency — matches datao's UX so a
+    // fresh posting with a far-future deadline still shows on page 1 instead
+    // of being buried behind soon-to-expire legacy rows. daysLeft is still
+    // computed from deadlineAt regardless of sort.
+    const fresh = rec({
+      reference: 'FRESH',
       buyerName: 'Commune de Safi',
-      deadlineAt: new Date('2026-06-20T09:00:00Z'),
+      deadlineAt: new Date('2026-07-30T09:00:00Z'),
+      createdAt: new Date('2026-06-12T08:00:00Z'),
     });
-    const inv = buildInventory([records[0]!, soon], {}, NOW);
-    expect(inv.items[0]!.reference).toBe('SOON');
-    expect(inv.items[0]!.daysLeft).toBe(7);
+    const old = rec({
+      reference: 'OLD',
+      buyerName: 'Commune de Marrakech',
+      deadlineAt: new Date('2026-06-20T09:00:00Z'),
+      createdAt: new Date('2026-05-01T08:00:00Z'),
+    });
+    const inv = buildInventory([old, fresh], {}, NOW);
+    expect(inv.items[0]!.reference).toBe('FRESH');
+    expect(inv.items[0]!.daysLeft).toBe(47);
     expect(inv.items[0]!.region).toBe('Marrakech-Safi');
   });
 

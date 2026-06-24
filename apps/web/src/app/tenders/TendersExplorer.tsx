@@ -235,7 +235,9 @@ export function TendersExplorer({
     }
     return EMPTY_FILTERS;
   });
-  const [sort, setSort] = useState<SortState>({ key: 'deadline', dir: 'asc' });
+  // Publication DESC default — newest postings on top, matching datao. Users
+  // who want most-urgent-first click the Date limite column header.
+  const [sort, setSort] = useState<SortState>({ key: 'publication', dir: 'desc' });
   const [selected, setSelected] = useState<TenderItem | null>(null);
   const [showFilters, setShowFilters] = useState(true);
   const { markSeen, isSeen } = useSeenIds();
