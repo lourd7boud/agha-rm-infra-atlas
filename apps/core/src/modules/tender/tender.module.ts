@@ -123,7 +123,7 @@ const inventoryQuerySchema = z.object({
   state: pipelineStateSchema.optional(),
   lifecycle: lifecycleStatusSchema.optional(),
   q: z.string().max(200).optional(),
-  limit: z.coerce.number().int().positive().max(1000).optional(),
+  limit: z.coerce.number().int().positive().max(5000).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
 });
 const enrichBodySchema = z.object({

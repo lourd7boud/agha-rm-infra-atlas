@@ -38,10 +38,12 @@ export default async function TendersPage({
   const sp = await searchParams;
   const { list, savedSearch } = sp;
   // Build /tender/inventory query string from whitelisted URL params so the
-  // server applies the filter BEFORE the 1000-row cap. Without this, searching
-  // "boudnib" client-side missed 4 of 5 matching tenders because they sat
-  // outside the top-1000-most-urgent slice the backend returned.
-  const apiQs = new URLSearchParams({ limit: '1000' });
+  // server applies any filter at the source. Limit 5000 covers the current
+  // ~4260-row catalogue (datao parity). If the catalogue grows past 5000 the
+  // backend will silently truncate again — raise the cap in
+  // apps/core/src/modules/tender/tender.module.ts (inventoryQuerySchema) and
+  // here together.
+  const apiQs = new URLSearchParams({ limit: '5000' });
   for (const k of FORWARDED_PARAMS) {
     const v = sp[k];
     if (typeof v === 'string' && v.trim()) apiQs.set(k, v);

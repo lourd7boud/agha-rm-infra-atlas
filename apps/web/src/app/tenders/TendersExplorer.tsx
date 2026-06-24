@@ -351,12 +351,6 @@ export function TendersExplorer({
               </>
             )}
           </p>
-          {capped && (
-            <p className="mt-1 text-xs text-ochre-deep">
-              Catalogue volumineux : {inventory.items.length} dossiers les plus urgents
-              chargés sur {inventory.total}. Affinez la recherche pour cibler les autres.
-            </p>
-          )}
         </div>
         <div className="flex items-center gap-2">
           <button
