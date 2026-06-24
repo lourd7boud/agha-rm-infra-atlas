@@ -40,6 +40,42 @@ export interface EnrichmentSummary {
   requalified: boolean;
 }
 
+/** Tokenise a snippet for Jaccard comparison — lowercase, accent-fold, strip
+ *  punctuation/digits, drop tokens shorter than 4 chars and a small stoplist
+ *  of structural filler words. Punctuation needs to die before we tokenise
+ *  because "boudnib," and "boudnib" must collapse to the same token. */
+const STOPWORDS = new Set([
+  'cet', 'cette', 'ces', 'pour', 'avec', 'dans', 'lors', 'leur', 'leurs',
+  'appel', 'offres', 'offre', 'marche', 'marches', 'travaux', 'lance', 'lancee',
+  'present', 'presente', 'concerne', 'porte', 'sur', 'les', 'des', 'aux',
+  'sera', 'sont', 'etre', 'fait', 'faite', 'mise', 'mises', 'place',
+  'comprend', 'inclut', 'inclus', 'projet',
+]);
+function tokenise(text: string): Set<string> {
+  const folded = text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ');
+  const tokens = folded.split(/\s+/).filter((t) => t.length >= 4 && !STOPWORDS.has(t));
+  return new Set(tokens);
+}
+function jaccardOverlap(a: string, b: string): number {
+  const ta = tokenise(a);
+  const tb = tokenise(b);
+  if (ta.size === 0 || tb.size === 0) return 0;
+  // Asymmetric "how much of `b` is mentioned in `a`": the résumé doesn't have
+  // to cover every word of the objet+buyer (it's a paraphrase) but it MUST
+  // mention enough of them. Pure Jaccard would penalise long résumés unfairly.
+  let hits = 0;
+  for (const t of tb) if (ta.has(t)) hits += 1;
+  return hits / tb.size;
+}
+/** Minimum fraction of objet+buyer tokens that must appear in the résumé. The
+ *  BOUDNIB-vs-CHR-Errachidia false résumé scored 0.05 in dry-runs (basically
+ *  zero shared content words); the legitimate matches score ≥ 0.3. */
+const MIN_RESUME_OVERLAP = 0.2;
+
 export interface AiEnrichBatchResult {
   candidates: number;
   processed: number;
@@ -345,9 +381,26 @@ export class EnrichmentService {
       cautionProvisoireMad: tender.cautionProvisoireMad ?? null,
     });
 
+    // Semantic safety net: the model occasionally returns a résumé describing
+    // a DIFFERENT tender (we saw BOUDNIB football fields enriched with a CHR
+    // Errachidia medical résumé pre-2026-06-24 cleanup). A token Jaccard
+    // overlap below the floor means the résumé doesn't talk about this row's
+    // actual subject → reject and persist nothing. Better an empty enrichment
+    // (eligible for retry on the next batch) than confidently wrong data.
+    const overlap = jaccardOverlap(
+      enrichment.resume,
+      `${tender.objet} ${tender.buyerName}`,
+    );
+    if (overlap < MIN_RESUME_OVERLAP) {
+      this.logger.warn(
+        `ai.enrich ${tender.reference} REJECTED — résumé overlap ${overlap.toFixed(2)} < ${MIN_RESUME_OVERLAP} (likely hallucinated about a different tender)`,
+      );
+      throw new Error(`Résumé IA non corroboré (overlap=${overlap.toFixed(2)})`);
+    }
+
     await this.repository.updateEnrichment(id, {}, { aiEnrichment: enrichment });
     this.logger.log(
-      `ai.enrich ${tender.reference} → ${enrichment.secteur} (${enrichment.faq.length} FAQ, ${enrichment.lots.length} lots)`,
+      `ai.enrich ${tender.reference} → ${enrichment.secteur} (${enrichment.faq.length} FAQ, ${enrichment.lots.length} lots, overlap=${overlap.toFixed(2)})`,
     );
     return enrichment;
   }

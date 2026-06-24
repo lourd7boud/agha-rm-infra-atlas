@@ -2,12 +2,29 @@
 # tsx emits no decorator metadata, and the codebase uses explicit @Inject
 # everywhere, so runtime behavior matches what the test suite verifies).
 # Build from the REPO ROOT: docker build -f apps/core/Dockerfile .
-FROM node:22-alpine
+#
+# Base: debian-slim (NOT alpine) because we need ocrmypdf + Tesseract for
+# scanned-PDF OCR. Apt has battle-tested packages; Alpine's ocrmypdf builds
+# have historical reliability gaps (musl + ghostscript edge cases).
+FROM node:22-bookworm-slim
 
 ENV NODE_ENV=production \
     PNPM_HOME=/pnpm \
     PATH="/pnpm:$PATH"
 RUN corepack enable
+
+# OCR stack — ocrmypdf wraps Tesseract + Ghostscript. fra+ara are the
+# languages used in Moroccan PMP DCEs (French dossier with bilingual notices).
+# wget + ca-certificates are needed for the HEALTHCHECK and outbound TLS.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ocrmypdf \
+    tesseract-ocr \
+    tesseract-ocr-fra \
+    tesseract-ocr-ara \
+    ghostscript \
+    wget \
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

@@ -140,7 +140,10 @@ export async function aiExtractDossier(
     system: DOSSIER_EXTRACTION_SYSTEM_PROMPT,
     prompt: buildDossierExtractionPrompt(dossierText, context),
     prefill: '{',
-    maxTokens: 3000,
+    // 8 000 tokens of headroom — the previous 3 000 truncated BPU on rich
+    // dossiers (a real BTP estimatif can carry 50+ line items). 8 000 covers
+    // ~200 items comfortably without inflating cost for the small ones.
+    maxTokens: 8000,
   });
 
   let parsed: unknown;
