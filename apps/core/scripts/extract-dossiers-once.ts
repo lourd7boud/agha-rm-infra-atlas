@@ -31,6 +31,14 @@ async function main(): Promise<void> {
   const limit = intArg('limit', 25, 1);
   const onlyActive = !process.argv.includes('--all');
   const force = process.argv.includes('--force');
+  // --upgrade: also re-extract rows whose stored extraction predates the
+  //   datao-form fields (contact/conditionsLegales/autres).
+  // --order=oldest: drain from the historical end (a 2nd worker uses this while
+  //   the server stays newest-first, so they converge without clashing).
+  const upgrade = process.argv.includes('--upgrade');
+  const order: 'newest' | 'oldest' = process.argv.includes('--order=oldest')
+    ? 'oldest'
+    : 'newest';
   const model = process.env.OPENROUTER_MODEL ?? 'google/gemini-2.5-flash';
 
   const llm = new OpenRouterLlmClient({
@@ -43,9 +51,9 @@ async function main(): Promise<void> {
   const service = new DossierExtractionService(repository, llm);
 
   console.log(
-    `extract-dossiers-once: model=${model} limit=${limit} onlyActive=${onlyActive} force=${force} …`,
+    `extract-dossiers-once: model=${model} limit=${limit} onlyActive=${onlyActive} force=${force} upgrade=${upgrade} order=${order} …`,
   );
-  const summary = await service.extractBatch(limit, { onlyActive, force });
+  const summary = await service.extractBatch(limit, { onlyActive, force, upgrade, order });
   console.log('SUMMARY ' + JSON.stringify(summary));
   process.exit(summary.failed > 0 && summary.succeeded === 0 ? 1 : 0);
 }

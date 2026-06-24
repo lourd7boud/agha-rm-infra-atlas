@@ -72,6 +72,16 @@ const MAX_DCE_ZIP_BYTES = 120 * 1024 * 1024;
  *  short enough that a later pipeline improvement (e.g. better OCR) retries it. */
 const EXTRACT_ATTEMPT_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000;
 
+/** True when a stored extraction predates the datao-form fields (contact /
+ *  conditionsLegales / autres). Detected by the absence of the 'autres' key in
+ *  the RAW JSON — not the zod-parsed object, whose .default([]) would mask it.
+ *  Drives the --upgrade pass: re-extract such rows to fill the new sections. */
+function lacksDatoFields(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const de = (raw as Record<string, unknown>)['dossierExtraction'];
+  return !!de && typeof de === 'object' && !('autres' in (de as object));
+}
+
 /** True when a prior extraction attempt failed within the cooldown window. */
 function attemptedRecently(raw: unknown, now: number): boolean {
   if (!raw || typeof raw !== 'object') return false;
@@ -233,7 +243,17 @@ export class DossierExtractionService {
    */
   async extractBatch(
     limit: number,
-    opts: { onlyActive?: boolean; force?: boolean } = {},
+    opts: {
+      onlyActive?: boolean;
+      force?: boolean;
+      /** 'upgrade': also re-extract rows whose stored extraction predates the
+       *  datao-form fields (contact/conditionsLegales/autres) — used by the
+       *  distributed backfill worker to bring the whole catalogue to schema v2. */
+      upgrade?: boolean;
+      /** Processing order. 'oldest' lets a second worker drain from the far end
+       *  while the server drains 'newest', so the two converge without clashing. */
+      order?: 'newest' | 'oldest';
+    } = {},
   ): Promise<DossierExtractionBatchResult> {
     this.requireLlm();
     if (this.batchRunning) {
@@ -243,25 +263,38 @@ export class DossierExtractionService {
     try {
       const onlyActive = opts.onlyActive ?? true;
       const now = Date.now();
+      // upgrade implies force at the per-tender level (re-extract + merge).
+      const forceLike = !!opts.force || !!opts.upgrade;
       const all = await this.repository.findAll();
       const pending = all
         .filter((t) => t.sourceUrl)
-        .filter((t) => opts.force || !readDossierExtraction(t.raw))
+        // Candidate when: forced, OR never extracted (backlog), OR (upgrade and
+        // the stored extraction lacks the new datao fields).
+        .filter(
+          (t) =>
+            opts.force ||
+            !readDossierExtraction(t.raw) ||
+            (opts.upgrade && lacksDatoFields(t.raw)),
+        )
         // Skip dossiers whose last extraction attempt failed recently — keeps
         // the same unreadable scans from monopolising every sweep's slots.
-        .filter((t) => opts.force || !attemptedRecently(t.raw, now))
+        .filter((t) => forceLike || !attemptedRecently(t.raw, now))
         .filter((t) => !onlyActive || t.deadlineAt.getTime() >= now)
-        // Newest-detected first so a freshly-crawled tender is analysed within
-        // the same sweep (datao-style "filled the moment it drops"), instead of
-        // waiting behind the historical backlog.
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        // Default newest-first so a freshly-crawled tender is analysed within
+        // the same sweep (datao-style "filled the moment it drops"). A worker
+        // can pass order:'oldest' to drain the historical end instead.
+        .sort((a, b) =>
+          opts.order === 'oldest'
+            ? a.createdAt.getTime() - b.createdAt.getTime()
+            : b.createdAt.getTime() - a.createdAt.getTime(),
+        )
         .slice(0, Math.max(0, Math.floor(limit)));
 
       let succeeded = 0;
       const failedIds: string[] = [];
       await runPool(pending, EXTRACT_CONCURRENCY, async (t) => {
         try {
-          await this.extractTender(t.id, { force: opts.force });
+          await this.extractTender(t.id, { force: forceLike });
           succeeded += 1;
         } catch (error) {
           failedIds.push(t.id);
