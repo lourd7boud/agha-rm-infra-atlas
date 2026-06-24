@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Icon } from '@/components/ui/Icon';
 import { PIPELINE_LABELS, PROCEDURE_LABELS } from '@/lib/labels';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
@@ -200,18 +201,71 @@ export function TendersExplorer({
   inventory,
   preloadedList,
   preloadedSearch,
+  initialFromUrl,
 }: {
   inventory: TenderInventory;
   preloadedList?: PreloadedList | null;
   preloadedSearch?: PreloadedSearch | null;
+  /** Filter seeds from URL query params (`?q=…&region=…`). Wins over EMPTY_FILTERS
+   *  but loses to preloadedSearch which represents a richer saved filter set. */
+  initialFromUrl?: Record<string, string>;
 }) {
-  const [filters, setFilters] = useState<FilterState>(() =>
-    preloadedSearch ? hydrateFilters(preloadedSearch.filters) : EMPTY_FILTERS,
-  );
+  const [filters, setFilters] = useState<FilterState>(() => {
+    if (preloadedSearch) return hydrateFilters(preloadedSearch.filters);
+    if (initialFromUrl && Object.keys(initialFromUrl).length > 0) {
+      const next: FilterState = { ...EMPTY_FILTERS };
+      if (initialFromUrl.q) next.search = initialFromUrl.q;
+      if (initialFromUrl.region) next.regions = [initialFromUrl.region];
+      if (initialFromUrl.procedure) next.procedures = [initialFromUrl.procedure];
+      if (initialFromUrl.buyer) next.buyers = [initialFromUrl.buyer];
+      if (
+        initialFromUrl.lifecycle === 'en_cours' ||
+        initialFromUrl.lifecycle === 'cloture' ||
+        initialFromUrl.lifecycle === 'attribue' ||
+        initialFromUrl.lifecycle === 'infructueux'
+      ) {
+        next.statut =
+          initialFromUrl.lifecycle === 'en_cours'
+            ? 'en_cours'
+            : initialFromUrl.lifecycle === 'cloture'
+              ? 'clotures'
+              : 'resultats';
+      }
+      return next;
+    }
+    return EMPTY_FILTERS;
+  });
   const [sort, setSort] = useState<SortState>({ key: 'deadline', dir: 'asc' });
   const [selected, setSelected] = useState<TenderItem | null>(null);
   const [showFilters, setShowFilters] = useState(true);
   const { markSeen, isSeen } = useSeenIds();
+
+  // Push the text search to the URL on a debounce so the server re-fetches the
+  // inventory with the q filter applied BEFORE its 1000-row cap. Without this,
+  // typing "boudnib" only finds matches that happen to be in the top-1000 most-
+  // urgent slice the server returned at first render — datao-style search needs
+  // full coverage. Skips when a preloadedList/Search owns the scope (URL is
+  // already qualified by ?list= or ?savedSearch=).
+  const router = useRouter();
+  const urlParams = useSearchParams();
+  const lastPushedSearch = useRef<string | null>(null);
+  useEffect(() => {
+    if (preloadedList || preloadedSearch) return;
+    const term = filters.search.trim();
+    const current = urlParams.get('q') ?? '';
+    if (term === current) return;
+    if (lastPushedSearch.current === term) return;
+    const handle = window.setTimeout(() => {
+      const next = new URLSearchParams(urlParams.toString());
+      if (term) next.set('q', term);
+      else next.delete('q');
+      lastPushedSearch.current = term;
+      router.replace(`/tenders${next.toString() ? `?${next.toString()}` : ''}`, {
+        scroll: false,
+      });
+    }, 350);
+    return () => window.clearTimeout(handle);
+  }, [filters.search, preloadedList, preloadedSearch, router, urlParams]);
 
   // Scope to a saved list — fast Set lookup, applied BEFORE the filter chain.
   const listScope = useMemo(

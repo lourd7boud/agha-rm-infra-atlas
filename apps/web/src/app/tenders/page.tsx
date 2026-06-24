@@ -22,14 +22,32 @@ interface PreloadedSearch {
  * on mount — this is what makes the dedicated /tenders/lists and
  * /tenders/searches pages "openable" with one click.
  */
+/** Server-side filter URL params honored by /tender/inventory — listed
+ *  explicitly so we never forward unknown keys (avoids accidental injection
+ *  into the backend query string). */
+const FORWARDED_PARAMS = ['q', 'region', 'procedure', 'buyer', 'lifecycle', 'state'] as const;
+type ForwardedKey = (typeof FORWARDED_PARAMS)[number];
+
 export default async function TendersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ list?: string; savedSearch?: string }>;
+  searchParams: Promise<
+    { list?: string; savedSearch?: string } & Partial<Record<ForwardedKey, string>>
+  >;
 }) {
-  const { list, savedSearch } = await searchParams;
+  const sp = await searchParams;
+  const { list, savedSearch } = sp;
+  // Build /tender/inventory query string from whitelisted URL params so the
+  // server applies the filter BEFORE the 1000-row cap. Without this, searching
+  // "boudnib" client-side missed 4 of 5 matching tenders because they sat
+  // outside the top-1000-most-urgent slice the backend returned.
+  const apiQs = new URLSearchParams({ limit: '1000' });
+  for (const k of FORWARDED_PARAMS) {
+    const v = sp[k];
+    if (typeof v === 'string' && v.trim()) apiQs.set(k, v);
+  }
   const [inventory, preloadedList, preloadedSearch] = await Promise.all([
-    apiGet<TenderInventory>('/tender/inventory?limit=1000'),
+    apiGet<TenderInventory>(`/tender/inventory?${apiQs.toString()}`),
     list
       ? apiGet<{ tenderIds: string[] }>(`/tender/lists/${list}/tenders`)
           .then(async (r) => {
@@ -62,11 +80,19 @@ export default async function TendersPage({
           .catch(() => null)
       : null,
   ]);
+  // Seed the explorer's filter state from URL params (so the search box shows
+  // "boudnib" when you land on /tenders?q=boudnib).
+  const initialFromUrl: Record<string, string> = {};
+  for (const k of FORWARDED_PARAMS) {
+    const v = sp[k];
+    if (typeof v === 'string' && v.trim()) initialFromUrl[k] = v;
+  }
   return (
     <TendersExplorer
       inventory={inventory}
       preloadedList={preloadedList}
       preloadedSearch={preloadedSearch}
+      initialFromUrl={initialFromUrl}
     />
   );
 }
