@@ -1,12 +1,10 @@
-import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { strFromU8, unzipSync } from 'fflate';
-import { PDFParse } from 'pdf-parse';
+import { defaultPdfExtractor, type PdfTextExtractor } from './pdf-ocr';
 
-const execFileAsync = promisify(execFile);
+// Re-export so any historical consumer that imports defaultPdfExtractor /
+// PdfTextExtractor from this module keeps compiling after the lift.
+export { defaultPdfExtractor };
+export type { PdfTextExtractor };
 
 /**
  * Extracts the readable text of a DCE (Dossier de Consultation) ZIP — the
@@ -29,9 +27,6 @@ export interface DossierText {
   /** Per-file extracted char counts, in the order used (diagnostic). */
   files: DossierTextFile[];
 }
-
-/** Pulls plain text from one PDF's bytes. Injectable so tests avoid real PDFs. */
-export type PdfTextExtractor = (bytes: Uint8Array) => Promise<string>;
 
 /** Upper bound on the combined text handed to the LLM (~15k tokens). */
 export const MAX_DOSSIER_CHARS = 60_000;
@@ -92,92 +87,6 @@ function docPriority(name: string): number {
   if (n.includes('avis')) return 4;
   return 5;
 }
-
-/** Pure pdf-parse text-layer extraction — fast, free, works on any PDF that
- *  has actual embedded text (digital exports from Word, LibreOffice, etc.). */
-async function pdfParseExtract(bytes: Uint8Array): Promise<string> {
-  const parser = new PDFParse({ data: bytes });
-  try {
-    const result = await parser.getText();
-    return result.text ?? '';
-  } finally {
-    await parser.destroy().catch(() => {});
-  }
-}
-
-/** A "real" body-text char count, ignoring the per-page sentinel pdf-parse
- *  emits even for empty (scanned-only) pages. Below this threshold the doc
- *  is treated as an image scan and routed through OCR. */
-const MIN_TEXT_LAYER_CHARS = 200;
-
-/** ocrmypdf invocation timeout per PDF — covers a worst-case ~30-page scanned
- *  CPS without hanging the whole batch when a single doc is pathological. */
-const OCR_TIMEOUT_MS = 5 * 60 * 1000;
-
-/** Runs ocrmypdf on bytes, then re-parses the OCR'd PDF to get the new text
- *  layer. Returns empty string on any failure (binary missing, timeout,
- *  unsupported PDF) — caller falls back to the bare pdf-parse output. */
-async function ocrFallback(bytes: Uint8Array): Promise<string> {
-  if (process.env.ATLAS_OCR_DISABLED === '1') return '';
-  const stamp = `${process.pid}-${(globalThis as { __ocrSeq?: number }).__ocrSeq ?? 0}`;
-  (globalThis as { __ocrSeq?: number }).__ocrSeq =
-    ((globalThis as { __ocrSeq?: number }).__ocrSeq ?? 0) + 1;
-  const dir = await mkdtemp(join(tmpdir(), `atlas-ocr-${stamp}-`));
-  const inPath = join(dir, 'in.pdf');
-  const outPath = join(dir, 'out.pdf');
-  try {
-    await writeFile(inPath, bytes);
-    // --force-ocr: re-OCR even pages with a (broken) text layer.
-    // --rotate-pages + --deskew: straighten misoriented scans before OCR.
-    // --tesseract-timeout: cap per-page time so a noisy scan can't stall.
-    // -l fra+ara: French + Arabic (Moroccan PMP DCEs are bilingual).
-    // --output-type pdf: keep as PDF for re-parsing (not pdfa).
-    await execFileAsync(
-      'ocrmypdf',
-      [
-        '--force-ocr',
-        '--rotate-pages',
-        '--deskew',
-        '--tesseract-timeout',
-        '90',
-        '-l',
-        'fra+ara',
-        '--output-type',
-        'pdf',
-        '--quiet',
-        inPath,
-        outPath,
-      ],
-      { timeout: OCR_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
-    );
-    const ocrBytes = await readFile(outPath);
-    return await pdfParseExtract(new Uint8Array(ocrBytes));
-  } catch {
-    return '';
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-/** Default PDF extractor: pdf-parse first (cheap), OCR fallback when the
- *  text layer comes back empty or sentinel-only (scanned PDF). The OCR path
- *  is what unlocks Budget / Caution / BPU on the ~70% of communal-BTP DCEs
- *  that ship as scans — without it, we were dropping those silently. */
-const defaultPdfExtractor: PdfTextExtractor = async (bytes) => {
-  const direct = await pdfParseExtract(bytes);
-  // Mirror normalize()'s sentinel strip so we measure REAL body text only
-  // (not the pdf-parse "-- 1 of N --" page markers a scanned PDF emits).
-  const measure = direct
-    .replace(SENTINEL_LINE, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (measure.length >= MIN_TEXT_LAYER_CHARS) return direct;
-  // Skip OCR on suspiciously tiny PDFs — likely just a cover page or an
-  // empty stub, not worth the 30s+ OCR round-trip.
-  if (bytes.length < 50_000) return direct;
-  const ocred = await ocrFallback(bytes);
-  return ocred.length > direct.length ? ocred : direct;
-};
 
 /** Extracts visible text from a .docx (Word) file without adding a Word parser
  *  dependency — DOCX is a ZIP whose `word/document.xml` holds runs of text in

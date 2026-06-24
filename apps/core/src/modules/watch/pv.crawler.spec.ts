@@ -23,6 +23,10 @@ const pvJson = (winner: string): string =>
     lisible: true,
   });
 
+// %PDF magic header — the OCR router treats these bytes as a PDF; the actual
+// OCR pipeline is mocked through extractAvisText so tests stay deterministic.
+const PDF_HEADER = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+
 function deps(o: Partial<PvCrawlDeps>): PvCrawlDeps {
   return {
     search: async () => ({ listingHtml: LISTING, baseUrl: BASE }),
@@ -30,8 +34,8 @@ function deps(o: Partial<PvCrawlDeps>): PvCrawlDeps {
       url.includes('refConsultation=111')
         ? detailWithNotice('REF/111', '111', 'aaa')
         : detailWithNotice('REF/222', '222', 'bbb'),
-    fetchImage: async () => ({ base64: 'AAAA', mediaType: 'image/jpeg' }),
-    visionExtract: async () => pvJson('STE ALPHA'),
+    fetchAvisBytes: async () => PDF_HEADER,
+    extractAvisText: async () => pvJson('STE ALPHA'),
     storeBid: async () => 'inserted',
     sleep: async () => {},
     now: () => new Date('2026-06-16T00:00:00Z'),
@@ -67,7 +71,7 @@ describe('crawlExtraitsPv', () => {
   it('skips an unreadable PV without storing bids', async () => {
     const s = await crawlExtraitsPv(
       deps({
-        visionExtract: async () =>
+        extractAvisText: async () =>
           JSON.stringify({ soumissionnaires: [], lisible: false }),
       }),
       { delayMs: 0 },
@@ -76,9 +80,9 @@ describe('crawlExtraitsPv', () => {
     expect(s.bidsStored).toBe(0);
   });
 
-  it('counts an unparseable vision read as an error, not a silent skip', async () => {
+  it('counts an unparseable LLM read as an error, not a silent skip', async () => {
     const s = await crawlExtraitsPv(
-      deps({ visionExtract: async () => 'illisible, aucune donnée JSON' }),
+      deps({ extractAvisText: async () => 'illisible, aucune donnée JSON' }),
       { delayMs: 0 },
     );
     expect(s.pvRead).toBe(0);

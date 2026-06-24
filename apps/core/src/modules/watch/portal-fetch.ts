@@ -59,6 +59,24 @@ export async function fetchImage(
   };
 }
 
+/**
+ * Downloads the raw avis bytes (PDF or scanned image) — the OCR-first successor
+ * of fetchImage(). The Referer header mirrors what a browser sends from the
+ * detail page; some Atexo instances 403 the download without it.
+ */
+export async function fetchAvisBytes(url: string, cookie: string): Promise<Uint8Array> {
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': PORTAL_UA,
+      Referer: DEFAULT_SEARCH_URL,
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+    signal: AbortSignal.timeout(PORTAL_TIMEOUT),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
 export interface PortalSearchResult {
   listingHtml: string;
   baseUrl: string;

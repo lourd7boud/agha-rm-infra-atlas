@@ -5,16 +5,13 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import {
-  LLM_CLIENT,
-  type LlmClient,
-  type LlmImageMediaType,
-} from '../brain/llm.client';
+import { LLM_CLIENT, type LlmClient } from '../brain/llm.client';
 import {
   INTEL_REPOSITORY,
   type IntelRepository,
 } from '../intel/intel.repository';
 import { UNKNOWN_BUYER_LABEL } from '../intel/rebate.domain';
+import { ocrBytesToText } from '../tender/pdf-ocr';
 import { extractDetailLinks, parseDetailPage } from './detail.parser';
 import {
   buildResultSearchBody,
@@ -64,15 +61,17 @@ export interface ResultCrawlDeps {
    */
   nextPage?: () => Promise<{ listingHtml: string; baseUrl: string } | null>;
   fetchDetail: (url: string) => Promise<string>;
-  fetchImage: (url: string) => Promise<{ base64: string; mediaType: LlmImageMediaType }>;
-  visionExtract: (base64: string, mediaType: LlmImageMediaType) => Promise<string>;
+  /** Download the avis bytes (PDF or scanned image) from the portal. */
+  fetchAvisBytes: (url: string) => Promise<Uint8Array>;
+  /** Turn those bytes into the LLM-parseable JSON string for parseResultNoticeJson. */
+  extractAvisText: (bytes: Uint8Array) => Promise<string>;
   storeResult: (r: StoredResult) => Promise<boolean>;
   sleep: (ms: number) => Promise<void>;
   now: () => Date;
 }
 
 export const RESULT_VISION_PROMPT =
-  "Ceci est un avis de résultat définitif d'un marché public marocain (image scannée). " +
+  "Ceci est un avis de résultat définitif d'un marché public marocain (avis scanné, texte OCR fourni). " +
   'Extrais STRICTEMENT en JSON, sans aucun texte autour: ' +
   '{"attributaire": raison sociale du soumissionnaire retenu (string) ou null, ' +
   '"acheteur": maître d\'ouvrage / acheteur public ou null, ' +
@@ -135,9 +134,9 @@ export async function crawlResults(
       const reference = parseDetailPage(detail).reference;
       if (!reference) continue;
 
-      const img = await deps.fetchImage(avisUrl);
-      const visionText = await deps.visionExtract(img.base64, img.mediaType);
-      const notice = parseResultNoticeJson(visionText);
+      const bytes = await deps.fetchAvisBytes(avisUrl);
+      const noticeText = await deps.extractAvisText(bytes);
+      const notice = parseResultNoticeJson(noticeText);
       if (!notice || !notice.lisible || !notice.attributaire) continue;
       extracted += 1;
 
@@ -162,10 +161,10 @@ export async function crawlResults(
 }
 
 // NOTE: portal-fetch.ts is the shared successor of the helpers below
-// (UA/TIMEOUT/DEFAULT_SEARCH_URL, cookieHeader, imageMediaType, fetchText,
-// fetchImage, pradoResultSearch). Kept duplicated here deliberately to avoid
-// regressing the live result crawler — keep both in sync, or migrate this file
-// onto portal-fetch once the PV crawler is validated in production.
+// (UA/TIMEOUT/DEFAULT_SEARCH_URL, cookieHeader, fetchText, pradoResultSearch).
+// Kept duplicated here deliberately to avoid regressing the live result crawler
+// — keep both in sync, or migrate this file onto portal-fetch once the PV
+// crawler is validated in production.
 const UA = 'ATLAS-Sentinel/0.1 (AGHA RM INFRA; veille marchés publics)';
 const TIMEOUT = 40_000;
 const DEFAULT_SEARCH_URL =
@@ -180,17 +179,13 @@ function cookieHeader(setCookies: readonly string[]): string {
     .join('; ');
 }
 
-function imageMediaType(contentType: string | null): LlmImageMediaType {
-  const ct = (contentType ?? '').toLowerCase();
-  if (ct.includes('png')) return 'image/png';
-  if (ct.includes('webp')) return 'image/webp';
-  return 'image/jpeg';
-}
-
 /**
  * Wires the result crawl to the live portal (stateful PRADO search via a session
- * cookie), the vision LLM (reads the scanned notices) and the intel repository
- * (stores winners). Bounded + polite. Each notice costs one vision call.
+ * cookie), an OCR pass over the scanned avis bytes (ocrmypdf in the sidecar)
+ * and a text LLM (T1/haiku) for the JSON extraction. The vision-LLM path was
+ * abandoned after every provider rejected the PMP avis bytes ("unsupported
+ * image" / "Could not process image") — the bytes are typically TIFF or scanned
+ * PDF, neither of which the OpenRouter vision endpoints accept.
  */
 @Injectable()
 export class ResultCrawlerService {
@@ -205,7 +200,7 @@ export class ResultCrawlerService {
     const llm = this.llm;
     if (!llm) {
       throw new ServiceUnavailableException(
-        'LLM vision requis pour lire les avis de résultat (LLM_API_KEY manquant)',
+        'LLM requis pour lire les avis de résultat (LLM_API_KEY manquant)',
       );
     }
     const searchUrl = process.env.RESULT_SEARCH_URL ?? DEFAULT_SEARCH_URL;
@@ -287,17 +282,21 @@ export class ResultCrawlerService {
         search,
         nextPage,
         fetchDetail: (url) => this.fetchText(url, cookie),
-        fetchImage: (url) => this.fetchImage(url, cookie),
-        visionExtract: async (base64, mediaType) =>
-          (
-            await llm.completeVision({
-              tier: 'T2',
-              imageBase64: base64,
-              mediaType,
-              prompt: RESULT_VISION_PROMPT,
+        fetchAvisBytes: (url) => this.fetchAvisBytes(url, cookie),
+        // OCR-first path: pdf-parse → ocrmypdf for scans → T1/haiku over text.
+        // The three vision providers (gpt-4o / gemini / sonnet) all rejected
+        // the raw PMP avis bytes ("unsupported image", "Could not process
+        // image"), so we route through OCR and feed text to a text model.
+        extractAvisText: async (bytes) => {
+          const text = await ocrBytesToText(bytes);
+          return (
+            await llm.complete({
+              tier: 'T1',
+              prompt: `${RESULT_VISION_PROMPT}\n\n--- TEXTE EXTRAIT DE L'AVIS (OCR) ---\n${text.slice(0, 8000)}`,
               maxTokens: 500,
             })
-          ).text,
+          ).text;
+        },
         storeResult: (r) => this.store(r),
         sleep: sleepMs,
         now: () => new Date(),
@@ -339,19 +338,18 @@ export class ResultCrawlerService {
     return res.text();
   }
 
-  private async fetchImage(
-    url: string,
-    cookie: string,
-  ): Promise<{ base64: string; mediaType: LlmImageMediaType }> {
+  private async fetchAvisBytes(url: string, cookie: string): Promise<Uint8Array> {
     const res = await fetch(url, {
-      headers: { 'User-Agent': UA, ...(cookie ? { Cookie: cookie } : {}) },
+      headers: {
+        'User-Agent': UA,
+        // Referer mirrors what a browser sends on the detail page → some
+        // Atexo instances 403 the download without it.
+        Referer: DEFAULT_SEARCH_URL,
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
       signal: AbortSignal.timeout(TIMEOUT),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    return {
-      base64: buf.toString('base64'),
-      mediaType: imageMediaType(res.headers.get('content-type')),
-    };
+    return new Uint8Array(await res.arrayBuffer());
   }
 }

@@ -16,6 +16,10 @@ const detailNoNotice = (ref: string): string =>
 const readable = (attr: string): string =>
   `{"attributaire":"${attr}","acheteur":"Commune X","montant_attribue_mad":500000,"lisible":true}`;
 
+// %PDF magic header — the OCR router treats these bytes as a real PDF blob
+// (the dossier-text path is mocked through extractAvisText in the tests).
+const PDF_HEADER = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+
 function deps(o: Partial<ResultCrawlDeps>): ResultCrawlDeps {
   return {
     search: async () => ({ listingHtml: LISTING, baseUrl: BASE }),
@@ -23,8 +27,8 @@ function deps(o: Partial<ResultCrawlDeps>): ResultCrawlDeps {
       url.includes('refConsultation=111')
         ? detailWithNotice('REF/111', '111', 'aaa')
         : detailWithNotice('REF/222', '222', 'bbb'),
-    fetchImage: async () => ({ base64: 'AAAA', mediaType: 'image/jpeg' }),
-    visionExtract: async () => readable('STE ALPHA'),
+    fetchAvisBytes: async () => PDF_HEADER,
+    extractAvisText: async () => readable('STE ALPHA'),
     storeResult: async () => true,
     sleep: async () => {},
     now: () => new Date('2026-06-16T00:00:00Z'),
@@ -52,7 +56,7 @@ describe('crawlResults', () => {
       '"estimation_mad":1000000,"objet":"travaux de reboisement","lisible":true}';
     await crawlResults(
       deps({
-        visionExtract: async () => noticeWithEstimation,
+        extractAvisText: async () => noticeWithEstimation,
         storeResult: async (r) => (stored.push(r), true),
       }),
       { delayMs: 0 },
@@ -72,7 +76,7 @@ describe('crawlResults', () => {
 
   it('skips an illegible notice', async () => {
     const s = await crawlResults(
-      deps({ visionExtract: async () => '{"lisible":false}' }),
+      deps({ extractAvisText: async () => '{"lisible":false}' }),
       { delayMs: 0 },
     );
     expect(s.notices).toBe(2);
@@ -91,7 +95,7 @@ describe('crawlResults', () => {
   it('counts errors and keeps going', async () => {
     const s = await crawlResults(
       deps({
-        fetchImage: async () => {
+        fetchAvisBytes: async () => {
           throw new Error('download failed');
         },
       }),
@@ -104,5 +108,28 @@ describe('crawlResults', () => {
   it('respects maxResults', async () => {
     const s = await crawlResults(deps({}), { delayMs: 0, maxResults: 1 });
     expect(s.resultsFound).toBe(1);
+  });
+
+  it('OCR-then-text-LLM path: invokes extractAvisText with the raw bytes', async () => {
+    // The wiring contract is: fetchAvisBytes returns the avis bytes verbatim,
+    // then extractAvisText receives THOSE bytes (not a base64 string + media
+    // type as the old vision path did). Asserting on the %PDF prefix pins the
+    // contract so a future refactor can't silently revert to a base64 hand-off.
+    const seen: Uint8Array[] = [];
+    await crawlResults(
+      deps({
+        fetchAvisBytes: async () => new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31]),
+        extractAvisText: async (bytes) => {
+          seen.push(bytes);
+          return readable('STE ALPHA');
+        },
+      }),
+      { delayMs: 0 },
+    );
+    expect(seen).toHaveLength(2);
+    expect(seen[0]?.[0]).toBe(0x25); // %
+    expect(seen[0]?.[1]).toBe(0x50); // P
+    expect(seen[0]?.[2]).toBe(0x44); // D
+    expect(seen[0]?.[3]).toBe(0x46); // F
   });
 });

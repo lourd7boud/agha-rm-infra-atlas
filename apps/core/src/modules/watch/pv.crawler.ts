@@ -5,22 +5,19 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import {
-  LLM_CLIENT,
-  type LlmClient,
-  type LlmImageMediaType,
-} from '../brain/llm.client';
+import { LLM_CLIENT, type LlmClient } from '../brain/llm.client';
 import {
   INTEL_REPOSITORY,
   type IntelRepository,
 } from '../intel/intel.repository';
 import { UNKNOWN_BUYER_LABEL } from '../intel/rebate.domain';
+import { ocrBytesToText } from '../tender/pdf-ocr';
 import { extractDetailLinks, parseDetailPage } from './detail.parser';
 import { ANNONCE_TYPE_EXTRAIT_PV, extractAvisDownloadUrl } from './result.parser';
 import { EXTRAIT_PV_VISION_PROMPT, parseExtraitPvJson } from './pv.parser';
 import {
   DEFAULT_SEARCH_URL,
-  fetchImage,
+  fetchAvisBytes,
   fetchText,
   pradoResultSearch,
   sleepMs,
@@ -58,8 +55,10 @@ export interface PvCrawlDeps {
   /** GET the search form + POST with annonceType=5 → the PV-extract listing. */
   search: () => Promise<{ listingHtml: string; baseUrl: string }>;
   fetchDetail: (url: string) => Promise<string>;
-  fetchImage: (url: string) => Promise<{ base64: string; mediaType: LlmImageMediaType }>;
-  visionExtract: (base64: string, mediaType: LlmImageMediaType) => Promise<string>;
+  /** Download the PV bytes (PDF or scanned image) from the portal. */
+  fetchAvisBytes: (url: string) => Promise<Uint8Array>;
+  /** Turn those bytes into the JSON string for parseExtraitPvJson. */
+  extractAvisText: (bytes: Uint8Array) => Promise<string>;
   storeBid: (b: StoredPvBid) => Promise<'inserted' | 'updated'>;
   sleep: (ms: number) => Promise<void>;
   now: () => Date;
@@ -96,9 +95,9 @@ export async function crawlExtraitsPv(
       const reference = parseDetailPage(detail).reference;
       if (!reference) continue;
 
-      const img = await deps.fetchImage(avisUrl);
-      const visionText = await deps.visionExtract(img.base64, img.mediaType);
-      const pv = parseExtraitPvJson(visionText);
+      const bytes = await deps.fetchAvisBytes(avisUrl);
+      const pvText = await deps.extractAvisText(bytes);
+      const pv = parseExtraitPvJson(pvText);
       // Unparseable after a successful vision read = likely truncation/garbage;
       // count it (don't let the richest, longest PVs vanish silently).
       if (!pv) {
@@ -135,8 +134,11 @@ export async function crawlExtraitsPv(
 
 /**
  * Wires the PV crawl to the live portal (stateful PRADO search, annonceType=5),
- * the vision LLM (reads the scanned PV extracts), and the intel repository
- * (upserts every bidder). Bounded + polite. Each PV costs one vision call.
+ * an OCR pass over the scanned PV bytes (ocrmypdf in the sidecar), a text LLM
+ * (T1/haiku) for the JSON extraction, and the intel repository (upserts every
+ * bidder). Bounded + polite. The vision-LLM path was abandoned after every
+ * provider rejected the PMP avis bytes ("unsupported image" / "Could not
+ * process image").
  */
 @Injectable()
 export class ExtraitPvCrawlerService {
@@ -151,7 +153,7 @@ export class ExtraitPvCrawlerService {
     const llm = this.llm;
     if (!llm) {
       throw new ServiceUnavailableException(
-        'LLM vision requis pour lire les extraits de PV (LLM_API_KEY manquant)',
+        'LLM requis pour lire les extraits de PV (LLM_API_KEY manquant)',
       );
     }
     const searchUrl =
@@ -168,19 +170,22 @@ export class ExtraitPvCrawlerService {
           return { listingHtml: res.listingHtml, baseUrl: res.baseUrl };
         },
         fetchDetail: (url) => fetchText(url, cookie),
-        fetchImage: (url) => fetchImage(url, cookie),
-        visionExtract: async (base64, mediaType) =>
-          (
-            await llm.completeVision({
-              tier: 'T2',
-              imageBase64: base64,
-              mediaType,
-              prompt: EXTRAIT_PV_VISION_PROMPT,
+        fetchAvisBytes: (url) => fetchAvisBytes(url, cookie),
+        // OCR-first path: bytes → ocrmypdf (or pdf-parse for text-layer PDFs)
+        // → T1/haiku over text. The vision endpoints rejected the raw PMP avis
+        // bytes (TIFF / scanned PDF) across providers, so we route through OCR.
+        extractAvisText: async (bytes) => {
+          const text = await ocrBytesToText(bytes);
+          return (
+            await llm.complete({
+              tier: 'T1',
+              prompt: `${EXTRAIT_PV_VISION_PROMPT}\n\n--- TEXTE EXTRAIT DU PV (OCR) ---\n${text.slice(0, 12000)}`,
               // A bidder-rich PV serializes long; headroom so it is never truncated
               // (output tokens are billed only when generated → short PVs cost the same).
               maxTokens: 2500,
             })
-          ).text,
+          ).text;
+        },
         storeBid: (b) => this.store(b),
         sleep: sleepMs,
         now: () => new Date(),
