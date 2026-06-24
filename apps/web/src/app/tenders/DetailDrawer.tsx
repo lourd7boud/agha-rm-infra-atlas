@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { BuyerAvatar } from '@/components/ui/BuyerAvatar';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { PIPELINE_LABELS, PROCEDURE_TONES, urgencyClasses } from '@/lib/labels';
 import {
@@ -200,8 +201,11 @@ export function DetailDrawer({
         className="absolute right-0 top-0 flex h-full w-full max-w-[640px] flex-col bg-paper shadow-raised focus:outline-none"
       >
         <header className="flex items-start gap-3 border-b border-line px-5 py-4">
-          <div className="flex-1">
-            <p className="text-xs font-medium text-muted">{item.buyerName}</p>
+          <BuyerAvatar name={item.buyerName} size="md" className="mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-medium text-muted" title={item.buyerName}>
+              {item.buyerName}
+            </p>
             <p className="font-mono text-xs text-faint">{item.reference}</p>
           </div>
           <AddToListButton tenderId={item.id} />

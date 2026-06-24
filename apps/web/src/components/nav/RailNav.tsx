@@ -13,6 +13,9 @@ interface NavItem {
 const ITEMS: readonly NavItem[] = [
   { href: '/', label: 'Command Center', icon: 'command' },
   { href: '/tenders', label: 'Marchés Publics', icon: 'tenders' },
+  { href: '/tenders/lists', label: 'Listes', icon: 'boxes' },
+  { href: '/tenders/searches', label: 'Recherches sauvegardées', icon: 'search' },
+  { href: '/tenders/ai', label: 'Assistant IA', icon: 'agents' },
   { href: '/projects', label: 'Projets & Chantiers', icon: 'chantiers' },
   { href: '/stock', label: 'Stock & Matériaux', icon: 'boxes' },
   { href: '/equipment', label: 'Matériel & Équipements', icon: 'equipment' },
@@ -41,8 +44,22 @@ const SOON: readonly { label: string; icon: IconName }[] = [
   { label: 'Paramètres Système', icon: 'settings' },
 ];
 
-function isActive(path: string, href: string): boolean {
-  return href === '/' ? path === '/' : path.startsWith(href);
+/** True when `href` is the LONGEST item prefix matching `path` — prevents
+ *  /tenders/lists from activating /tenders as well. */
+function isActive(
+  path: string,
+  href: string,
+  allHrefs: readonly string[],
+): boolean {
+  if (href === '/') return path === '/';
+  if (!(path === href || path.startsWith(`${href}/`))) return false;
+  // Reject when a sibling item is a stricter (longer) prefix match for `path`.
+  return !allHrefs.some(
+    (other) =>
+      other !== href &&
+      other.length > href.length &&
+      (path === other || path.startsWith(`${other}/`)),
+  );
 }
 
 export function RailNav({
@@ -52,9 +69,11 @@ export function RailNav({
 }) {
   const path = usePathname();
   const horizontal = orientation === 'horizontal';
+  // Combined href list (top items + sales group) for the longest-prefix check.
+  const allHrefs = [...ITEMS, ...SALES].map((i) => i.href);
 
   function renderItem(item: NavItem) {
-    const active = isActive(path, item.href);
+    const active = isActive(path, item.href, allHrefs);
     return (
       <Link
         key={item.href}

@@ -39,6 +39,11 @@ import { DossierExtractionService } from './dossier-extraction.service';
 import { EnrichmentService } from './enrichment.service';
 import { TenderChatService } from './tender-chat.service';
 import { TenderListsService } from './tender-lists.service';
+import { TenderAssistantService } from './tender-assistant.service';
+
+const assistantBodySchema = z.object({
+  question: z.string().trim().min(1).max(500),
+});
 
 const listBodySchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -169,6 +174,7 @@ export class TenderController {
     @Inject(INTEL_REPOSITORY) private readonly intel: IntelRepository,
     @Inject(TenderChatService) private readonly chat: TenderChatService,
     @Inject(TenderListsService) private readonly lists: TenderListsService,
+    @Inject(TenderAssistantService) private readonly assistant: TenderAssistantService,
     @Inject(PricingService) private readonly pricing: PricingService,
     @Inject(VAULT_REPOSITORY) private readonly vault: VaultRepository,
     @Inject(OUTCOME_REPOSITORY) private readonly outcomes: OutcomeRepository,
@@ -279,6 +285,16 @@ export class TenderController {
     const parsed = chatBodySchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     return this.chat.ask(id, parsed.data.question, parsed.data.history ?? []);
+  }
+
+  /** Assistant IA — natural-language search → {filters, narrative, matches}. */
+  @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
+  @Post('assistant')
+  async assistantAsk(@Body() body: unknown) {
+    const parsed = assistantBodySchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    return this.assistant.ask(parsed.data.question);
   }
 
   // ────────────────── Listes (tender folders) ──────────────────
@@ -647,6 +663,7 @@ const tenderListsServiceProvider = {
     DossierService,
     DossierExtractionService,
     TenderChatService,
+    TenderAssistantService,
     PricingService,
   ],
   // EnrichmentService + DossierExtractionService are exported so the Sentinel

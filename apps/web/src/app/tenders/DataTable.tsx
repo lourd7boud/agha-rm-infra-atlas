@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { BuyerAvatar } from '@/components/ui/BuyerAvatar';
 import { Icon } from '@/components/ui/Icon';
 import { PIPELINE_LABELS, PROCEDURE_TONES, urgencyClasses } from '@/lib/labels';
 import { CATEGORY_TONES, fmtDateShort, type TenderItem } from '@/lib/tenders';
@@ -206,20 +207,28 @@ export function DataTable({
                 }`}
               >
                 <td className="px-3 py-2.5">
-                  <div className="flex items-center gap-1.5">
-                    {isSeen && !isSeen(item.id) && (
-                      <span
-                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan"
-                        title="Nouveau (jamais ouvert)"
-                        aria-label="Nouveau"
-                      />
-                    )}
-                    <div className="truncate font-medium text-ink" title={item.buyerName}>
-                      {item.buyerName}
+                  <div className="flex items-start gap-2">
+                    <BuyerAvatar name={item.buyerName} size="sm" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        {isSeen && !isSeen(item.id) && (
+                          <span
+                            className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan"
+                            title="Nouveau (jamais ouvert)"
+                            aria-label="Nouveau"
+                          />
+                        )}
+                        <div
+                          className="truncate font-medium text-ink"
+                          title={item.buyerName}
+                        >
+                          {item.buyerName}
+                        </div>
+                      </div>
+                      <div className="truncate font-mono text-xs text-faint">
+                        {item.reference}
+                      </div>
                     </div>
-                  </div>
-                  <div className="truncate font-mono text-xs text-faint">
-                    {item.reference}
                   </div>
                 </td>
                 <td className="px-3 py-2.5 text-muted">

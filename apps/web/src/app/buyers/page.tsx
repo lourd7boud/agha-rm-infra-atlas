@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import type { TenderProcedure } from '@atlas/contracts';
 import { apiGet } from '@/lib/api';
+import { BuyerAvatar } from '@/components/ui/BuyerAvatar';
 import { Icon } from '@/components/ui/Icon';
 import { PROCEDURE_LABELS } from '@/lib/labels';
 
@@ -75,8 +76,9 @@ export default async function BuyersPage() {
             key={buyer.buyerName}
             className="flex flex-col rounded-xl border border-line bg-paper-2 p-4 shadow-card transition hover:border-line-2"
           >
-            <div className="flex items-start justify-between gap-2">
-              <h2 className="line-clamp-2 text-sm font-semibold leading-snug text-ink">
+            <div className="flex items-start gap-3">
+              <BuyerAvatar name={buyer.buyerName} size="md" />
+              <h2 className="line-clamp-2 flex-1 text-sm font-semibold leading-snug text-ink">
                 {buyer.buyerName}
               </h2>
               <span className="shrink-0 rounded-md bg-cyan-soft/60 px-2 py-1 font-mono text-sm font-bold tabular-nums text-cyan">

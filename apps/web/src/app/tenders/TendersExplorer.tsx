@@ -177,15 +177,51 @@ function downloadCsv(items: readonly TenderItem[], filename: string): void {
   URL.revokeObjectURL(url);
 }
 
-export function TendersExplorer({ inventory }: { inventory: TenderInventory }) {
-  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
+interface PreloadedList {
+  id: string;
+  name: string;
+  tenderIds: string[];
+}
+interface PreloadedSearch {
+  id: string;
+  name: string;
+  filters: unknown;
+}
+
+/** Defensively coerce server JSON to a valid FilterState — old saved searches
+ *  may miss new fields; missing fields fall back to EMPTY_FILTERS defaults. */
+function hydrateFilters(input: unknown): FilterState {
+  if (!input || typeof input !== 'object') return EMPTY_FILTERS;
+  const f = input as Partial<FilterState>;
+  return { ...EMPTY_FILTERS, ...f };
+}
+
+export function TendersExplorer({
+  inventory,
+  preloadedList,
+  preloadedSearch,
+}: {
+  inventory: TenderInventory;
+  preloadedList?: PreloadedList | null;
+  preloadedSearch?: PreloadedSearch | null;
+}) {
+  const [filters, setFilters] = useState<FilterState>(() =>
+    preloadedSearch ? hydrateFilters(preloadedSearch.filters) : EMPTY_FILTERS,
+  );
   const [sort, setSort] = useState<SortState>({ key: 'deadline', dir: 'asc' });
   const [selected, setSelected] = useState<TenderItem | null>(null);
   const [showFilters, setShowFilters] = useState(true);
   const { markSeen, isSeen } = useSeenIds();
 
+  // Scope to a saved list — fast Set lookup, applied BEFORE the filter chain.
+  const listScope = useMemo(
+    () => (preloadedList ? new Set(preloadedList.tenderIds) : null),
+    [preloadedList],
+  );
+
   const visible = useMemo(() => {
     const filtered = inventory.items.filter((i) => {
+      if (listScope && !listScope.has(i.id)) return false;
       if (filters.unseenOnly && isSeen(i.id)) return false;
       return matchesFilters(i, filters);
     });
@@ -237,11 +273,27 @@ export function TendersExplorer({ inventory }: { inventory: TenderInventory }) {
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-display text-[2rem] font-semibold tracking-tight">
-            Inventaire des marchés
+            {preloadedList
+              ? `Liste : ${preloadedList.name}`
+              : preloadedSearch
+                ? `Recherche : ${preloadedSearch.name}`
+                : 'Inventaire des marchés'}
           </h1>
           <p className="mt-1 text-sm text-muted">
-            {inventory.total} appel(s) d&apos;offres au catalogue ·{' '}
-            <span className="font-semibold text-ink">{visible.length}</span> affiché(s)
+            {preloadedList
+              ? `${preloadedList.tenderIds.length} appel(s) dans la liste`
+              : `${inventory.total} appel(s) d'offres au catalogue`}{' '}
+            · <span className="font-semibold text-ink">{visible.length}</span>{' '}
+            affiché(s)
+            {(preloadedList || preloadedSearch) && (
+              <>
+                {' '}
+                ·{' '}
+                <a href="/tenders" className="text-cyan hover:underline">
+                  retour à tout le catalogue
+                </a>
+              </>
+            )}
           </p>
           {capped && (
             <p className="mt-1 text-xs text-ochre-deep">
