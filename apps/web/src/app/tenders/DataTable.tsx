@@ -52,6 +52,13 @@ const COLUMNS: readonly Column[] = [
 const STORAGE_KEY = 'atlas.tenders.colwidths.v1';
 const MIN_WIDTH = 70;
 
+/** Incremental render window: only this many rows hit the DOM initially, then
+ *  more load as you scroll (IntersectionObserver). Renders ~60 rows instead of
+ *  4000+, which is what made entering /tenders laggy. CSV export + counts still
+ *  operate on the full filtered array (the parent's `visible`), not this slice. */
+const INITIAL_RENDER = 60;
+const RENDER_STEP = 60;
+
 function loadWidths(): Record<string, number> {
   if (typeof window === 'undefined') return {};
   try {
@@ -82,6 +89,37 @@ export function DataTable({
 }: DataTableProps) {
   const [widths, setWidths] = useState<Record<string, number>>({});
   const drag = useRef<{ key: string; startX: number; startW: number } | null>(null);
+
+  // Incremental render window — caps DOM rows. Resets to the top whenever the
+  // data set meaningfully changes (filter/sort/list), keyed on a cheap
+  // signature rather than the array identity so a no-op recompute (e.g. marking
+  // a row seen) doesn't yank the user back to the top.
+  const [renderCount, setRenderCount] = useState(INITIAL_RENDER);
+  const resetKey = `${items.length}:${items[0]?.id ?? ''}:${sort.key}:${sort.dir}`;
+  useEffect(() => {
+    setRenderCount(INITIAL_RENDER);
+  }, [resetKey]);
+
+  const sentinelRef = useRef<HTMLTableRowElement | null>(null);
+  const hasMore = renderCount < items.length;
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setRenderCount((c) => Math.min(items.length, c + RENDER_STEP));
+        }
+      },
+      // Load the next page well before the sentinel is actually on screen so
+      // scrolling feels continuous (no visible "pop").
+      { rootMargin: '800px 0px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [items.length, hasMore]);
+
+  const rendered = items.slice(0, renderCount);
 
   // Hydrate persisted widths after mount (localStorage is client-only).
   useEffect(() => {
@@ -190,7 +228,7 @@ export function DataTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-line">
-          {items.map((item) => {
+          {rendered.map((item) => {
             const state =
               PIPELINE_LABELS[item.pipelineState] ?? {
                 label: item.pipelineState,
@@ -301,6 +339,17 @@ export function DataTable({
               </tr>
             );
           })}
+          {hasMore && (
+            <tr ref={sentinelRef}>
+              <td
+                colSpan={COLUMNS.length}
+                className="px-3 py-4 text-center text-xs text-faint"
+              >
+                Chargement de {Math.min(RENDER_STEP, items.length - renderCount)}{' '}
+                marché(s) supplémentaires… ({renderCount}/{items.length})
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
