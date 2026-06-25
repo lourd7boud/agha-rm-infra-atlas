@@ -20,6 +20,16 @@ function kindOf(name: string): FileKind {
   return 'other';
 }
 
+/** Junk entries that get zipped into DCEs but aren't real documents: Word/Excel
+ *  owner-lock temp files (~$…), OS metadata, and hidden dotfiles. */
+function isJunk(name: string): boolean {
+  const base = name.split('/').pop() || name;
+  if (base.startsWith('~$') || base.startsWith('.')) return true;
+  if (/^(thumbs\.db|desktop\.ini)$/i.test(base)) return true;
+  if (name.startsWith('__MACOSX/')) return true;
+  return false;
+}
+
 function priority(name: string): number {
   const n = name.toLowerCase();
   if (n.includes('bpu') || n.includes('bordereau') || n.includes('estimatif') || n.includes('bpde')) return 0;
@@ -60,7 +70,7 @@ export async function GET(
   let entries: Record<string, Uint8Array>;
   try {
     entries = unzipSync(zipBytes, {
-      filter: (f) => !f.name.endsWith('/') && f.originalSize > 0,
+      filter: (f) => !f.name.endsWith('/') && f.originalSize > 0 && !isJunk(f.name),
     });
   } catch {
     return NextResponse.json({ error: 'ZIP illisible' }, { status: 502 });
