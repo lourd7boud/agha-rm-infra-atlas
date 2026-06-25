@@ -482,6 +482,7 @@ export interface InventoryItem {
   enrichedAt?: string;
   // ── Dossier extraction (REAL DCE data) — present once the DCE was read ──
   bpu?: Array<{
+    section?: string | null;
     designation: string;
     quantite?: number | null;
     unite?: string | null;

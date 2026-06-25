@@ -161,6 +161,15 @@ export function DetailDrawer({
   const lots = item.lotsDetail ?? [];
   const faq = item.faq ?? [];
   const bpu = item.bpu ?? [];
+  // Group BPU rows under their section header (datao groups by corps d'état /
+  // série / lot). Consecutive same-section rows form one group; order preserved.
+  const bpuGroups: Array<{ section: string | null; rows: typeof bpu }> = [];
+  for (const row of bpu) {
+    const section = row.section?.trim() || null;
+    const last = bpuGroups[bpuGroups.length - 1];
+    if (last && last.section === section) last.rows.push(row);
+    else bpuGroups.push({ section, rows: [row] });
+  }
   const quals = item.qualifications ?? [];
   const competitors = item.competitors ?? [];
   const winner = item.winner;
@@ -657,6 +666,16 @@ export function DetailDrawer({
 
             {tab === 'bpu' && (
               <div className="space-y-3">
+                {hasSource && (
+                  <button
+                    type="button"
+                    onClick={() => setShowFiles(true)}
+                    className="inline-flex items-center gap-1.5 text-sm font-semibold text-cyan hover:underline"
+                  >
+                    <Icon name="documents" size={15} /> Voir le fichier source
+                    <Icon name="chevronRight" size={14} />
+                  </button>
+                )}
                 {bpu.length > 0 ? (
                   <>
                     <p className="flex items-start gap-2 rounded-lg bg-emerald-soft/50 px-3 py-2 text-xs text-muted">
@@ -666,31 +685,42 @@ export function DetailDrawer({
                       Bordereau extrait du dossier de consultation officiel ({bpu.length}{' '}
                       poste{bpu.length > 1 ? 's' : ''}).
                     </p>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-sm">
-                        <thead className="border-b border-line text-xs uppercase tracking-wider text-faint">
-                          <tr>
-                            <th className="py-2 pr-2 font-semibold">Désignation</th>
-                            <th className="py-2 px-2 text-right font-semibold">Qté</th>
-                            <th className="py-2 px-2 font-semibold">Unité</th>
-                            <th className="py-2 pl-2 text-right font-semibold">P.U. (DH)</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-line">
-                          {bpu.map((row, i) => (
-                            <tr key={`${i}-${row.designation}`} className="align-top">
-                              <td className="py-2 pr-2 text-ink-2">{row.designation}</td>
-                              <td className="py-2 px-2 text-right font-mono tabular-nums text-muted">
-                                {row.quantite ?? '—'}
-                              </td>
-                              <td className="py-2 px-2 text-muted">{row.unite ?? '—'}</td>
-                              <td className="py-2 pl-2 text-right font-mono tabular-nums text-ink">
-                                {row.prixUnitaireMad != null ? fmtMad(row.prixUnitaireMad) : '—'}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                    <div className="space-y-4">
+                      {bpuGroups.map((group, gi) => (
+                        <div key={`${gi}-${group.section ?? 'na'}`}>
+                          {group.section && (
+                            <h4 className="mb-1.5 inline-block rounded bg-cyan/15 px-2 py-1 text-xs font-bold text-ink ring-1 ring-cyan/30">
+                              {group.section}
+                            </h4>
+                          )}
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left text-sm">
+                              <thead className="border-b border-line text-xs uppercase tracking-wider text-faint">
+                                <tr>
+                                  <th className="py-2 pr-2 font-semibold">Désignation</th>
+                                  <th className="py-2 px-2 text-right font-semibold">Qté</th>
+                                  <th className="py-2 px-2 font-semibold">Unité</th>
+                                  <th className="py-2 pl-2 text-right font-semibold">P.U. (DH)</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-line">
+                                {group.rows.map((row, i) => (
+                                  <tr key={`${i}-${row.designation}`} className="align-top">
+                                    <td className="py-2 pr-2 text-ink-2">{row.designation}</td>
+                                    <td className="py-2 px-2 text-right font-mono tabular-nums text-muted">
+                                      {row.quantite ?? '—'}
+                                    </td>
+                                    <td className="py-2 px-2 text-muted">{row.unite ?? '—'}</td>
+                                    <td className="py-2 pl-2 text-right font-mono tabular-nums text-ink">
+                                      {row.prixUnitaireMad != null ? fmtMad(row.prixUnitaireMad) : '—'}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </>
                 ) : (

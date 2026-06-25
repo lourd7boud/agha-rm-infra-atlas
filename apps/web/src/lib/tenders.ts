@@ -42,6 +42,7 @@ export interface TenderItem {
   enrichedAt?: string;
   // ── Real DCE dossier extraction (datao-grade) — present once the DCE was read ──
   bpu?: Array<{
+    section?: string | null;
     designation: string;
     quantite?: number | null;
     unite?: string | null;

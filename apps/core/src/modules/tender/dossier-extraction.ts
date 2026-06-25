@@ -52,6 +52,9 @@ export const dossierExtractionSchema = z.object({
   bpu: z
     .array(
       z.object({
+        /** Section/série/corps-d'état/lot header this line falls under (datao
+         *  groups the BPU by these, e.g. "A-RESERVOIRES", "PORT DE LAAYOUNE"). */
+        section: boundedStrNullish(160),
         designation: boundedStr(300),
         quantite: z.number().nullish(),
         unite: boundedStrNullish(24),
@@ -125,7 +128,7 @@ export const DOSSIER_EXTRACTION_SYSTEM_PROMPT = `Tu es analyste de marchés publ
   "delaiExecutionMois": null,
   "chiffreAffairesMinMad": null,
   "qualifications": [{"secteur": "...", "qualification": "...", "classe": "..."}],
-  "bpu": [{"designation": "...", "quantite": null, "unite": "...", "prixUnitaireMad": null}],
+  "bpu": [{"section": "...", "designation": "...", "quantite": null, "unite": "...", "prixUnitaireMad": null}],
   "contact": {"nom": null, "email": null, "telephone": null},
   "conditionsLegales": ["..."],
   "autres": ["..."]
@@ -138,6 +141,7 @@ Règles STRICTES:
 - "chiffreAffairesMinMad": chiffre d'affaires annuel minimum exigé en DH, sinon null.
 - "qualifications": chaque (secteur/activité, qualification, classe) exigé. Aucune exigée: [].
 - "bpu": les postes du bordereau des prix / détail estimatif visibles dans le texte (désignation + quantité + unité + prix unitaire si présent). Si non visible: [].
+- "bpu[].section": le titre de la SECTION/série/corps d'état/sous-tête sous laquelle figure le poste (ex: "A-RESERVOIRES de 100m3", "B-PUIT ET SON EQUIPEMENT", "PORT DE LAAYOUNE", "Série 1 : ..."). Reporte le MÊME libellé de section pour tous les postes qui en relèvent. Aucune section: null.
 - "contact": le contact du maître d'ouvrage indiqué dans le RC/avis (personne à contacter, e-mail, téléphone). Champs absents = null.
 - "conditionsLegales": les références réglementaires CITÉES dans le dossier (ex: "Décret n° 2-22-431 du 8 mars 2023 relatif aux marchés publics", "CCAG-T approuvé par décret n° 2-14-394"). Chaque texte une chaîne. Aucune citée: [].
 - "autres": 2 à 5 conditions notables NON déjà couvertes ci-dessus, en phrases courtes (ex: "Dépôt électronique obligatoire", "Variantes non autorisées", "Visite des lieux obligatoire", "Échantillons exigés", "Livraison sous 30 jours"). Rien de notable: [].
