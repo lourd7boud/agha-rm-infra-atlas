@@ -1,14 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 
 /**
  * datao's "Voir le fichier source": a split overlay listing every document in
  * the tender's DCE and rendering the selected one INLINE in its native shape —
- * PDF in an iframe, spreadsheets via SheetJS, Word (.docx) via mammoth, images
- * directly. Heavy parsers are dynamically imported so they never weigh on the
- * main bundle. Bytes are streamed from the BFF /files/raw route (ZIP-backed).
+ * PDF/images served same-origin (/files/raw), Office files (Word/Excel, incl.
+ * legacy .doc/.xls) rendered pixel-faithfully by the Microsoft Office Online
+ * viewer (view.officeapps.live.com), exactly like datao.
  */
 
 type FileKind = 'pdf' | 'excel' | 'word' | 'image' | 'other';
@@ -169,11 +169,8 @@ function FileRender({ tenderId, file }: { tenderId: string; file: DceFile }) {
       </div>
     );
   }
-  if (file.kind === 'excel') {
-    return <ExcelRender url={rawUrl} />;
-  }
-  if (file.kind === 'word') {
-    return <WordRender url={rawUrl} downloadUrl={rawUrl} fileName={file.label} />;
+  if (file.kind === 'excel' || file.kind === 'word') {
+    return <OfficeRender tenderId={tenderId} file={file} downloadUrl={rawUrl} />;
   }
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted">
@@ -189,29 +186,33 @@ function FileRender({ tenderId, file }: { tenderId: string; file: DceFile }) {
   );
 }
 
-function ExcelRender({ url }: { url: string }) {
-  const [html, setHtml] = useState<string[] | null>(null);
-  const [sheets, setSheets] = useState<string[]>([]);
-  const [sheet, setSheet] = useState(0);
+/** Word/Excel via the Microsoft Office Online viewer (datao's approach): we mint
+ *  a short-lived public URL for the file and let Microsoft render it faithfully. */
+function OfficeRender({
+  tenderId,
+  file,
+  downloadUrl,
+}: {
+  tenderId: string;
+  file: DceFile;
+  downloadUrl: string;
+}) {
+  const [embedUrl, setEmbedUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setEmbedUrl(null);
+    setError(null);
     void (async () => {
       try {
-        const [{ read, utils }, buf] = await Promise.all([
-          import('xlsx'),
-          fetch(url, { cache: 'no-store' }).then((r) => {
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            return r.arrayBuffer();
-          }),
-        ]);
-        if (cancelled) return;
-        const wb = read(new Uint8Array(buf), { type: 'array' });
-        const names = wb.SheetNames;
-        const tables = names.map((n) => utils.sheet_to_html(wb.Sheets[n]!));
-        setSheets(names);
-        setHtml(tables);
+        const res = await fetch(
+          `/api/tenders/${tenderId}/files/office-embed?name=${encodeURIComponent(file.name)}`,
+          { cache: 'no-store' },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as { embedUrl: string };
+        if (!cancelled) setEmbedUrl(data.embedUrl);
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
       }
@@ -219,77 +220,15 @@ function ExcelRender({ url }: { url: string }) {
     return () => {
       cancelled = true;
     };
-  }, [url]);
+  }, [tenderId, file.name]);
 
-  if (error) return <div className="p-4 text-sm text-rose">Lecture du tableur échouée ({error}).</div>;
-  if (!html) return <div className="p-4 text-sm text-muted">Lecture du tableur…</div>;
-
-  return (
-    <div className="flex h-full flex-col">
-      {sheets.length > 1 && (
-        <div className="flex gap-1 overflow-x-auto border-b border-line bg-sand/40 px-2 py-1.5">
-          {sheets.map((n, i) => (
-            <button
-              key={n}
-              onClick={() => setSheet(i)}
-              className={`shrink-0 rounded px-2.5 py-1 text-xs font-medium ${
-                sheet === i ? 'bg-emerald text-paper' : 'text-ink-2 hover:bg-sand'
-              }`}
-            >
-              {n}
-            </button>
-          ))}
-        </div>
-      )}
-      <div
-        className="excel-sheet min-h-0 flex-1 overflow-auto p-3 text-sm"
-        dangerouslySetInnerHTML={{ __html: html[sheet] ?? '' }}
-      />
-    </div>
-  );
-}
-
-function WordRender({ url, downloadUrl, fileName }: { url: string; downloadUrl: string; fileName: string }) {
-  const [html, setHtml] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
-
-  const isDocx = useCallback(() => /\.docx$/i.test(fileName), [fileName]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (!isDocx()) {
-        setError('legacy');
-        return;
-      }
-      try {
-        const [{ default: mammoth }, buf] = await Promise.all([
-          import('mammoth'),
-          fetch(url, { cache: 'no-store' }).then((r) => {
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            return r.arrayBuffer();
-          }),
-        ]);
-        if (cancelled) return;
-        const { value } = await mammoth.convertToHtml({ arrayBuffer: buf });
-        setHtml(value);
-      } catch (e) {
-        if (!cancelled) setError((e as Error).message);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [url, isDocx]);
-
-  if (error === 'legacy') {
+  if (error) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted">
-        <p>Format Word ancien (.doc) — aperçu non disponible.</p>
+        <p>Aperçu indisponible ({error}).</p>
         <a
           href={downloadUrl}
-          download={fileName}
+          download={file.label}
           className="inline-flex items-center gap-1 rounded-lg bg-cyan px-3 py-2 font-semibold text-paper"
         >
           <Icon name="download" size={14} /> Télécharger le fichier
@@ -297,14 +236,8 @@ function WordRender({ url, downloadUrl, fileName }: { url: string; downloadUrl: 
       </div>
     );
   }
-  if (error) return <div className="p-4 text-sm text-rose">Lecture du document échouée ({error}).</div>;
-  if (!html) return <div className="p-4 text-sm text-muted">Lecture du document…</div>;
-
-  return (
-    <div
-      ref={ref}
-      className="word-doc mx-auto max-w-3xl p-6 text-sm leading-relaxed text-ink"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  if (!embedUrl) {
+    return <div className="p-4 text-sm text-muted">Préparation de l’aperçu…</div>;
+  }
+  return <iframe src={embedUrl} title={file.label} className="h-full w-full border-0" />;
 }
