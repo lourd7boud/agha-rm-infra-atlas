@@ -14,6 +14,7 @@ import {
   type TenderItem,
 } from '@/lib/tenders';
 import { fmtMad } from '@/lib/projects';
+import { SourceFileViewer } from './SourceFileViewer';
 
 type Tab = 'resume' | 'faq' | 'lots' | 'bpu' | 'chat';
 
@@ -123,11 +124,13 @@ export function DetailDrawer({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<Tab>('resume');
+  const [showFiles, setShowFiles] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
 
   // Reset to the first tab whenever a different tender is opened.
   useEffect(() => {
     setTab('resume');
+    setShowFiles(false);
   }, [item?.id]);
 
   // Move focus into the panel when it opens (keyboard + screen-reader).
@@ -372,12 +375,20 @@ export function DetailDrawer({
             </div>
           </dl>
 
-          <div className="mt-4 flex gap-2">
+          <div className="mt-4 flex flex-wrap gap-2">
+            {hasSource && (
+              <button
+                type="button"
+                onClick={() => setShowFiles(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-cyan px-3 py-2 text-sm font-semibold text-paper transition hover:brightness-110"
+              >
+                <Icon name="documents" size={16} /> Voir le fichier source
+              </button>
+            )}
             <ActionButton
               href={hasSource ? `/api/tenders/${item.id}/dossier` : undefined}
               icon="download"
               label="Télécharger le dossier"
-              primary
               download
             />
             <ActionButton href={sourceUrl} icon="external" label="Soumission en ligne" />
@@ -708,6 +719,9 @@ export function DetailDrawer({
           </div>
         </div>
       </aside>
+      {showFiles && (
+        <SourceFileViewer tenderId={item.id} onClose={() => setShowFiles(false)} />
+      )}
     </div>
   );
 }
