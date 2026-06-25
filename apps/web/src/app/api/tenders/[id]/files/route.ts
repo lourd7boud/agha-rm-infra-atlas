@@ -25,6 +25,8 @@ function kindOf(name: string): FileKind {
 function isJunk(name: string): boolean {
   const base = name.split('/').pop() || name;
   if (base.startsWith('~$') || base.startsWith('.')) return true;
+  // Office/system temp files: ~$RC.docx, ~WRL2103.tmp, *.tmp, Thumbs.db…
+  if (/^~wrl/i.test(base) || /\.tmp$/i.test(base)) return true;
   if (/^(thumbs\.db|desktop\.ini)$/i.test(base)) return true;
   if (name.startsWith('__MACOSX/')) return true;
   return false;
