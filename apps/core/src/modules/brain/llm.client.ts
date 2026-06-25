@@ -374,45 +374,69 @@ export class OpenRouterLlmClient implements LlmClient {
   }
 
   private async post(body: unknown, model: string): Promise<OpenAiChatResponse> {
-    let res: Response;
-    try {
-      res = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-          ...this.extraHeaders,
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-    } catch (error) {
-      new Logger('OpenRouterLlmClient').error(
-        `LLM call failed (${model}): ${(error as Error).message}`,
-      );
-      throw new ServiceUnavailableException(
-        'Service IA momentanément indisponible — réessayer dans quelques instants',
-      );
+    const log = new Logger('OpenRouterLlmClient');
+    // Backoff schedule before attempts 2..N. Absorbs the transient 503
+    // "model experiencing high demand" the free Gemini tier returns under load,
+    // and short 429 rate-limit windows. Daily-quota exhaustion keeps failing
+    // through all retries → surfaced as a normal failure (retried days later).
+    const BACKOFF_MS = [0, 2_000, 5_000, 12_000];
+    const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+    let lastDetail = '';
+    for (let attempt = 1; attempt <= BACKOFF_MS.length; attempt++) {
+      if (BACKOFF_MS[attempt - 1]! > 0) {
+        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt - 1]!));
+      }
+      let res: Response;
+      try {
+        res = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json',
+            ...this.extraHeaders,
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (error) {
+        lastDetail = (error as Error).message;
+        if (attempt < BACKOFF_MS.length) {
+          log.warn(`LLM network error (${model}) — retry ${attempt}/${BACKOFF_MS.length - 1}`);
+          continue;
+        }
+        log.error(`LLM call failed (${model}): ${lastDetail}`);
+        throw new ServiceUnavailableException(
+          'Service IA momentanément indisponible — réessayer dans quelques instants',
+        );
+      }
+      if (!res.ok) {
+        lastDetail = await res.text().catch(() => '');
+        if (RETRYABLE.has(res.status) && attempt < BACKOFF_MS.length) {
+          log.warn(`LLM HTTP ${res.status} (${model}) — retry ${attempt}/${BACKOFF_MS.length - 1}`);
+          continue;
+        }
+        log.error(`LLM HTTP ${res.status} (${model}): ${lastDetail.slice(0, 300)}`);
+        throw new ServiceUnavailableException(
+          `Service IA momentanément indisponible (HTTP ${res.status}) — réessayer dans quelques instants`,
+        );
+      }
+      const data = (await res.json()) as OpenAiChatResponse;
+      if (data.error) {
+        const code = Number(data.error.code);
+        if (RETRYABLE.has(code) && attempt < BACKOFF_MS.length) {
+          log.warn(`LLM error ${code} (${model}) — retry ${attempt}/${BACKOFF_MS.length - 1}`);
+          continue;
+        }
+        log.error(`LLM error (${model}): ${data.error.message ?? 'inconnue'}`);
+        throw new ServiceUnavailableException(
+          'Service IA momentanément indisponible — réessayer dans quelques instants',
+        );
+      }
+      return data;
     }
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '');
-      new Logger('OpenRouterLlmClient').error(
-        `LLM HTTP ${res.status} (${model}): ${detail.slice(0, 300)}`,
-      );
-      throw new ServiceUnavailableException(
-        `Service IA momentanément indisponible (HTTP ${res.status}) — réessayer dans quelques instants`,
-      );
-    }
-    const data = (await res.json()) as OpenAiChatResponse;
-    if (data.error) {
-      new Logger('OpenRouterLlmClient').error(
-        `LLM error (${model}): ${data.error.message ?? 'inconnue'}`,
-      );
-      throw new ServiceUnavailableException(
-        'Service IA momentanément indisponible — réessayer dans quelques instants',
-      );
-    }
-    return data;
+    throw new ServiceUnavailableException(
+      'Service IA momentanément indisponible — réessayer dans quelques instants',
+    );
   }
 }
 

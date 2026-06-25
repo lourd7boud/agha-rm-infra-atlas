@@ -83,7 +83,9 @@ describe('OpenRouterLlmClient', () => {
   });
 
   test('maps an HTTP failure to a 503-style error', async () => {
-    mockFetch({ error: { message: 'rate limited' } }, { ok: false, status: 429 });
+    // 400 is non-retryable (unlike 429/503 which the client now retries), so it
+    // surfaces immediately — the mapping to a 503-style error is what we assert.
+    mockFetch({ error: { message: 'bad request' } }, { ok: false, status: 400 });
     const client = new OpenRouterLlmClient({ apiKey: 'k' });
     await expect(client.complete({ tier: 'T1', prompt: 'x' })).rejects.toThrow(
       /indisponible/i,
