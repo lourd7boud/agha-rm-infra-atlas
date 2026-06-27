@@ -6,16 +6,15 @@
  *   DATABASE_URL=... OPENROUTER_API_KEY=... \
  *     tsx apps/core/scripts/extract-dossier-by-id.ts <uuid> [<uuid>...]
  */
-import { OpenRouterLlmClient } from '../src/modules/brain/llm.client';
+import { createLlmClientFromEnv } from '../src/modules/brain/llm.client';
 import { getDb } from '../src/db/client';
 import { DrizzleTenderRepository } from '../src/modules/tender/tender.repository';
 import { DossierExtractionService } from '../src/modules/tender/dossier-extraction.service';
 
 async function main(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL;
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!databaseUrl || !apiKey) {
-    console.error('DATABASE_URL and OPENROUTER_API_KEY are required.');
+  if (!databaseUrl) {
+    console.error('DATABASE_URL is required.');
     process.exit(2);
   }
   const ids = process.argv.slice(2).filter((a) => /^[0-9a-f-]{36}$/i.test(a));
@@ -23,13 +22,11 @@ async function main(): Promise<void> {
     console.error('usage: extract-dossier-by-id.ts <uuid> [<uuid>...]');
     process.exit(2);
   }
-  const model = process.env.OPENROUTER_MODEL ?? 'google/gemini-2.5-flash';
-  const llm = new OpenRouterLlmClient({
-    apiKey,
-    baseUrl: process.env.OPENROUTER_API_BASE,
-    tierModels: { T1: model, T2: model, T3: model },
-    appTitle: 'ATLAS - AGHA RM INFRA',
-  });
+  const llm = createLlmClientFromEnv();
+  if (!llm) {
+    console.error('No LLM provider configured.');
+    process.exit(2);
+  }
   const repository = new DrizzleTenderRepository(getDb(databaseUrl));
   const service = new DossierExtractionService(repository, llm);
   for (const id of ids) {
@@ -42,11 +39,12 @@ async function main(): Promise<void> {
           id,
           ok: true,
           tookSec: dur,
-          estimationMad: r.extraction?.estimationMad ?? null,
-          cautionProvisoireMad: r.extraction?.cautionProvisoireMad ?? null,
-          qualifications: r.extraction?.qualifications?.length ?? 0,
-          bpu: r.extraction?.bpu?.length ?? 0,
-          sourceFiles: r.extraction?.sourceFiles ?? [],
+          extracted: r.extracted,
+          estimationMad: r.estimationMad,
+          cautionProvisoireMad: r.cautionProvisoireMad,
+          qualifications: r.qualifications,
+          bpu: r.bpuCount,
+          sourceFiles: r.files,
         }),
       );
     } catch (e) {
