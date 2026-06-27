@@ -8,32 +8,29 @@
  *   DATABASE_URL=... OPENROUTER_API_KEY=... [OPENROUTER_MODEL=...] \
  *     tsx apps/core/scripts/enrich-once.ts [--limit=100]
  */
-import { OpenRouterLlmClient } from '../src/modules/brain/llm.client';
+import { createLlmClientFromEnv } from '../src/modules/brain/llm.client';
 import { getDb } from '../src/db/client';
 import { DrizzleTenderRepository } from '../src/modules/tender/tender.repository';
 import { EnrichmentService } from '../src/modules/tender/enrichment.service';
 
 async function main(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL;
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!databaseUrl || !apiKey) {
-    console.error('DATABASE_URL and OPENROUTER_API_KEY are required.');
+  if (!databaseUrl) {
+    console.error('DATABASE_URL is required.');
     process.exit(2);
   }
   const limitArg = process.argv.find((a) => a.startsWith('--limit='));
   const limit = limitArg ? Number(limitArg.split('=')[1]) : 100;
-  const model = process.env.OPENROUTER_MODEL ?? 'google/gemini-2.5-flash';
 
-  const llm = new OpenRouterLlmClient({
-    apiKey,
-    baseUrl: process.env.OPENROUTER_API_BASE,
-    tierModels: { T1: model, T2: model, T3: model },
-    appTitle: 'ATLAS - AGHA RM INFRA',
-  });
+  const llm = createLlmClientFromEnv();
+  if (!llm) {
+    console.error('No LLM provider configured.');
+    process.exit(2);
+  }
   const repository = new DrizzleTenderRepository(getDb(databaseUrl));
   const service = new EnrichmentService(repository, llm);
 
-  console.log(`enrich-once: model=${model} limit=${limit} …`);
+  console.log(`enrich-once: provider=${process.env.LLM_PROVIDER ?? 'openrouter'} limit=${limit} …`);
   const summary = await service.aiEnrichBatch(limit, { onlyActive: true });
   console.log('SUMMARY ' + JSON.stringify(summary));
   process.exit(summary.failed > 0 && summary.succeeded === 0 ? 1 : 0);
