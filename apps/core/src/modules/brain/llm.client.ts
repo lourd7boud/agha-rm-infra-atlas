@@ -440,6 +440,242 @@ export class OpenRouterLlmClient implements LlmClient {
   }
 }
 
+export interface GoogleClientOptions {
+  apiKey: string;
+  /** Base URL up to (NOT including) the Gemini path. For qcode:
+   *  https://api.qcode.cc → calls /gemini/v1beta/models/<model>:generateContent.
+   *  For Google direct: https://generativelanguage.googleapis.com → /v1beta/... */
+  baseUrl: string;
+  tierModels?: Partial<Record<LlmTier, string>>;
+  timeoutMs?: number;
+}
+
+interface GeminiResponse {
+  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  error?: { code?: number; message?: string; status?: string };
+}
+
+const GEMINI_DEFAULT_TIER_MODELS: Record<LlmTier, string> = {
+  T1: 'gemini-2.5-flash-lite',
+  T2: 'gemini-2.5-flash',
+  T3: 'gemini-2.5-pro',
+};
+
+/** qcode returns a 200 "upstream busy" fallback (Chinese) with ~0 tokens under
+ *  load — detect it so we retry instead of persisting garbage. */
+const QCODE_BUSY = /(上游暂时繁忙|msg_fallback|稍后重试)/;
+
+/**
+ * Google Gemini client speaking the native generateContent protocol. Used both
+ * for Google AI Studio direct AND for the qcode gateway (which exposes Gemini
+ * only on /gemini/v1beta/...:generateContent, NOT the OpenAI/Anthropic paths).
+ * Vision = inline_data image parts; retries 503/429/5xx + the qcode busy fallback.
+ */
+export class GoogleLlmClient implements LlmClient {
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+  private readonly tierModels: Record<LlmTier, string>;
+  private readonly timeoutMs: number;
+  private readonly log = new Logger('GoogleLlmClient');
+
+  constructor(options: GoogleClientOptions) {
+    this.apiKey = options.apiKey;
+    this.baseUrl = options.baseUrl.replace(/\/+$/, '');
+    this.tierModels = { ...GEMINI_DEFAULT_TIER_MODELS, ...options.tierModels };
+    this.timeoutMs = options.timeoutMs ?? 90_000;
+  }
+
+  async complete(request: LlmRequest): Promise<LlmCompletion> {
+    const body: Record<string, unknown> = {
+      contents: [{ role: 'user', parts: [{ text: request.prompt }] }],
+      generationConfig: {
+        temperature: 0,
+        maxOutputTokens: request.maxTokens ?? 1024,
+        ...(request.prefill ? { responseMimeType: 'application/json' } : {}),
+      },
+    };
+    if (request.system) body.system_instruction = { parts: [{ text: request.system }] };
+    const model = this.tierModels[request.tier];
+    return this.toCompletion(await this.post(model, body), model, request.prefill);
+  }
+
+  async completeVision(request: LlmVisionRequest): Promise<LlmCompletion> {
+    const model = this.tierModels[request.tier];
+    const body = {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { inline_data: { mime_type: request.mediaType, data: request.imageBase64 } },
+            { text: request.prompt },
+          ],
+        },
+      ],
+      generationConfig: { temperature: 0, maxOutputTokens: request.maxTokens ?? 1024 },
+    };
+    return this.toCompletion(await this.post(model, body), model);
+  }
+
+  async completeVisionDoc(request: LlmVisionDocRequest): Promise<LlmCompletion> {
+    const parts: Array<Record<string, unknown>> = [{ text: request.prompt }];
+    for (const img of request.images) {
+      parts.push({ inline_data: { mime_type: img.mediaType, data: img.base64 } });
+    }
+    const body: Record<string, unknown> = {
+      contents: [{ role: 'user', parts }],
+      generationConfig: {
+        temperature: 0,
+        maxOutputTokens: request.maxTokens ?? 1024,
+        ...(request.jsonMode ? { responseMimeType: 'application/json' } : {}),
+      },
+    };
+    if (request.system) body.system_instruction = { parts: [{ text: request.system }] };
+    const model = this.tierModels[request.tier];
+    return this.toCompletion(await this.post(model, body), model);
+  }
+
+  private toCompletion(data: GeminiResponse, model: string, prefill?: string): LlmCompletion {
+    const text = (data.candidates?.[0]?.content?.parts ?? [])
+      .map((p) => p.text ?? '')
+      .join('');
+    return {
+      text,
+      prefill,
+      model,
+      inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
+      outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+    };
+  }
+
+  private async post(model: string, body: unknown): Promise<GeminiResponse> {
+    const url = `${this.baseUrl}/gemini/v1beta/models/${model}:generateContent`;
+    const BACKOFF_MS = [0, 2_000, 5_000, 12_000];
+    const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+    for (let attempt = 1; attempt <= BACKOFF_MS.length; attempt++) {
+      if (BACKOFF_MS[attempt - 1]! > 0) {
+        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt - 1]!));
+      }
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+      } catch (error) {
+        if (attempt < BACKOFF_MS.length) {
+          this.log.warn(`Gemini network error (${model}) — retry ${attempt}/${BACKOFF_MS.length - 1}`);
+          continue;
+        }
+        this.log.error(`Gemini call failed (${model}): ${(error as Error).message}`);
+        throw new ServiceUnavailableException(
+          'Service IA momentanément indisponible — réessayer dans quelques instants',
+        );
+      }
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        if (RETRYABLE.has(res.status) && attempt < BACKOFF_MS.length) {
+          this.log.warn(`Gemini HTTP ${res.status} (${model}) — retry ${attempt}/${BACKOFF_MS.length - 1}`);
+          continue;
+        }
+        this.log.error(`Gemini HTTP ${res.status} (${model}): ${detail.slice(0, 300)}`);
+        throw new ServiceUnavailableException(
+          `Service IA momentanément indisponible (HTTP ${res.status}) — réessayer dans quelques instants`,
+        );
+      }
+      const data = (await res.json()) as GeminiResponse;
+      if (data.error) {
+        const code = Number(data.error.code);
+        // Gateways (qcode) often return 200 with a transient error body and NO
+        // numeric code: "Service temporarily unavailable", "Internal server
+        // error", "overloaded". Treat those as retryable too.
+        const transient =
+          RETRYABLE.has(code) ||
+          /temporarily unavailable|internal server error|overload|try again|busy|繁忙/i.test(
+            data.error.message ?? '',
+          );
+        if (transient && attempt < BACKOFF_MS.length) {
+          this.log.warn(
+            `Gemini error "${data.error.message ?? code}" (${model}) — retry ${attempt}/${BACKOFF_MS.length - 1}`,
+          );
+          continue;
+        }
+        this.log.error(`Gemini error (${model}): ${data.error.message ?? 'inconnue'}`);
+        throw new ServiceUnavailableException(
+          'Service IA momentanément indisponible — réessayer dans quelques instants',
+        );
+      }
+      // qcode 200 "upstream busy" fallback (no real tokens) → retry.
+      const text = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? '').join('');
+      if (QCODE_BUSY.test(text) && (data.usageMetadata?.promptTokenCount ?? 0) === 0) {
+        if (attempt < BACKOFF_MS.length) {
+          this.log.warn(`gateway busy fallback (${model}) — retry ${attempt}/${BACKOFF_MS.length - 1}`);
+          continue;
+        }
+        throw new ServiceUnavailableException(
+          'Service IA momentanément surchargé — réessayer dans quelques instants',
+        );
+      }
+      return data;
+    }
+    throw new ServiceUnavailableException(
+      'Service IA momentanément indisponible — réessayer dans quelques instants',
+    );
+  }
+}
+
+/**
+ * Single source of truth for selecting the LLM provider from env, used by both
+ * the Nest DI factory and the standalone CLI scripts. Precedence:
+ *   LLM_PROVIDER=google → GoogleLlmClient (Gemini native / qcode gateway)
+ *   OPENROUTER_API_KEY  → OpenRouterLlmClient (OpenAI protocol)
+ *   LLM_API_KEY         → AnthropicLlmClient (Anthropic Messages)
+ */
+export function createLlmClientFromEnv(): LlmClient | null {
+  const env = process.env;
+  const tiers = (model: string): Record<LlmTier, string> => ({
+    T1: model,
+    T2: env.OPENROUTER_MODEL_T2 ?? model,
+    T3: env.OPENROUTER_MODEL_T3 ?? model,
+  });
+
+  if (env.LLM_PROVIDER?.toLowerCase() === 'google' && env.OPENROUTER_API_KEY) {
+    const model = env.OPENROUTER_MODEL ?? 'gemini-2.5-flash-lite';
+    return new GoogleLlmClient({
+      apiKey: env.OPENROUTER_API_KEY,
+      baseUrl: env.OPENROUTER_API_BASE ?? 'https://generativelanguage.googleapis.com',
+      tierModels: tiers(model),
+    });
+  }
+  if (env.OPENROUTER_API_KEY) {
+    const model = env.OPENROUTER_MODEL ?? 'google/gemini-2.5-flash';
+    return new OpenRouterLlmClient({
+      apiKey: env.OPENROUTER_API_KEY,
+      baseUrl: env.OPENROUTER_API_BASE,
+      tierModels: tiers(model),
+      appUrl: env.PUBLIC_WEB_URL ?? 'https://atlas.marocinfra.com',
+      appTitle: 'ATLAS - AGHA RM INFRA',
+    });
+  }
+  if (env.LLM_API_KEY) {
+    return new AnthropicLlmClient({
+      apiKey: env.LLM_API_KEY,
+      baseUrl: env.LLM_API_BASE,
+      tierModels: {
+        ...(env.LLM_MODEL_T1 ? { T1: env.LLM_MODEL_T1 } : {}),
+        ...(env.LLM_MODEL_T2 ? { T2: env.LLM_MODEL_T2 } : {}),
+        ...(env.LLM_MODEL_T3 ? { T3: env.LLM_MODEL_T3 } : {}),
+      },
+    });
+  }
+  return null;
+}
+
 /** Test double returning queued canned responses and recording requests. */
 export class FakeLlmClient implements LlmClient {
   readonly requests: LlmRequest[] = [];

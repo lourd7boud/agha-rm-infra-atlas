@@ -10,7 +10,7 @@
  *   DATABASE_URL=... OPENROUTER_API_KEY=... [OPENROUTER_MODEL=...] PORTAL_DCE_*=... \
  *     tsx apps/core/scripts/extract-dossiers-once.ts [--limit=25] [--all] [--force]
  */
-import { OpenRouterLlmClient } from '../src/modules/brain/llm.client';
+import { createLlmClientFromEnv } from '../src/modules/brain/llm.client';
 import { getDb } from '../src/db/client';
 import { DrizzleTenderRepository } from '../src/modules/tender/tender.repository';
 import { DossierExtractionService } from '../src/modules/tender/dossier-extraction.service';
@@ -41,12 +41,11 @@ async function main(): Promise<void> {
     : 'newest';
   const model = process.env.OPENROUTER_MODEL ?? 'google/gemini-2.5-flash';
 
-  const llm = new OpenRouterLlmClient({
-    apiKey,
-    baseUrl: process.env.OPENROUTER_API_BASE,
-    tierModels: { T1: model, T2: model, T3: model },
-    appTitle: 'ATLAS - AGHA RM INFRA',
-  });
+  const llm = createLlmClientFromEnv();
+  if (!llm) {
+    console.error('No LLM provider configured.');
+    process.exit(2);
+  }
   const repository = new DrizzleTenderRepository(getDb(databaseUrl));
   const service = new DossierExtractionService(repository, llm);
 
