@@ -45,6 +45,48 @@ export const aiEnrichmentSchema = z.object({
 
 export type AiEnrichmentData = z.infer<typeof aiEnrichmentSchema>;
 
+/**
+ * Gemini controlled-generation schema mirroring aiEnrichmentSchema. Required
+ * because the enrichment INPUT is a list of "Clé: valeur" lines, which Gemini
+ * (native generateContent) otherwise echoes back as JSON instead of producing
+ * {secteur, resume, …}. Only secteur/resume are required; the rest default. */
+export const ENRICH_RESPONSE_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    secteur: { type: 'string' },
+    resume: { type: 'string' },
+    faq: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { question: { type: 'string' }, reponse: { type: 'string' } },
+        required: ['question', 'reponse'],
+      },
+    },
+    lots: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          designation: { type: 'string' },
+          description: { type: 'string', nullable: true },
+        },
+        required: ['designation'],
+      },
+    },
+    conditions: {
+      type: 'object',
+      properties: {
+        cautionDefinitivePct: { type: 'number', nullable: true },
+        retenueGarantiePct: { type: 'number', nullable: true },
+        delaiGarantieMois: { type: 'integer', nullable: true },
+      },
+    },
+    reserveAuxPme: { type: 'boolean' },
+  },
+  required: ['secteur', 'resume'],
+};
+
 /** Stored envelope = validated data + provenance. */
 export const storedAiEnrichmentSchema = aiEnrichmentSchema.extend({
   model: z.string(),
@@ -110,6 +152,7 @@ export async function aiEnrich(
     prompt: buildEnrichmentPrompt(input),
     prefill: '{',
     maxTokens: 1200,
+    responseSchema: ENRICH_RESPONSE_SCHEMA,
   });
 
   // Same defensive contract as the other brain agents: never surface a raw

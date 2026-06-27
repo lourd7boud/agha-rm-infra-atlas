@@ -34,6 +34,12 @@ export interface LlmRequest {
   maxTokens?: number;
   /** Assistant prefill — forces the response to start with this text (e.g. "{"). */
   prefill?: string;
+  /** Gemini controlled-generation schema (OpenAPI-subset). When set, the Google
+   *  client forces the response to this exact shape — required for inputs that
+   *  look like key:value pairs, which Gemini otherwise echoes back as JSON
+   *  instead of following the prompt. Ignored by Anthropic/OpenRouter clients
+   *  (they steer via prefill / response_format). */
+  responseSchema?: Record<string, unknown>;
 }
 
 export type LlmImageMediaType = 'image/jpeg' | 'image/png' | 'image/webp';
@@ -62,6 +68,8 @@ export interface LlmVisionDocRequest {
   maxTokens?: number;
   /** Ask the provider for a JSON object response (OpenAI response_format). */
   jsonMode?: boolean;
+  /** Gemini controlled-generation schema (see LlmRequest.responseSchema). */
+  responseSchema?: Record<string, unknown>;
 }
 
 export interface LlmClient {
@@ -491,8 +499,15 @@ export class GoogleLlmClient implements LlmClient {
       contents: [{ role: 'user', parts: [{ text: request.prompt }] }],
       generationConfig: {
         temperature: 0,
+        // Gemini 2.5 Flash "thinking" burns output tokens + latency with no gain
+        // for deterministic structured extraction — disable it.
+        thinkingConfig: { thinkingBudget: 0 },
         maxOutputTokens: request.maxTokens ?? 1024,
-        ...(request.prefill ? { responseMimeType: 'application/json' } : {}),
+        ...(request.responseSchema
+          ? { responseMimeType: 'application/json', responseSchema: request.responseSchema }
+          : request.prefill
+            ? { responseMimeType: 'application/json' }
+            : {}),
       },
     };
     if (request.system) body.system_instruction = { parts: [{ text: request.system }] };
@@ -512,7 +527,11 @@ export class GoogleLlmClient implements LlmClient {
           ],
         },
       ],
-      generationConfig: { temperature: 0, maxOutputTokens: request.maxTokens ?? 1024 },
+      generationConfig: {
+        temperature: 0,
+        thinkingConfig: { thinkingBudget: 0 },
+        maxOutputTokens: request.maxTokens ?? 1024,
+      },
     };
     return this.toCompletion(await this.post(model, body), model);
   }
@@ -526,8 +545,13 @@ export class GoogleLlmClient implements LlmClient {
       contents: [{ role: 'user', parts }],
       generationConfig: {
         temperature: 0,
+        thinkingConfig: { thinkingBudget: 0 },
         maxOutputTokens: request.maxTokens ?? 1024,
-        ...(request.jsonMode ? { responseMimeType: 'application/json' } : {}),
+        ...(request.responseSchema
+          ? { responseMimeType: 'application/json', responseSchema: request.responseSchema }
+          : request.jsonMode
+            ? { responseMimeType: 'application/json' }
+            : {}),
       },
     };
     if (request.system) body.system_instruction = { parts: [{ text: request.system }] };
