@@ -123,6 +123,9 @@ const inventoryQuerySchema = z.object({
   state: pipelineStateSchema.optional(),
   lifecycle: lifecycleStatusSchema.optional(),
   q: z.string().max(200).optional(),
+  /** Delta cutoff for live silent refresh — only rows updated after this instant
+   *  are returned (facets/total stay catalogue-wide). Accepts an ISO timestamp. */
+  since: z.coerce.date().optional(),
   limit: z.coerce.number().int().positive().max(5000).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
 });

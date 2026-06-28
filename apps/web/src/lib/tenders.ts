@@ -80,6 +80,9 @@ export interface TenderItem {
   winner: TenderCompetitor | null;
   competitors: TenderCompetitor[];
   resultDate?: string;
+  /** ISO timestamp of the row's last write — drives live silent refresh: the
+   *  explorer polls `?since=<max updatedAt>` and merges only changed rows. */
+  updatedAt?: string;
 }
 
 /** Mirrors the core LifecycleStatus (en_cours/cloture/attribue/infructueux). */

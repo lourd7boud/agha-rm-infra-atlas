@@ -23,6 +23,7 @@ function tender(p: Partial<TenderRecord> & { buyerName: string; objet: string })
     qualification: p.qualification ?? null,
     raw: p.raw ?? null,
     createdAt: p.createdAt ?? new Date('2026-06-01T00:00:00Z'),
+    updatedAt: p.updatedAt ?? new Date('2026-06-01T00:00:00Z'),
   };
 }
 

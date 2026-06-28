@@ -34,6 +34,9 @@ export interface TenderRecord extends CreateTender {
   qualification: QualificationResult | null;
   raw: Record<string, unknown> | null;
   createdAt: Date;
+  /** Last write to the row — bumped by every enrichment/extraction/state update.
+   *  Powers the /tender/inventory `?since=` delta used for live silent refresh. */
+  updatedAt: Date;
 }
 
 export interface EnrichmentAmounts {
@@ -105,6 +108,7 @@ export class InMemoryTenderRepository implements TenderRepository {
       qualification: null,
       raw: null,
       createdAt: new Date(),
+      updatedAt: new Date(),
     };
     this.records = [...this.records, record];
     return record;
@@ -415,5 +419,6 @@ function toRecord(row: TenderRow): TenderRecord {
     qualification: (row.qualification as QualificationResult | null) ?? null,
     raw: (row.raw as Record<string, unknown> | null) ?? null,
     createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }

@@ -25,6 +25,7 @@ function rec(overrides: Partial<TenderRecord> & { reference: string }): TenderRe
     qualification: null,
     raw: null,
     createdAt: overrides.createdAt ?? new Date('2026-06-01T00:00:00Z'),
+    updatedAt: overrides.updatedAt ?? new Date('2026-06-01T00:00:00Z'),
   };
 }
 
@@ -239,6 +240,23 @@ describe('buildInventory', () => {
     expect(inv.filteredCount).toBe(5);
     expect(inv.returnedCount).toBe(2);
     expect(inv.items).toHaveLength(2);
+  });
+
+  test('since returns only rows updated after the cutoff, total stays full', () => {
+    const old = rec({
+      reference: 'OLD/1',
+      updatedAt: new Date('2026-06-10T00:00:00Z'),
+    });
+    const fresh = rec({
+      reference: 'NEW/1',
+      updatedAt: new Date('2026-06-12T00:00:00Z'),
+    });
+    const inv = buildInventory([old, fresh], { since: new Date('2026-06-11T00:00:00Z') }, NOW);
+    // Only the row written after the cutoff is returned …
+    expect(inv.items.map((i) => i.reference)).toEqual(['NEW/1']);
+    // … but total + facets still reflect the whole catalogue.
+    expect(inv.total).toBe(2);
+    expect(inv.items[0]!.updatedAt).toBe('2026-06-12T00:00:00.000Z');
   });
 
   test('offset pages through the result set', () => {

@@ -436,6 +436,10 @@ export interface InventoryFilters {
   lifecycle?: LifecycleStatus;
   /** Free-text search across reference, objet and buyer. */
   q?: string;
+  /** Delta cutoff: when set, only rows written AFTER this instant are returned
+   *  (facets/total still reflect the full catalogue). Powers live silent refresh
+   *  — the client polls `?since=<lastSeen>` and merges just the changed rows. */
+  since?: Date;
 }
 
 export interface InventoryFacet {
@@ -530,6 +534,9 @@ export interface InventoryItem {
   competitors: TenderCompetitor[];
   /** ISO date the result was published (from the PV/notice), when known. */
   resultDate?: string;
+  /** ISO timestamp of the row's last write — the client tracks the max seen and
+   *  sends it back as `?since=` so live polls only fetch what changed. */
+  updatedAt: string;
 }
 
 export interface InventoryFacets {
@@ -604,6 +611,7 @@ function tallyTop(
 }
 
 function matches(c: Classified, filters: InventoryFilters): boolean {
+  if (filters.since && c.record.updatedAt.getTime() <= filters.since.getTime()) return false;
   if (filters.procedure && c.record.procedure !== filters.procedure) return false;
   if (filters.buyer && c.record.buyerName !== filters.buyer) return false;
   if (filters.region && c.region !== filters.region) return false;
@@ -774,6 +782,7 @@ export function buildInventory(
       winner: competitors.find((c) => c.isWinner) ?? null,
       competitors,
       resultDate: resultDate ? resultDate.toISOString() : undefined,
+      updatedAt: record.updatedAt.toISOString(),
     }))
     // Publication DESC (newest first) — matches datao's UX and ensures freshly
     // detected tenders appear on page 1 even when their deadlines are weeks

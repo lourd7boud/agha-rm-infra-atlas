@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { PIPELINE_LABELS, PROCEDURE_LABELS } from '@/lib/labels';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
@@ -196,6 +196,86 @@ function hydrateFilters(input: unknown): FilterState {
   return { ...EMPTY_FILTERS, ...f };
 }
 
+/** Poll cadence for live silent refresh (ms). 30s keeps the table fresh as the
+ *  Sentinel publishes/updates tenders, without hammering the API. */
+const LIVE_POLL_MS = 30_000;
+
+/** Highest updatedAt across a set — the `since` cursor for the next delta poll. */
+function maxUpdatedAt(items: readonly TenderItem[]): string {
+  let max = '';
+  for (const i of items) if (i.updatedAt && i.updatedAt > max) max = i.updatedAt;
+  return max;
+}
+
+/**
+ * Live silent refresh: keeps the inventory in state and, every LIVE_POLL_MS while
+ * the tab is visible, polls /api/tender/inventory?since=<max updatedAt> for just
+ * the rows the Sentinel wrote since last time, then upserts them by id — no full
+ * page reload, no scroll jump, the user's filters/sort/selection untouched.
+ * total + facets are refreshed from the (catalogue-wide) delta response so new
+ * tenders bump the count too.
+ */
+function useLiveInventory(
+  initial: TenderInventory,
+  urlParams: Record<string, string> | null,
+): TenderInventory {
+  const [inv, setInv] = useState(initial);
+  const sinceRef = useRef(maxUpdatedAt(initial.items));
+  const itemsRef = useRef(initial.items);
+  itemsRef.current = inv.items;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function poll(): Promise<void> {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      const qs = new URLSearchParams({ limit: '5000' });
+      if (sinceRef.current) qs.set('since', sinceRef.current);
+      if (urlParams) for (const [k, v] of Object.entries(urlParams)) if (v) qs.set(k, v);
+      try {
+        const res = await fetch(`/api/tender/inventory?${qs.toString()}`, {
+          cache: 'no-store',
+        });
+        if (!res.ok || cancelled) return;
+        const delta = (await res.json()) as Partial<TenderInventory>;
+        if (cancelled || !Array.isArray(delta.items)) return;
+        const changed = delta.items;
+        setInv((prev) => {
+          const next =
+            changed.length > 0
+              ? (() => {
+                  const byId = new Map(prev.items.map((i) => [i.id, i]));
+                  for (const it of changed) byId.set(it.id, it);
+                  return [...byId.values()];
+                })()
+              : prev.items;
+          sinceRef.current = maxUpdatedAt(next) || sinceRef.current;
+          return {
+            ...prev,
+            items: next,
+            total: delta.total ?? prev.total,
+            facets: delta.facets ?? prev.facets,
+          };
+        });
+      } catch {
+        /* transient poll failure — retry next tick */
+      }
+    }
+    const id = window.setInterval(poll, LIVE_POLL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void poll();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+    // urlParams is a stable seed from the server render; re-subscribe only if it changes.
+  }, [urlParams]);
+
+  return inv;
+}
+
 export function TendersExplorer({
   inventory,
   preloadedList,
@@ -240,6 +320,10 @@ export function TendersExplorer({
   const [selected, setSelected] = useState<TenderItem | null>(null);
   const [showFilters, setShowFilters] = useState(true);
   const { markSeen, isSeen } = useSeenIds();
+  // Live silent refresh — the table tracks Sentinel writes (new budgets, BPU,
+  // freshly-detected tenders) without a manual reload. Filters/sort/selection
+  // are independent state, so they survive each silent merge.
+  const liveInventory = useLiveInventory(inventory, initialFromUrl ?? null);
 
   // NOTE: search is now PURE client-side. We load the entire catalogue once
   // (no 1000-row cap anymore), so filtering happens instantly over the in-memory
@@ -255,7 +339,7 @@ export function TendersExplorer({
   );
 
   const visible = useMemo(() => {
-    const filtered = inventory.items.filter((i) => {
+    const filtered = liveInventory.items.filter((i) => {
       if (listScope && !listScope.has(i.id)) return false;
       if (filters.unseenOnly && isSeen(i.id)) return false;
       return matchesFilters(i, filters);
@@ -264,14 +348,24 @@ export function TendersExplorer({
       const primary = primaryCompare(a, b, sort.key) * (sort.dir === 'asc' ? 1 : -1);
       return primary || a.reference.localeCompare(b.reference);
     });
-  }, [inventory.items, filters, sort, isSeen]);
+  }, [liveInventory.items, filters, sort, isSeen, listScope]);
+
+  // Keep the open drawer in sync with live merges (e.g. a budget/BPU lands while
+  // the user is reading the dossier) without reopening it.
+  const liveSelected = useMemo(
+    () =>
+      selected
+        ? liveInventory.items.find((i) => i.id === selected.id) ?? selected
+        : null,
+    [selected, liveInventory.items],
+  );
 
   const patch = (p: Partial<FilterState>) => setFilters((prev) => ({ ...prev, ...p }));
   const reset = () => setFilters(EMPTY_FILTERS);
   const closeDrawer = useCallback(() => setSelected(null), []);
 
   // The API caps the catalogue payload; warn when not everything is loaded.
-  const capped = inventory.items.length < inventory.total;
+  const capped = liveInventory.items.length < liveInventory.total;
 
   const onSortChange = (key: SortKey) =>
     setSort((prev) =>
@@ -317,7 +411,7 @@ export function TendersExplorer({
           <p className="mt-1 text-sm text-muted">
             {preloadedList
               ? `${preloadedList.tenderIds.length} appel(s) dans la liste`
-              : `${inventory.total} appel(s) d'offres au catalogue`}{' '}
+              : `${liveInventory.total} appel(s) d'offres au catalogue`}{' '}
             · <span className="font-semibold text-ink">{visible.length}</span>{' '}
             affiché(s)
             {(preloadedList || preloadedSearch) && (
@@ -432,7 +526,7 @@ export function TendersExplorer({
         {showFilters && (
           <aside className="lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:self-start lg:overflow-y-auto lg:pr-1">
             <FilterSidebar
-              facets={inventory.facets}
+              facets={liveInventory.facets}
               value={filters}
               onChange={patch}
               onReset={reset}
@@ -460,7 +554,7 @@ export function TendersExplorer({
         </div>
       </div>
 
-      <DetailDrawer item={selected} onClose={closeDrawer} />
+      <DetailDrawer item={liveSelected} onClose={closeDrawer} />
     </div>
   );
 }
