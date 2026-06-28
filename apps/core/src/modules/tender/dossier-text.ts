@@ -1,5 +1,6 @@
 import { strFromU8, unzipSync } from 'fflate';
 import { defaultPdfExtractor, type PdfTextExtractor } from './pdf-ocr';
+import { noopBinaryExtractor, type BinaryDocExtractor } from './dossier-binary';
 
 // Re-export so any historical consumer that imports defaultPdfExtractor /
 // PdfTextExtractor from this module keeps compiling after the lift.
@@ -37,11 +38,14 @@ export const MAX_PDF_BYTES = 40 * 1024 * 1024;
  *  OOXML Word (.docx), OOXML Excel (.xlsx — the bordereau des prix is almost
  *  always one), and plain CSV/TXT. Binary .doc/.xls/.rtf/.odt/.ods are handled
  *  by the LibreOffice fallback in the extractor, NOT here. */
-const DATA_DOC_NAME = /\.(pdf|docx|xlsx|csv|txt|odt|ods)$/i;
+const DATA_DOC_NAME = /\.(pdf|docx?|xlsx?|csv|txt|odt|ods|ppt|rtf)$/i;
 const DOCX_NAME = /\.docx$/i;
 const XLSX_NAME = /\.xlsx$/i;
 const ODF_NAME = /\.(odt|ods)$/i;
 const PLAINTEXT_NAME = /\.(csv|txt)$/i;
+/** Legacy Office binaries handled by the CLI-tool fallback (dossier-binary.ts).
+ *  Anchored so it never matches the OOXML .docx/.xlsx handled natively above. */
+const BINARY_NAME = /\.(doc|xls|ppt|rtf)$/i;
 /** Bidder-fillable templates carry no useful data — exclude them up front to
  *  free the budget for the data-bearing docs (RC/CPS/BPU). Matches both the
  *  abbreviations (DH, AE) and the full French names, with the typographic
@@ -290,6 +294,7 @@ export const MIN_READABLE_TOTAL_CHARS = 500;
 export async function extractDossierText(
   zipBytes: Uint8Array,
   extractPdf: PdfTextExtractor = defaultPdfExtractor,
+  extractBinary: BinaryDocExtractor = noopBinaryExtractor,
 ): Promise<DossierText> {
   let entries: Record<string, Uint8Array>;
   try {
@@ -336,7 +341,9 @@ export async function extractDossierText(
             ? extractOdfText(bytes)
             : PLAINTEXT_NAME.test(name)
               ? strFromU8(bytes)
-              : await extractPdf(bytes);
+              : BINARY_NAME.test(name)
+                ? await extractBinary(bytes, name)
+                : await extractPdf(bytes);
     } catch {
       // A single unreadable doc must not abort the whole dossier.
       continue;

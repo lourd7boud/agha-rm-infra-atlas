@@ -23,9 +23,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-ara \
     ghostscript \
     poppler-utils \
+    antiword \
+    catdoc \
+    unrtf \
     wget \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
+# antiword(.doc), catdoc→xls2csv(.xls)/catppt(.ppt), unrtf(.rtf): tiny CLI
+# converters for the legacy Office binaries some buyers still ship — the
+# "never fail on any format" net (see dossier-binary.ts). Total ~5 MB, far
+# lighter than LibreOffice, and they only run as a last resort.
 
 WORKDIR /app
 

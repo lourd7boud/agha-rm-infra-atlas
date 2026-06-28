@@ -20,6 +20,7 @@ import {
   MIN_READABLE_TOTAL_CHARS,
 } from './dossier-text';
 import { pdfParseExtract } from './pdf-ocr';
+import { defaultBinaryExtractor } from './dossier-binary';
 import { buildVisionInput } from './dossier-vision';
 import {
   aiExtractDossier,
@@ -179,7 +180,11 @@ export class DossierExtractionService {
     }
     // 1) Fast digital pass — pdf-parse + DOCX text only, NO tesseract (which is
     //    the slow CPU-bound step). Digital DCEs are resolved here cheaply.
-    const { text, files } = await extractDossierText(dossier.bytes, pdfParseExtract);
+    const { text, files } = await extractDossierText(
+      dossier.bytes,
+      pdfParseExtract,
+      defaultBinaryExtractor,
+    );
     const biggestFileChars = files.reduce((m, f) => Math.max(m, f.chars), 0);
     const digitalReadable =
       text.length >= MIN_READABLE_TOTAL_CHARS &&
