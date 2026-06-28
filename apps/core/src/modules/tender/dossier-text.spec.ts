@@ -103,6 +103,65 @@ describe('extractDossierText', () => {
     expect(out.text).not.toContain('blank form to fill');
   });
 
+  test('ingests an .xlsx BPU (bordereau des prix is usually a spreadsheet)', async () => {
+    // Minimal valid XLSX = ZIP with sharedStrings + one worksheet. String cells
+    // (t="s") point into the shared table by index; bare cells carry numbers.
+    const shared =
+      '<?xml version="1.0"?><sst xmlns="x">' +
+      '<si><t>Désignation</t></si>' +
+      '<si><t>Béton armé</t></si>' +
+      '<si><t>Lot n&#176; 1</t></si>' +
+      '</sst>';
+    const sheet =
+      '<?xml version="1.0"?><worksheet><sheetData>' +
+      '<row r="1"><c r="A1" t="s"><v>0</v></c></row>' +
+      '<row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2"><v>120</v></c></row>' +
+      '<row r="3"><c r="A3" t="s"><v>2</v></c></row>' +
+      '</sheetData></worksheet>';
+    const xlsxBytes = zipSync({
+      'xl/sharedStrings.xml': strToU8(shared),
+      'xl/worksheets/sheet1.xml': strToU8(sheet),
+    });
+    const zip = zipSync({
+      'BORDEREAU DES PRIX 08-2026.xlsx': xlsxBytes,
+      'RC 08-2026.pdf': strToU8('rc règlement de consultation'),
+    });
+    const out = await extractDossierText(zip, echoExtract);
+    expect(out.files.map((f) => f.name)).toContain('BORDEREAU DES PRIX 08-2026.xlsx');
+    expect(out.text).toContain('Désignation');
+    expect(out.text).toContain('Béton armé | 120'); // row cells joined by " | "
+    expect(out.text).toContain('Lot n° 1'); // numeric XML entity (&#176;) decoded
+  });
+
+  test('ingests an .ods spreadsheet (OpenDocument / LibreOffice)', async () => {
+    const content =
+      '<?xml version="1.0"?><office:document-content xmlns:office="x" xmlns:table="t" xmlns:text="tx">' +
+      '<table:table-row><table:table-cell><text:p>Désignation</text:p></table:table-cell>' +
+      '<table:table-cell><text:p>Quantité</text:p></table:table-cell></table:table-row>' +
+      '<table:table-row><table:table-cell><text:p>Carrelage</text:p></table:table-cell>' +
+      '<table:table-cell><text:p>250</text:p></table:table-cell></table:table-row>' +
+      '</office:document-content>';
+    const odsBytes = zipSync({ 'content.xml': strToU8(content) });
+    const zip = zipSync({
+      'BORDEREAU 09-2026.ods': odsBytes,
+      'RC 09-2026.pdf': strToU8('rc règlement'),
+    });
+    const out = await extractDossierText(zip, echoExtract);
+    expect(out.text).toContain('Désignation');
+    expect(out.text).toContain('Carrelage');
+    expect(out.text).toContain('250');
+  });
+
+  test('ingests a .csv / .txt file verbatim', async () => {
+    const zip = zipSync({
+      'detail estimatif.csv': strToU8('Designation,Quantite,Prix\nBeton,120,1500'),
+      'RC.pdf': strToU8('rc règlement'),
+    });
+    const out = await extractDossierText(zip, echoExtract);
+    expect(out.text).toContain('Designation,Quantite,Prix');
+    expect(out.text).toContain('Beton,120,1500');
+  });
+
   test('per-bucket budget prevents a fat RC from starving the BPU', async () => {
     // RC fills its 24k bucket; BPU still gets its own 20k bucket; total stays
     // bounded but BPU is no longer starved (the pre-bucket version would have

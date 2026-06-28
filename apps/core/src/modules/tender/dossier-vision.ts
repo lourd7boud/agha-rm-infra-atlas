@@ -26,6 +26,16 @@ export const VISION_PER_DOC_PAGES = 8;
  *  context — the images carry the bulk of the signal. */
 const MAX_DIGITAL_CONTEXT = 12_000;
 
+/** Loose image files in the DCE (a buyer who scanned the whole dossier to JPGs
+ *  instead of a PDF). Sent straight to the multimodal model — only the formats
+ *  Gemini accepts as inline_data. */
+const IMAGE_NAME = /\.(jpe?g|png|webp)$/i;
+function imageMediaType(name: string): LlmVisionDocImage['mediaType'] {
+  if (/\.png$/i.test(name)) return 'image/png';
+  if (/\.webp$/i.test(name)) return 'image/webp';
+  return 'image/jpeg';
+}
+
 export interface DossierVisionInput {
   images: LlmVisionDocImage[];
   /** Text-layer content found in the same dossier (digital pieces), bounded. */
@@ -41,15 +51,18 @@ export async function buildVisionInput(
   let entries: Record<string, Uint8Array>;
   try {
     entries = unzipSync(zipBytes, {
-      filter: (file) => isDataBearingDoc(file.name) && file.originalSize <= MAX_PDF_BYTES,
+      filter: (file) =>
+        (isDataBearingDoc(file.name) || IMAGE_NAME.test(file.name)) &&
+        file.originalSize <= MAX_PDF_BYTES,
     });
   } catch {
     return { images: [], digitalText: '', sourceFiles: [] };
   }
 
-  // Only PDFs are rendered to images; DOCX text is handled by the text path.
+  // PDFs are rendered to images; loose image files go straight to the model;
+  // DOCX/XLSX text is handled by the text path. Priority order keeps RC/BPU first.
   const names = Object.keys(entries)
-    .filter((n) => /\.pdf$/i.test(n))
+    .filter((n) => /\.pdf$/i.test(n) || IMAGE_NAME.test(n))
     .sort((a, b) => docPriority(a) - docPriority(b) || a.localeCompare(b));
 
   const images: LlmVisionDocImage[] = [];
@@ -62,6 +75,17 @@ export async function buildVisionInput(
     if (pagesLeft <= 0) break;
     const bytes = entries[name];
     if (!bytes || bytes.length === 0) continue;
+
+    // Loose image file → send the bytes straight to the model (counts as a page).
+    if (IMAGE_NAME.test(name)) {
+      images.push({
+        base64: Buffer.from(bytes).toString('base64'),
+        mediaType: imageMediaType(name),
+      });
+      pagesLeft -= 1;
+      sourceFiles.push(name);
+      continue;
+    }
 
     // Classify: a usable text layer → keep its text (cheap, free, no render).
     let txt = '';

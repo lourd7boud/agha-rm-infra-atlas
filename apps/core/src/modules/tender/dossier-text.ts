@@ -33,8 +33,15 @@ export const MAX_DOSSIER_CHARS = 60_000;
 /** Skip any single PDF/DOCX whose uncompressed size exceeds this (memory guard). */
 export const MAX_PDF_BYTES = 40 * 1024 * 1024;
 
-const DATA_DOC_NAME = /\.(pdf|docx)$/i;
+/** Formats we can pull text from natively (no LibreOffice): text-layer PDF,
+ *  OOXML Word (.docx), OOXML Excel (.xlsx — the bordereau des prix is almost
+ *  always one), and plain CSV/TXT. Binary .doc/.xls/.rtf/.odt/.ods are handled
+ *  by the LibreOffice fallback in the extractor, NOT here. */
+const DATA_DOC_NAME = /\.(pdf|docx|xlsx|csv|txt|odt|ods)$/i;
 const DOCX_NAME = /\.docx$/i;
+const XLSX_NAME = /\.xlsx$/i;
+const ODF_NAME = /\.(odt|ods)$/i;
+const PLAINTEXT_NAME = /\.(csv|txt)$/i;
 /** Bidder-fillable templates carry no useful data — exclude them up front to
  *  free the budget for the data-bearing docs (RC/CPS/BPU). Matches both the
  *  abbreviations (DH, AE) and the full French names, with the typographic
@@ -107,14 +114,32 @@ export function docPriority(name: string): number {
 const W_T_TAG = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g;
 const W_P_END = /<\/w:p>/g;
 const XML_ENTITY: Record<string, string> = {
-  '&amp;': '&',
-  '&lt;': '<',
-  '&gt;': '>',
-  '&apos;': "'",
-  '&quot;': '"',
-  '&#160;': ' ',
-  '&nbsp;': ' ',
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  apos: "'",
+  quot: '"',
+  nbsp: ' ',
 };
+
+/** Decodes the named + numeric (decimal/hex) XML entities that appear in OOXML
+ *  text (`word/document.xml`, `xl/sharedStrings.xml`). Numeric refs cover the
+ *  accented French/Arabic characters Office encodes as `&#233;` / `&#xE9;`. */
+function decodeXmlEntities(s: string): string {
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h: string) => safeFromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d: string) => safeFromCodePoint(Number(d)))
+    .replace(/&(amp|lt|gt|apos|quot|nbsp);/g, (_, name: string) => XML_ENTITY[name] ?? `&${name};`);
+}
+
+function safeFromCodePoint(cp: number): string {
+  if (!Number.isFinite(cp) || cp < 0 || cp > 0x10ffff) return '';
+  try {
+    return String.fromCodePoint(cp);
+  } catch {
+    return '';
+  }
+}
 
 function extractDocxText(bytes: Uint8Array): string {
   let inner: Record<string, Uint8Array>;
@@ -137,8 +162,106 @@ function extractDocxText(bytes: Uint8Array): string {
   while ((m = W_T_TAG.exec(broken))) {
     chunks.push(m[1]!);
   }
-  const joined = chunks.join('');
-  return joined.replace(/&(amp|lt|gt|apos|quot|#160|nbsp);/g, (e) => XML_ENTITY[e] ?? e);
+  return decodeXmlEntities(chunks.join(''));
+}
+
+/** Extracts cell text from an .xlsx (OOXML spreadsheet) — same dependency-free
+ *  approach as DOCX: the workbook is a ZIP with a shared-string table
+ *  (`xl/sharedStrings.xml`) and one XML per sheet (`xl/worksheets/sheetN.xml`).
+ *  String cells (`t="s"`) reference the shared table by index; inline strings
+ *  carry their own `<t>`; everything else is a literal number/date serial. We
+ *  emit one line per row, cells joined by " | ", which is exactly what the BPU
+ *  (bordereau des prix / détail estimatif) is shipped as for most buyers. */
+const SI_BLOCK = /<si>([\s\S]*?)<\/si>/g;
+const T_TAG = /<t[^>]*>([\s\S]*?)<\/t>/g;
+const ROW_BLOCK = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
+const CELL_BLOCK = /<c\b([^>]*)>([\s\S]*?)<\/c>/g;
+const V_TAG = /<v>([\s\S]*?)<\/v>/;
+const SHEET_NAME = /xl\/worksheets\/sheet\d+\.xml$/i;
+
+function parseSharedStrings(xml: string): string[] {
+  const out: string[] = [];
+  let si: RegExpExecArray | null;
+  SI_BLOCK.lastIndex = 0;
+  while ((si = SI_BLOCK.exec(xml))) {
+    const parts: string[] = [];
+    let t: RegExpExecArray | null;
+    T_TAG.lastIndex = 0;
+    while ((t = T_TAG.exec(si[1]!))) parts.push(t[1]!);
+    out.push(decodeXmlEntities(parts.join('')));
+  }
+  return out;
+}
+
+function extractSheetText(xml: string, shared: string[]): string {
+  const rows: string[] = [];
+  let row: RegExpExecArray | null;
+  ROW_BLOCK.lastIndex = 0;
+  while ((row = ROW_BLOCK.exec(xml))) {
+    const cells: string[] = [];
+    let cell: RegExpExecArray | null;
+    CELL_BLOCK.lastIndex = 0;
+    while ((cell = CELL_BLOCK.exec(row[1]!))) {
+      const attrs = cell[1]!;
+      const inner = cell[2]!;
+      let val = '';
+      if (/\bt="s"/.test(attrs)) {
+        const v = V_TAG.exec(inner);
+        if (v) val = shared[Number(v[1])] ?? '';
+      } else if (/\bt="(inlineStr|str)"/.test(attrs)) {
+        T_TAG.lastIndex = 0;
+        const t = T_TAG.exec(inner);
+        val = t ? decodeXmlEntities(t[1]!) : '';
+      } else {
+        const v = V_TAG.exec(inner);
+        if (v) val = v[1]!;
+      }
+      const trimmed = val.trim();
+      if (trimmed) cells.push(trimmed);
+    }
+    if (cells.length) rows.push(cells.join(' | '));
+  }
+  return rows.join('\n');
+}
+
+function extractXlsxText(bytes: Uint8Array): string {
+  let inner: Record<string, Uint8Array>;
+  try {
+    inner = unzipSync(bytes, {
+      filter: (file) =>
+        file.name === 'xl/sharedStrings.xml' || SHEET_NAME.test(file.name),
+    });
+  } catch {
+    return '';
+  }
+  const sharedBytes = inner['xl/sharedStrings.xml'];
+  const shared = sharedBytes ? parseSharedStrings(strFromU8(sharedBytes)) : [];
+  const parts: string[] = [];
+  for (const name of Object.keys(inner).filter((n) => SHEET_NAME.test(n)).sort()) {
+    const sheet = extractSheetText(strFromU8(inner[name]!), shared);
+    if (sheet.trim()) parts.push(sheet);
+  }
+  return parts.join('\n\n');
+}
+
+/** Extracts text from an OpenDocument file (.odt Writer / .ods Calc) — also a
+ *  ZIP, with the content in `content.xml`. We turn paragraph / table-cell / row
+ *  end-tags into separators, then strip the remaining markup. Covers buyers who
+ *  author their DCE in LibreOffice instead of MS Office. */
+function extractOdfText(bytes: Uint8Array): string {
+  let inner: Record<string, Uint8Array>;
+  try {
+    inner = unzipSync(bytes, { filter: (file) => file.name === 'content.xml' });
+  } catch {
+    return '';
+  }
+  const xmlBytes = inner['content.xml'];
+  if (!xmlBytes) return '';
+  const stripped = strFromU8(xmlBytes)
+    .replace(/<\/table:table-cell>/g, ' | ')
+    .replace(/<\/(text:p|text:h|table:table-row)>/g, '\n')
+    .replace(/<[^>]+>/g, '');
+  return decodeXmlEntities(stripped);
 }
 
 /** pdf-parse emits a per-page sentinel like "-- 1 of 1 --" even when the page
@@ -207,7 +330,13 @@ export async function extractDossierText(
     try {
       raw = DOCX_NAME.test(name)
         ? extractDocxText(bytes)
-        : await extractPdf(bytes);
+        : XLSX_NAME.test(name)
+          ? extractXlsxText(bytes)
+          : ODF_NAME.test(name)
+            ? extractOdfText(bytes)
+            : PLAINTEXT_NAME.test(name)
+              ? strFromU8(bytes)
+              : await extractPdf(bytes);
     } catch {
       // A single unreadable doc must not abort the whole dossier.
       continue;
