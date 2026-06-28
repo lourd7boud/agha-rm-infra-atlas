@@ -118,6 +118,57 @@ export const storedDossierExtractionSchema = dossierExtractionSchema.extend({
 });
 export type DossierExtraction = z.infer<typeof storedDossierExtractionSchema>;
 
+/**
+ * Gemini controlled-generation schema mirroring dossierExtractionSchema. WITHOUT
+ * it, native Gemini freelances its own JSON shape (English keys like
+ * `contracting_authority`, `scope_of_work`, …) which — because every field here
+ * is nullish/defaulted — silently passes safeParse as an ALL-EMPTY extraction.
+ * The schema forces the exact keys so budget/caution/BPU/qualifications actually
+ * land. All fields optional (only bpu.designation required) so a genuinely absent
+ * value stays null rather than being hallucinated to satisfy the schema. */
+const num = { type: 'number', nullable: true } as const;
+const str = { type: 'string', nullable: true } as const;
+export const DOSSIER_RESPONSE_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    estimationMad: num,
+    cautionProvisoireMad: num,
+    cautionDefinitivePct: num,
+    retenueGarantiePct: num,
+    delaiGarantieMois: { type: 'integer', nullable: true },
+    delaiExecutionMois: num,
+    chiffreAffairesMinMad: num,
+    qualifications: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { secteur: str, qualification: str, classe: str },
+      },
+    },
+    bpu: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          section: str,
+          designation: { type: 'string' },
+          quantite: num,
+          unite: str,
+          prixUnitaireMad: num,
+        },
+        required: ['designation'],
+      },
+    },
+    contact: {
+      type: 'object',
+      nullable: true,
+      properties: { nom: str, email: str, telephone: str },
+    },
+    conditionsLegales: { type: 'array', items: { type: 'string' } },
+    autres: { type: 'array', items: { type: 'string' } },
+  },
+};
+
 export const DOSSIER_EXTRACTION_SYSTEM_PROMPT = `Tu es analyste de marchés publics marocains pour AGHA RM INFRA. On te donne le TEXTE BRUT du dossier de consultation (DCE: Règlement de Consultation, CPS, avis, bordereau des prix). Tu renvoies UNIQUEMENT un objet JSON valide, sans texte autour:
 {
   "estimationMad": null,
@@ -174,6 +225,9 @@ export async function aiExtractDossier(
     // dossiers (a real BTP estimatif can carry 50+ line items). 8 000 covers
     // ~200 items comfortably without inflating cost for the small ones.
     maxTokens: 8000,
+    // Forces native Gemini onto the exact schema — without it Gemini invents its
+    // own JSON keys and the extraction silently parses as all-empty.
+    responseSchema: DOSSIER_RESPONSE_SCHEMA,
   });
 
   let parsed: unknown;
@@ -290,6 +344,8 @@ export async function aiExtractDossierVision(
     images: [...images],
     maxTokens: 8000,
     jsonMode: true,
+    // Same controlled-generation guard as the text path (see DOSSIER_RESPONSE_SCHEMA).
+    responseSchema: DOSSIER_RESPONSE_SCHEMA,
   });
   let parsed: unknown;
   try {
