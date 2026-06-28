@@ -114,6 +114,24 @@ export async function renderPdfToJpegBase64(
   }
 }
 
+/** Page count of a PDF via poppler's pdfinfo; 0 on any failure. Used by the
+ *  vision path to (a) judge scan-vs-digital by text DENSITY (chars per page,
+ *  not an absolute count — a junk OCR layer of ~14 chars/page must NOT pass as
+ *  digital) and (b) target the bordereau, which sits on the LAST pages. */
+export async function pdfPageCount(bytes: Uint8Array): Promise<number> {
+  const dir = await mkdtemp(join(tmpdir(), 'atlas-pginfo-'));
+  const inPath = join(dir, 'in.pdf');
+  try {
+    await writeFile(inPath, bytes);
+    const { stdout } = await execFileAsync('pdfinfo', [inPath], { timeout: 30_000 });
+    return Number(/Pages:\s*(\d+)/.exec(stdout)?.[1] ?? 0);
+  } catch {
+    return 0;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /** Runs ocrmypdf on bytes, then re-parses the OCR'd PDF to get the new text
  *  layer. Returns empty string on any failure (binary missing, timeout,
  *  unsupported PDF) — caller falls back to the bare pdf-parse output. */

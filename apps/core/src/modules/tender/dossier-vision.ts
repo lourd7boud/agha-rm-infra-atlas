@@ -6,7 +6,7 @@ import {
   MAX_PDF_BYTES,
   MIN_READABLE_FILE_CHARS,
 } from './dossier-text';
-import { pdfParseExtract, renderPdfToJpegBase64 } from './pdf-ocr';
+import { pdfPageCount, pdfParseExtract, renderPdfToJpegBase64 } from './pdf-ocr';
 
 /**
  * Builds the input for the VISION extraction path: unzips the DCE, classifies
@@ -18,13 +18,39 @@ import { pdfParseExtract, renderPdfToJpegBase64 } from './pdf-ocr';
  */
 
 /** Total page-images sent to the model across all docs (cost/quality balance). */
-export const VISION_MAX_PAGES = 15;
+export const VISION_MAX_PAGES = 20;
 /** Per-document page cap so a fat RC never consumes the whole page budget,
  *  starving the BPU/CPS that follow it in priority order. */
-export const VISION_PER_DOC_PAGES = 8;
+export const VISION_PER_DOC_PAGES = 12;
+/** A PDF counts as "digital" (text kept, NOT imaged) only when its text layer
+ *  is DENSE enough — chars per page. A scanned PDF with a junk OCR layer
+ *  (~14 chars/page) must fail this and be rendered to images, otherwise its
+ *  pages — including a bordereau buried in the scan — never reach the model. */
+const MIN_CHARS_PER_PAGE_DIGITAL = 120;
 /** Keep at most this much digital text-layer content (hybrid dossiers) as
  *  context — the images carry the bulk of the signal. */
 const MAX_DIGITAL_CONTEXT = 12_000;
+
+/**
+ * Chooses which pages of a scanned doc to image, within `budget` pages. The
+ * bordereau des prix is almost always the LAST pages of the CPS, while the
+ * headline facts (estimation, caution) are on the FIRST pages — so for a doc
+ * longer than the budget we render the first half AND the last half rather than
+ * a single leading block that would miss the bordereau. Returns contiguous
+ * [first,last] page ranges (1-based, inclusive).
+ */
+export function selectVisionPageRanges(
+  pages: number,
+  budget: number,
+): Array<[number, number]> {
+  if (pages <= 0 || budget <= 0) return [];
+  if (pages <= budget) return [[1, pages]];
+  const head = Math.ceil(budget / 2);
+  const tail = budget - head;
+  const ranges: Array<[number, number]> = [[1, head]];
+  if (tail > 0) ranges.push([pages - tail + 1, pages]);
+  return ranges;
+}
 
 /** Loose image files in the DCE (a buyer who scanned the whole dossier to JPGs
  *  instead of a PDF). Sent straight to the multimodal model — only the formats
@@ -87,7 +113,13 @@ export async function buildVisionInput(
       continue;
     }
 
-    // Classify: a usable text layer → keep its text (cheap, free, no render).
+    // Page count drives BOTH the density gate and the page selection.
+    const pages = await pdfPageCount(bytes);
+
+    // Classify by DENSITY (chars per page), not an absolute count. Only a
+    // genuinely text-rich PDF is kept as text and skipped for rendering; a
+    // scanned PDF with a thin junk OCR layer fails this and is imaged, so a
+    // bordereau buried in the scan still reaches the model.
     let txt = '';
     try {
       txt = await pdfParseExtract(bytes);
@@ -95,7 +127,10 @@ export async function buildVisionInput(
       txt = '';
     }
     const measured = txt.replace(/\s+/g, ' ').trim();
-    if (measured.length >= MIN_READABLE_FILE_CHARS) {
+    const isDigital =
+      measured.length >= MIN_READABLE_FILE_CHARS &&
+      (pages <= 0 || measured.length / pages >= MIN_CHARS_PER_PAGE_DIGITAL);
+    if (isDigital) {
       if (digitalUsed < MAX_DIGITAL_CONTEXT) {
         const room = MAX_DIGITAL_CONTEXT - digitalUsed;
         const slice = measured.slice(0, room);
@@ -106,9 +141,22 @@ export async function buildVisionInput(
       continue;
     }
 
-    // Scanned → render the first pages (bounded per-doc and by the global budget).
+    // Scanned → render FIRST and LAST pages (headline at the start, bordereau at
+    // the end), bounded per-doc and by the global budget.
     const take = Math.min(VISION_PER_DOC_PAGES, pagesLeft);
-    const jpgs = await renderPdfToJpegBase64(bytes, 1, take);
+    const ranges =
+      pages > 0
+        ? selectVisionPageRanges(pages, take)
+        : [[1, take] as [number, number]];
+    const jpgs: string[] = [];
+    for (const [first, last] of ranges) {
+      if (jpgs.length >= take) break;
+      const rendered = await renderPdfToJpegBase64(bytes, first, last);
+      for (const b of rendered) {
+        if (jpgs.length >= take) break;
+        jpgs.push(b);
+      }
+    }
     if (jpgs.length === 0) continue;
     for (const base64 of jpgs) images.push({ base64, mediaType: 'image/jpeg' });
     pagesLeft -= jpgs.length;
