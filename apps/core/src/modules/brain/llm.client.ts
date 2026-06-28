@@ -499,9 +499,9 @@ export class GoogleLlmClient implements LlmClient {
       contents: [{ role: 'user', parts: [{ text: request.prompt }] }],
       generationConfig: {
         temperature: 0,
-        // Gemini 2.5 Flash "thinking" burns output tokens + latency with no gain
-        // for deterministic structured extraction — disable it.
-        thinkingConfig: { thinkingBudget: 0 },
+        // NOTE: do NOT disable Gemini 2.5 "thinking" here — the dossier
+        // extraction (find budget/caution/BPU in a long DCE) regressed to
+        // all-nulls / invalid output with thinkingBudget:0. Thinking stays on.
         maxOutputTokens: request.maxTokens ?? 1024,
         ...(request.responseSchema
           ? { responseMimeType: 'application/json', responseSchema: request.responseSchema }
@@ -529,7 +529,6 @@ export class GoogleLlmClient implements LlmClient {
       ],
       generationConfig: {
         temperature: 0,
-        thinkingConfig: { thinkingBudget: 0 },
         maxOutputTokens: request.maxTokens ?? 1024,
       },
     };
@@ -545,7 +544,6 @@ export class GoogleLlmClient implements LlmClient {
       contents: [{ role: 'user', parts }],
       generationConfig: {
         temperature: 0,
-        thinkingConfig: { thinkingBudget: 0 },
         maxOutputTokens: request.maxTokens ?? 1024,
         ...(request.responseSchema
           ? { responseMimeType: 'application/json', responseSchema: request.responseSchema }
