@@ -249,10 +249,24 @@ export class WatchModule implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    // A Sentinel sweep chains listing crawl → enrichment → dossier extraction;
+    // the extraction stage alone (PDF parsing + LLM calls + XLSX bordereau) can
+    // run 30+ min on a large WATCH_EXTRACT_LIMIT. BullMQ's default lockDuration
+    // (30 s) trips long before the sweep finishes, the worker can't renew the
+    // lock, and the job ends up in a zombie loop ("could not renew lock for
+    // job N" spam — observed in prod, 0/5024 tenders ever reach extraction).
+    // We lift the lock window to 90 min, which brackets even the longest
+    // realistic sweep without making genuinely-dead jobs hang forever
+    // (stalledInterval still detects a crashed worker).
     this.worker = new Worker(
       QUEUE_NAME,
       async () => this.service.runOnce(),
-      { connection: redisConnection() },
+      {
+        connection: redisConnection(),
+        lockDuration: 90 * 60 * 1000,
+        stalledInterval: 30 * 60 * 1000,
+        maxStalledCount: 1,
+      },
     );
     this.worker.on('failed', (job, error) =>
       this.logger.error(`watch job ${job?.id} failed: ${error.message}`),
