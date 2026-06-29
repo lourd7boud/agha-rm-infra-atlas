@@ -5,6 +5,8 @@
  * recognizable across the catalogue.
  */
 
+import { lookupIssuerLogo } from '@/lib/issuer-logos';
+
 const PALETTE: ReadonlyArray<readonly [string, string]> = [
   ['bg-cyan-soft', 'text-cyan'],
   ['bg-emerald-soft', 'text-emerald'],
@@ -46,6 +48,19 @@ export function BuyerAvatar({
   size?: keyof typeof SIZES;
   className?: string;
 }) {
+  const logo = lookupIssuerLogo(name);
+  if (logo) {
+    return (
+      <img
+        src={logo}
+        alt={name}
+        title={name}
+        loading="lazy"
+        decoding="async"
+        className={`shrink-0 rounded-full border border-line bg-white object-contain ${SIZES[size]} ${className}`}
+      />
+    );
+  }
   const [bg, fg] = pickPalette(name);
   return (
     <span
