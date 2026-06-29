@@ -271,6 +271,39 @@ export class TenderController {
     return this.dossierService.ensureDossier(id);
   }
 
+  /** Lists every file inside the cached DCE — powers the left rail of the
+   *  "Voir le fichier source" overlay (mirrors datao's split-pane preview). */
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
+  @Get('tenders/:id/files')
+  async dossierFilesList(
+    @Param('id') id: string,
+  ): Promise<{ files: Awaited<ReturnType<DossierService['listDossierFiles']>> }> {
+    const files = await this.dossierService.listDossierFiles(id);
+    return { files };
+  }
+
+  /** "Voir le fichier source" — extracts ONE file from the cached DCE ZIP and
+   *  returns it base64-encoded (Bordereau.xlsx behind the BPU, CPS pdf…). The
+   *  web BFF decodes + streams binary with the right Content-Type so the
+   *  browser opens or downloads as expected. Lookup accepts either bare leaf
+   *  ("Bordereau.xlsx") or full ZIP path. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 30 } })
+  @Get('tenders/:id/dossier/file')
+  async dossierFile(
+    @Param('id') id: string,
+    @Query('name') name: string,
+  ): Promise<{ filename: string; mime: string; bytesBase64: string }> {
+    if (!name) throw new BadRequestException('Paramètre "name" requis');
+    const file = await this.dossierService.getDossierFile(id, name);
+    return {
+      filename: file.filename,
+      mime: file.mime,
+      bytesBase64: file.bytes.toString('base64'),
+    };
+  }
+
   /** Extracts the REAL budget/caution/qualifications/BPU from the DCE dossier. */
   @Roles('marches', 'direction', 'admin-si')
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
