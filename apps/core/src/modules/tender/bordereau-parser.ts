@@ -221,6 +221,107 @@ function truncate(text: string, n: number): string {
   return text.length <= n ? text : text.slice(0, n);
 }
 
+/** Walks a single sheet/table's rows, finds the BPU header and emits items.
+ *  Shared by both the XLSX (one call per sheet) and DOCX (one call per
+ *  <w:tbl>) paths so the header/section/total/truncation logic stays in ONE
+ *  place. Returns null when the rows don't resemble a BPU. */
+function rowsToBpuItems(rows: string[][]): BpuItem[] | null {
+  const header = findHeader(rows);
+  if (!header) return null;
+  const { cols } = header;
+  const items: BpuItem[] = [];
+  let currentSection: string | null = null;
+  for (let r = header.rowIdx + 1; r < rows.length; r++) {
+    const row = rows[r]!;
+    const nonEmpty = row.filter((c) => c && c.trim().length > 0);
+    if (nonEmpty.length === 0) continue;
+    if (nonEmpty.length === 1) {
+      const txt = nonEmpty[0]!.trim();
+      if (isLikelyTotalRow(txt)) continue;
+      if (txt.length >= 2) currentSection = truncate(txt, MAX_SECTION_CHARS);
+      continue;
+    }
+    const rawDesig = (row[cols.designation] || '').trim();
+    if (!rawDesig) continue;
+    if (isLikelyTotalRow(rawDesig)) continue;
+    if (/^[\d\s.,-]+$/.test(rawDesig)) continue;
+    const unite = cols.unite != null ? (row[cols.unite] || '').trim() : '';
+    const quantiteRaw = cols.quantite != null ? (row[cols.quantite] || '').trim() : '';
+    const prixRaw = cols.prixUnitaire != null ? (row[cols.prixUnitaire] || '').trim() : '';
+    items.push({
+      section: currentSection,
+      designation: truncate(rawDesig, MAX_DESIGNATION_CHARS),
+      quantite: quantiteRaw ? parseFrenchNumber(quantiteRaw) : null,
+      unite: unite ? truncate(unite, 24) : null,
+      prixUnitaireMad: prixRaw ? parseFrenchNumber(prixRaw) : null,
+    });
+  }
+  return items;
+}
+
+// ===== DOCX (Word) table parsing =====
+const W_TBL_BLOCK = /<w:tbl\b[^>]*>([\s\S]*?)<\/w:tbl>/g;
+const W_TR_BLOCK = /<w:tr\b[^>]*>([\s\S]*?)<\/w:tr>/g;
+const W_TC_BLOCK = /<w:tc\b[^>]*>([\s\S]*?)<\/w:tc>/g;
+const W_T_TAG = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+
+/** Extracts every table in a DOCX (Word) document as a list of 2D-cell arrays.
+ *  Cell text concatenates every <w:t> run inside, with XML entities decoded. */
+function extractDocxTables(bytes: Uint8Array): string[][][] {
+  let inner: Record<string, Uint8Array>;
+  try {
+    inner = unzipSync(bytes, { filter: (f) => f.name === 'word/document.xml' });
+  } catch {
+    return [];
+  }
+  const docBytes = inner['word/document.xml'];
+  if (!docBytes) return [];
+  const xml = strFromU8(docBytes);
+
+  const tables: string[][][] = [];
+  let tbl: RegExpExecArray | null;
+  W_TBL_BLOCK.lastIndex = 0;
+  while ((tbl = W_TBL_BLOCK.exec(xml))) {
+    const rows: string[][] = [];
+    let tr: RegExpExecArray | null;
+    W_TR_BLOCK.lastIndex = 0;
+    while ((tr = W_TR_BLOCK.exec(tbl[1]!))) {
+      const cells: string[] = [];
+      let tc: RegExpExecArray | null;
+      W_TC_BLOCK.lastIndex = 0;
+      while ((tc = W_TC_BLOCK.exec(tr[1]!))) {
+        const parts: string[] = [];
+        let t: RegExpExecArray | null;
+        W_T_TAG.lastIndex = 0;
+        while ((t = W_T_TAG.exec(tc[1]!))) parts.push(t[1]!);
+        cells.push(decodeXmlEntities(parts.join('')).trim());
+      }
+      rows.push(cells);
+    }
+    if (rows.length) tables.push(rows);
+  }
+  return tables;
+}
+
+/** Direct structured parse of a DOCX bordereau — same contract as the XLSX
+ *  parser. Some procuring entities ship the BPU as a Word table inside the DCE
+ *  archive instead of an Excel workbook; this lets us extract those rows
+ *  without going through the LLM either. */
+export function parseBordereauDocx(bytes: Uint8Array): ParseBordereauResult {
+  const tables = extractDocxTables(bytes);
+  if (!tables.length) return { items: [], sheetsRead: 0 };
+  const items: BpuItem[] = [];
+  let tablesRead = 0;
+  for (const rows of tables) {
+    const parsed = rowsToBpuItems(rows);
+    if (parsed && parsed.length > 0) {
+      tablesRead++;
+      items.push(...parsed);
+    }
+  }
+  return { items, sheetsRead: tablesRead };
+}
+
 export function parseBordereauXlsx(bytes: Uint8Array): ParseBordereauResult {
   let entries: Record<string, Uint8Array>;
   try {
@@ -240,44 +341,10 @@ export function parseBordereauXlsx(bytes: Uint8Array): ParseBordereauResult {
   for (const name of sheetNames) {
     const rows = extractSheetRows(strFromU8(entries[name]!), shared);
     if (!rows.length) continue;
-    const header = findHeader(rows);
-    if (!header) continue;
+    const sheetItems = rowsToBpuItems(rows);
+    if (sheetItems == null) continue;
     sheetsRead++;
-    const { cols } = header;
-    let currentSection: string | null = null;
-
-    for (let r = header.rowIdx + 1; r < rows.length; r++) {
-      const row = rows[r]!;
-      const nonEmpty = row.filter((c) => c && c.trim().length > 0);
-      if (nonEmpty.length === 0) continue;
-
-      // Section header: only one non-empty cell.
-      if (nonEmpty.length === 1) {
-        const txt = nonEmpty[0]!.trim();
-        if (isLikelyTotalRow(txt)) continue;
-        if (txt.length >= 2) currentSection = truncate(txt, MAX_SECTION_CHARS);
-        continue;
-      }
-
-      const rawDesig = (row[cols.designation] || '').trim();
-      if (!rawDesig) continue;
-      if (isLikelyTotalRow(rawDesig)) continue;
-      // Skip rows whose "designation" cell is just digits — that's a stray
-      // number row, not a real item.
-      if (/^[\d\s.,-]+$/.test(rawDesig)) continue;
-
-      const unite = cols.unite != null ? (row[cols.unite] || '').trim() : '';
-      const quantiteRaw = cols.quantite != null ? (row[cols.quantite] || '').trim() : '';
-      const prixRaw = cols.prixUnitaire != null ? (row[cols.prixUnitaire] || '').trim() : '';
-
-      items.push({
-        section: currentSection,
-        designation: truncate(rawDesig, MAX_DESIGNATION_CHARS),
-        quantite: quantiteRaw ? parseFrenchNumber(quantiteRaw) : null,
-        unite: unite ? truncate(unite, 24) : null,
-        prixUnitaireMad: prixRaw ? parseFrenchNumber(prixRaw) : null,
-      });
-    }
+    items.push(...sheetItems);
   }
 
   return { items, sheetsRead };
@@ -288,7 +355,9 @@ export function parseBordereauXlsx(bytes: Uint8Array): ParseBordereauResult {
 export function isBordereauFileName(name: string): boolean {
   const base = name.split('/').pop() ?? name;
   const lower = base.toLowerCase();
-  if (!/\.(xlsx|xls|ods)$/i.test(lower)) return false;
+  // XLSX/XLS/ODS handled structurally by parseBordereauXlsx; DOCX by
+  // parseBordereauDocx (Word tables). Other formats fall through to LLM.
+  if (!/\.(xlsx|xls|ods|docx)$/i.test(lower)) return false;
   return /(bordereau|bpu|detail.{0,3}estimatif|cadre.{0,3}bordereau)/i.test(lower);
 }
 
@@ -335,11 +404,14 @@ export function extractBordereauFromDce(zipBytes: Uint8Array): BordereauFromDce 
     (a, b) => bordereauPriority(b) - bordereauPriority(a) || a.localeCompare(b),
   );
   for (const name of names) {
-    // Only structurally-parsable formats. .xls (binary CFB) would need a heavy
-    // legacy dependency; defer to the LLM path for those.
-    if (!/\.xlsx$/i.test(name)) continue;
-    const out = parseBordereauXlsx(entries[name]!);
-    if (out.items.length > 0) {
+    // Structurally-parsable formats: XLSX cells + DOCX tables. .xls (binary
+    // CFB) and .ods get the LLM path (legacy/edge formats, ~5% of catalogue).
+    const out = /\.xlsx$/i.test(name)
+      ? parseBordereauXlsx(entries[name]!)
+      : /\.docx$/i.test(name)
+        ? parseBordereauDocx(entries[name]!)
+        : null;
+    if (out && out.items.length > 0) {
       return { fileName: name, items: out.items, sheetsRead: out.sheetsRead };
     }
   }

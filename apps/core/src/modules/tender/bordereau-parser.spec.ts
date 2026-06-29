@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest';
 import {
   extractBordereauFromDce,
   isBordereauFileName,
+  parseBordereauDocx,
   parseBordereauXlsx,
 } from './bordereau-parser';
 
@@ -281,6 +282,146 @@ describe('parseBordereauXlsx', () => {
 
     expect(out!.fileName).toBe('Bordereau prix.xlsx');
     expect(out!.items[0]?.designation).toBe('Bordereau item');
+  });
+
+  // ===== DOCX (Word) table BPU =====
+  // Build a minimal-but-valid DOCX from a 2D rows array. Word stores tables as
+  // <w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell text</w:t> — the parser walks that.
+  const buildDocx = (rows: ReadonlyArray<ReadonlyArray<string>>): Uint8Array => {
+    const xmlEscape = (s: string) => s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    const tableXml = rows
+      .map(
+        (row) =>
+          `<w:tr>${row
+            .map(
+              (cell) =>
+                `<w:tc><w:p><w:r><w:t>${xmlEscape(cell)}</w:t></w:r></w:p></w:tc>`,
+            )
+            .join('')}</w:tr>`,
+      )
+      .join('');
+    const docXml =
+      `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      `<w:body><w:tbl>${tableXml}</w:tbl></w:body></w:document>`;
+    return zipSync({ 'word/document.xml': strToU8(docXml) });
+  };
+
+  test('parseBordereauDocx: reads a Word table BPU with the same shape', () => {
+    const docx = buildDocx([
+      ['N°', 'Désignation', 'Unité', 'Quantité'],
+      ['1', 'Béton armé pour fondations', 'M3', '120,5'],
+      ['2', 'Acier HA Fe E 500', 'KG', '8 400'],
+      ['3', 'Coffrage métallique', 'M2', '250'],
+    ]);
+
+    const out = parseBordereauDocx(docx);
+
+    expect(out.items.length).toBe(3);
+    expect(out.items[0]).toEqual({
+      section: null,
+      designation: 'Béton armé pour fondations',
+      quantite: 120.5,
+      unite: 'M3',
+      prixUnitaireMad: null,
+    });
+    expect(out.items[1]!.quantite).toBe(8400);
+  });
+
+  test('parseBordereauDocx: handles multi-table workbooks (lots split across tables)', () => {
+    // Build a doc with TWO tables, one per lot.
+    const xmlEscape = (s: string) => s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]!));
+    const table = (rows: string[][]) =>
+      `<w:tbl>${rows
+        .map(
+          (row) =>
+            `<w:tr>${row
+              .map((c) => `<w:tc><w:p><w:r><w:t>${xmlEscape(c)}</w:t></w:r></w:p></w:tc>`)
+              .join('')}</w:tr>`,
+        )
+        .join('')}</w:tbl>`;
+    const docXml =
+      `<?xml version="1.0"?><w:document xmlns:w="x"><w:body>` +
+      table([['Désignation', 'U', 'Qté'], ['Lot 1 item', 'U', '1']]) +
+      table([['Désignation', 'U', 'Qté'], ['Lot 2 item', 'M2', '5']]) +
+      `</w:body></w:document>`;
+    const docx = zipSync({ 'word/document.xml': strToU8(docXml) });
+
+    const out = parseBordereauDocx(docx);
+
+    expect(out.items.map((i) => i.designation).sort()).toEqual(['Lot 1 item', 'Lot 2 item']);
+  });
+
+  test('parseBordereauDocx: ignores non-BPU tables in the same document', () => {
+    // A doc that has a junk table (no BPU headers) and a real BPU table.
+    const xmlEscape = (s: string) => s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]!));
+    const table = (rows: string[][]) =>
+      `<w:tbl>${rows
+        .map(
+          (row) =>
+            `<w:tr>${row
+              .map((c) => `<w:tc><w:p><w:r><w:t>${xmlEscape(c)}</w:t></w:r></w:p></w:tc>`)
+              .join('')}</w:tr>`,
+        )
+        .join('')}</w:tbl>`;
+    const docXml =
+      `<?xml version="1.0"?><w:document xmlns:w="x"><w:body>` +
+      // Junk table: legal-clause table with no quantity column
+      table([['Article', 'Description'], ['Art. 1', 'Conditions générales']]) +
+      // Real BPU
+      table([['Désignation', 'U', 'Qté'], ['Real item', 'U', '5']]) +
+      `</w:body></w:document>`;
+    const docx = zipSync({ 'word/document.xml': strToU8(docXml) });
+
+    const out = parseBordereauDocx(docx);
+
+    expect(out.items.length).toBe(1);
+    expect(out.items[0]!.designation).toBe('Real item');
+  });
+
+  test('parseBordereauDocx: returns empty on non-zip / no tables / no headers', () => {
+    expect(parseBordereauDocx(new Uint8Array([1, 2, 3])).items).toEqual([]);
+    const empty = zipSync({ 'word/document.xml': strToU8('<w:document xmlns:w="x"><w:body/></w:document>') });
+    expect(parseBordereauDocx(empty).items).toEqual([]);
+  });
+
+  test('extractBordereauFromDce picks a .docx bordereau when no xlsx is present', () => {
+    const xmlEscape = (s: string) => s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]!));
+    const tableXml =
+      `<w:tbl>` +
+      [
+        ['Désignation', 'U', 'Qté'],
+        ['Item A', 'U', '1'],
+      ]
+        .map(
+          (row) =>
+            `<w:tr>${row
+              .map((c) => `<w:tc><w:p><w:r><w:t>${xmlEscape(c)}</w:t></w:r></w:p></w:tc>`)
+              .join('')}</w:tr>`,
+        )
+        .join('') +
+      `</w:tbl>`;
+    const docXml = `<w:document xmlns:w="x"><w:body>${tableXml}</w:body></w:document>`;
+    const docxBytes = zipSync({ 'word/document.xml': strToU8(docXml) });
+    const dce = zipSync({
+      'CPS.pdf': strToU8('cps'),
+      'Bordereau des prix.docx': docxBytes,
+    });
+
+    const out = extractBordereauFromDce(dce);
+
+    expect(out).not.toBeNull();
+    expect(out!.fileName).toBe('Bordereau des prix.docx');
+    expect(out!.items.length).toBe(1);
+    expect(out!.items[0]!.designation).toBe('Item A');
+  });
+
+  test('isBordereauFileName matches .docx files (Word bordereaux)', () => {
+    expect(isBordereauFileName('Bordereau.docx')).toBe(true);
+    expect(isBordereauFileName('BPU 2026.docx')).toBe(true);
+    expect(isBordereauFileName('Random.docx')).toBe(false);
   });
 
   test('reads shared-strings cells (Office often interns repeated strings)', () => {
