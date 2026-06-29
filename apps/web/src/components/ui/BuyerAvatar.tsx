@@ -1,37 +1,13 @@
 /**
- * BuyerAvatar — initials-on-a-color-disc placeholder for an acheteur, matches
- * datao's per-row logo slot. Real logos are out of scope (each ministère would
- * need a curated asset); the deterministic color keeps the same buyer visually
- * recognizable across the catalogue.
+ * BuyerAvatar — datao-style per-row issuer slot. Always renders an <img>:
+ *   1. If the buyer matches a curated logo → that logo.
+ *   2. Else → the Moroccan royal emblem (datao's universal fallback for
+ *      Communes, Wilayas, Provinces, Délégations, foreign agencies, etc.).
+ *   Result: every row has a visual identity — never blank, never a generic
+ *   colored disc with initials. Same approach datao uses.
  */
 
-import { lookupIssuerLogo } from '@/lib/issuer-logos';
-
-const PALETTE: ReadonlyArray<readonly [string, string]> = [
-  ['bg-cyan-soft', 'text-cyan'],
-  ['bg-emerald-soft', 'text-emerald'],
-  ['bg-ochre-soft', 'text-ochre-deep'],
-  ['bg-violet-soft', 'text-violet'],
-  ['bg-amber-soft', 'text-amber-deep'],
-  ['bg-blue-soft', 'text-blue'],
-];
-
-function pickPalette(name: string): readonly [string, string] {
-  // Cheap deterministic hash → palette index. Good enough for visual stability.
-  let h = 0;
-  for (let i = 0; i < name.length; i++) {
-    h = (h * 31 + name.charCodeAt(i)) | 0;
-  }
-  return PALETTE[Math.abs(h) % PALETTE.length]!;
-}
-
-function initials(name: string): string {
-  const cleaned = name.replace(/[^\p{L}\p{N} ]+/gu, ' ').trim();
-  if (!cleaned) return '?';
-  const parts = cleaned.split(/\s+/u).filter(Boolean);
-  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
-  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
-}
+import { lookupIssuerLogo, DEFAULT_ISSUER_EMBLEM } from '@/lib/issuer-logos';
 
 const SIZES = {
   sm: 'h-7 w-7 text-[10px]',
@@ -48,27 +24,15 @@ export function BuyerAvatar({
   size?: keyof typeof SIZES;
   className?: string;
 }) {
-  const logo = lookupIssuerLogo(name);
-  if (logo) {
-    return (
-      <img
-        src={logo}
-        alt={name}
-        title={name}
-        loading="lazy"
-        decoding="async"
-        className={`shrink-0 rounded-full border border-line bg-white object-contain ${SIZES[size]} ${className}`}
-      />
-    );
-  }
-  const [bg, fg] = pickPalette(name);
+  const src = lookupIssuerLogo(name) ?? DEFAULT_ISSUER_EMBLEM;
   return (
-    <span
+    <img
+      src={src}
+      alt={name}
       title={name}
-      aria-hidden="true"
-      className={`inline-flex shrink-0 items-center justify-center rounded-full font-semibold ${bg} ${fg} ${SIZES[size]} ${className}`}
-    >
-      {initials(name)}
-    </span>
+      loading="lazy"
+      decoding="async"
+      className={`shrink-0 rounded-full border border-line bg-white object-contain ${SIZES[size]} ${className}`}
+    />
   );
 }

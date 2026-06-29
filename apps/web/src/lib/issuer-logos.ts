@@ -1,11 +1,22 @@
+import RESOLVER_DATA from './datao-issuers-resolver.json';
+const CATALOG_RESOLVER = RESOLVER_DATA as Readonly<Record<string, string>>;
+
+/** Datao's universal fallback: the Coat of Arms of Morocco (Royal emblem).
+ *  Shown by datao for every issuer without a curated logo (Communes, Wilayas,
+ *  Provinces, Délégations, Conseils, foreign agencies …). Visual identity is
+ *  uniform but never blank, so the page reads as "complete catalogue". */
+export const DEFAULT_ISSUER_EMBLEM = '/issuers/datao/84919d13-8cb6-4d13-83d1-65b0bb1d4107.png';
+
 /**
  * Curated issuer logos — 305 unique assets pulled from datao.ma's public
  * Supabase Storage and committed under apps/web/public/issuers/datao/. The
  * NAME_TO_ASSET table below is the exhaustive set datao indexes with logos:
  * 1049 rows in datao's `issuers` table that have logo_url populated, dedup'd
- * to 933 normalized names mapping onto 305 shared logo files. Organizational
- * hierarchies share assets — every DP Éducation hits one row, every Al
- * Omrane regional company hits one row.
+ * to 933 normalized names + 37 alt_name acronyms (CNSS, ONCF, ONEE, ONDA…)
+ * mapping onto 305 shared logo files. Organizational hierarchies share assets
+ * — every DP Éducation hits one row, every Al Omrane regional company hits
+ * one row. Acronym aliases were pulled live from datao's issuers.alt_name
+ * column via Burp Suite Pro on 2026-06-29.
  *
  * Lookup keys are NORMALIZED (lower-case, accent-stripped, punctuation
  * collapsed) so French spelling variants all hit the same logo.
@@ -959,6 +970,47 @@ const NAME_TO_ASSET: Readonly<Record<string, string>> = {
   "wali de la region rabat sale zemour zair et gouverneur de la prefecture de rabat": "f4b0f5ae-3983-457b-a4f8-dfd35c45d4f3.png",
   "wali de la region tanger tetouan al hoceima et gouverneur de la prefecture de tanger assilah": "028f6e9d-f744-4980-93dd-4f48f6ef5030.png",
   "wilaya de la region marrakech safi prefecture de marrakech": "6e2837de-2997-4760-b516-9c5255d1108d.png",
+
+  // === Alt-names / acronyms pulled live from datao issuers.alt_name (via Burp) ===
+  // 37 acronyms (CNSS, ONCF, ONEE, ONDA, INSEA, ANCFCC, NARSA, CNOPS, ...)
+  // mapped to their parent issuer's existing logo. Generated 2026-06-29.
+  "agadir mobilite": "65db3ca4-f5be-45c3-9033-57da23bd5f9b.png",
+  "agence nationale des ports casablanca": "5cca4a5d-f860-4368-9a1c-8fd9b11fc4c6.png",
+  "anapec": "39efd1b3-5f15-4587-b67c-8d2bb1b17275.png",
+  "ancfcc": "56686ba2-936f-4fc1-bb8b-b78025eccfbc.png",
+  "cndp": "27969a36-e079-4c0e-afa6-0c196cd07d69.png",
+  "cnops": "0680a168-74bb-4613-9980-6694c0ee5b17.png",
+  "cnss": "193c287e-c8d2-4322-8946-156e86e99b77.png",
+  "dgsn": "30c63926-7118-4ac3-8ba1-27c46eb8001e.png",
+  "dgsn surete provinciale de safi": "11a9f653-1ed3-4708-9f23-d613e58b77e4.png",
+  "encg dakhla": "db651584-a047-40ef-9717-ba26d8eea19e.png",
+  "encg kenitra": "db651584-a047-40ef-9717-ba26d8eea19e.png",
+  "encg marrakech": "db651584-a047-40ef-9717-ba26d8eea19e.png",
+  "encg settat": "db651584-a047-40ef-9717-ba26d8eea19e.png",
+  "insea": "b038de6a-03db-4fff-9389-2be2e5a90f37.png",
+  "iscae": "a7132013-d9aa-4e62-8cf9-a1c213be5024.png",
+  "maroc pme": "2e908645-bcdf-48ac-83f2-6ddafaec9805.png",
+  "narsa": "651c4212-0605-4761-8c82-7347bd3c5bf7.png",
+  "ofppt institut national du cheval": "941ccdeb-a317-4924-bda6-d1b03cd0ff1f.png",
+  "ompic": "544dd01c-14bc-4c71-a042-b4936359acdd.png",
+  "oncf": "5a7270ca-5391-4030-842b-df1756f3b583.png",
+  "onda": "a47ba955-bed6-47c9-b7c8-81df07ad028b.png",
+  "ondh": "68b1a341-1884-4700-a38b-d09a7e0584b9.png",
+  "onee": "71de3eba-f53e-42ff-a015-d2d6051c375a.png",
+  "onee branche eau": "7bf27135-fa5e-4930-a5c7-6b60b9cf9d3b.png",
+  "onhym": "c8117bb3-2113-47f5-bd53-b5ef0183b0c3.png",
+  "radeef": "599859dd-bc9b-4bd7-8178-cbb02a62a131.png",
+  "radeel": "082797a0-2ada-4dc9-a289-ce3f01b95ea6.png",
+  "radeet": "e8aa971d-fa93-4a8a-bde4-3a45c7869340.png",
+  "radeeta": "70d4ecc8-1b2e-4142-b08b-5155766ca885.png",
+  "radem": "0d5cbad9-664c-4bb3-adfc-d0065aa21ecc.png",
+  "rak": "025847eb-0094-4383-9091-58a670c12787.png",
+  "snrt": "5dd967e1-9e34-4973-ad3b-7d15c3fd8e21.png",
+  "sonarges": "3a79f1f9-9489-4b05-b24a-def4f50795ca.png",
+  "sorec": "4e399dcd-55b7-44bb-afcc-78a00f5b2dc6.png",
+  "tamwilcom": "606b31f6-3e44-4613-b3b0-45a5d469419d.png",
+  "tanger med": "8dcfe44b-6a6b-4fed-afc2-3e1f5e68c3c9.png",
+  "tanja mobilite": "8a1492ae-3237-4fc8-948f-9ac1de8c089c.png",
 };
 interface FallbackRule {
   match: RegExp;
@@ -1046,9 +1098,26 @@ const FALLBACK_RULES: readonly FallbackRule[] = [
   { match: /\bchu\b|hospitalo.{0,4}universitaire|centre hospitalier universitaire|centre hospitalier/, file: '94f65fb6-aabc-4d86-a2c2-173206e615aa.png' },
 ];
 
+/** Article-stripping pass used by the catalog-resolver fallback below: drops
+ *  a leading "la|le|les|l" article and collapses common French conjugatives
+ *  ("de", "du", "des", "et", "au", "aux") that PMP buyer-names sprinkle but
+ *  datao's canonical name omits. Lets "Société Nationale de Radiodiffusion…"
+ *  match datao's "LA SOCIETE NATIONALE DE RADIODIFFUSION…". */
+function stripArticlesAndConjugatives(s: string): string {
+  return s
+    .replace(/^(la|le|les|l)\s+/, '')
+    .replace(/\s+(la|le|les|l|de|du|des|et|d|au|aux)\s+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** Returns the public path to the curated logo for this issuer, or null when
  *  no rule matches — the caller falls back to the initials avatar.
- *  Tries the exact normalized-name table first, then substring-regex. */
+ *  Three layers, most-specific first:
+ *    1. exact normalized-name table (970 curated entries)
+ *    2. substring-regex FALLBACK_RULES (48 catch-alls for regions/CHU/etc.)
+ *    3. catalog resolver (1799 keys generated from all 1049 datao issuers,
+ *       includes alt_name + article-stripped variants for fuzzier matching) */
 export function lookupIssuerLogo(name: string): string | null {
   if (!name) return null;
   const normalized = normalizeIssuerName(name);
@@ -1056,6 +1125,13 @@ export function lookupIssuerLogo(name: string): string | null {
   if (exact) return `/issuers/datao/${exact}`;
   for (const rule of FALLBACK_RULES) {
     if (rule.match.test(normalized)) return `/issuers/datao/${rule.file}`;
+  }
+  const resolverHit = CATALOG_RESOLVER[normalized];
+  if (resolverHit) return `/issuers/datao/${resolverHit}`;
+  const stripped = stripArticlesAndConjugatives(normalized);
+  if (stripped !== normalized) {
+    const strippedHit = CATALOG_RESOLVER[stripped];
+    if (strippedHit) return `/issuers/datao/${strippedHit}`;
   }
   return null;
 }
