@@ -200,39 +200,82 @@ export class DossierExtractionService {
 
     let fresh: DossierExtraction;
     let sourceNames: string[];
-    let mode: 'text' | 'vision';
-    if (digitalReadable) {
-      // Digital text layer present → cheap text→LLM path (unchanged behaviour).
-      mode = 'text';
-      sourceNames = files.map((f) => f.name);
-      fresh = await aiExtractDossier(llm, text, sourceNames, {
-        reference: tender.reference,
-        objet: tender.objet,
-      });
-    } else {
-      // 2) Scanned → VISION path: render pages to images and let the multimodal
-      //    model OCR + understand + extract in one call (datao-grade; replaces
-      //    the slow tesseract path). Throws only when nothing could be rendered.
-      mode = 'vision';
-      const vis = await buildVisionInput(dossier.bytes);
-      if (vis.images.length === 0) {
-        throw new ServiceUnavailableException(
-          `Dossier illisible (aucun texte ni page rendue) — ${files.length} fichiers`,
-        );
+    let mode: 'text' | 'vision' | 'bordereau-only';
+    try {
+      if (digitalReadable) {
+        // Digital text layer present → cheap text→LLM path (unchanged behaviour).
+        mode = 'text';
+        sourceNames = files.map((f) => f.name);
+        fresh = await aiExtractDossier(llm, text, sourceNames, {
+          reference: tender.reference,
+          objet: tender.objet,
+        });
+      } else {
+        // 2) Scanned → VISION path: render pages to images and let the multimodal
+        //    model OCR + understand + extract in one call (datao-grade; replaces
+        //    the slow tesseract path). Throws only when nothing could be rendered.
+        mode = 'vision';
+        const vis = await buildVisionInput(dossier.bytes);
+        if (vis.images.length === 0) {
+          throw new ServiceUnavailableException(
+            `Dossier illisible (aucun texte ni page rendue) — ${files.length} fichiers`,
+          );
+        }
+        sourceNames = vis.sourceFiles;
+        fresh = await aiExtractDossierVision(llm, vis.images, vis.digitalText, vis.sourceFiles, {
+          reference: tender.reference,
+          objet: tender.objet,
+        });
       }
-      sourceNames = vis.sourceFiles;
-      fresh = await aiExtractDossierVision(llm, vis.images, vis.digitalText, vis.sourceFiles, {
-        reference: tender.reference,
-        objet: tender.objet,
-      });
+    } catch (llmError) {
+      // Bordereau-only fallback: when the LLM is unavailable (rate-limited,
+      // timed out, schema invalid…) BUT the DCE ships a structured XLSX
+      // bordereau, persist the BPU alone rather than aborting the whole
+      // extraction. We lose the LLM-only fields (budget/caution/qualifs) for
+      // now — they stay null and become eligible for a retry once the LLM is
+      // back — but we keep the deepest, source-of-truth data we have. Without
+      // this guard a single LLM outage drops EVERY extraction including
+      // tenders whose BPU we could read without an AI call at all.
+      if (bordereau && bordereau.items.length > 0) {
+        this.logger.warn(
+          `dossier.extract ${tender.reference}: LLM unavailable (${(llmError as Error).message}) — ` +
+            `persisting bordereau-only (${bordereau.items.length} items from ${bordereau.fileName})`,
+        );
+        mode = 'bordereau-only';
+        sourceNames = [bordereau.fileName];
+        fresh = {
+          estimationMad: null,
+          cautionProvisoireMad: null,
+          cautionDefinitivePct: null,
+          retenueGarantiePct: null,
+          delaiGarantieMois: null,
+          delaiExecutionMois: null,
+          chiffreAffairesMinMad: null,
+          qualifications: [],
+          bpu: bordereau.items,
+          contact: null,
+          conditionsLegales: [],
+          autres: [],
+          model: 'bordereau-xlsx-direct',
+          extractedAt: new Date().toISOString(),
+          sourceFiles: [bordereau.fileName],
+        };
+      } else {
+        throw llmError;
+      }
     }
     // Direct XLSX bordereau wins when it carries MORE items than the LLM read —
     // it never paraphrases, never drops rows on long BPUs, and the unit codes
     // (E/U/ML/M2/KG…) are the source's, not the model's interpretation. When
     // the XLSX returns fewer items than the LLM (e.g. some buyers ship a tiny
     // template alongside a richer estimatif inside the CPS), the LLM result is
-    // kept so we never regress coverage.
-    if (bordereau && bordereau.items.length > fresh.bpu.length) {
+    // kept so we never regress coverage. Skipped when we already fell back to
+    // bordereau-only above — its BPU is already in `fresh.bpu`.
+    if (
+      mode !== 'bordereau-only' &&
+      bordereau &&
+      bordereau.items.length > fresh.bpu.length
+    ) {
       this.logger.log(
         `dossier.extract ${tender.reference}: BPU from ${bordereau.fileName} ` +
           `(${bordereau.items.length} rows, ${bordereau.sheetsRead} sheet${bordereau.sheetsRead === 1 ? '' : 's'}) ` +
