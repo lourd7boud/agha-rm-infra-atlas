@@ -28,6 +28,7 @@ import {
   readDossierExtraction,
   type DossierExtraction,
 } from './dossier-extraction';
+import { extractBordereauFromDce } from './bordereau-parser';
 import {
   TENDER_REPOSITORY,
   type EnrichmentAmounts,
@@ -190,6 +191,13 @@ export class DossierExtractionService {
       text.length >= MIN_READABLE_TOTAL_CHARS &&
       biggestFileChars >= MIN_READABLE_FILE_CHARS;
 
+    // 1b) datao-grade BPU: parse the Bordereau.xlsx directly when the DCE ships
+    //     one. Done BEFORE the LLM call so the prompt isn't a confounding
+    //     variable — the structured rows are the ground truth and replace any
+    //     LLM-paraphrased BPU below. Cheap (~ms) and never throws — null when
+    //     no XLSX bordereau is in the archive.
+    const bordereau = extractBordereauFromDce(dossier.bytes);
+
     let fresh: DossierExtraction;
     let sourceNames: string[];
     let mode: 'text' | 'vision';
@@ -218,6 +226,24 @@ export class DossierExtractionService {
         objet: tender.objet,
       });
     }
+    // Direct XLSX bordereau wins when it carries MORE items than the LLM read —
+    // it never paraphrases, never drops rows on long BPUs, and the unit codes
+    // (E/U/ML/M2/KG…) are the source's, not the model's interpretation. When
+    // the XLSX returns fewer items than the LLM (e.g. some buyers ship a tiny
+    // template alongside a richer estimatif inside the CPS), the LLM result is
+    // kept so we never regress coverage.
+    if (bordereau && bordereau.items.length > fresh.bpu.length) {
+      this.logger.log(
+        `dossier.extract ${tender.reference}: BPU from ${bordereau.fileName} ` +
+          `(${bordereau.items.length} rows, ${bordereau.sheetsRead} sheet${bordereau.sheetsRead === 1 ? '' : 's'}) ` +
+          `replaces LLM (${fresh.bpu.length})`,
+      );
+      fresh = { ...fresh, bpu: bordereau.items };
+      if (!sourceNames.includes(bordereau.fileName)) {
+        sourceNames = [...sourceNames, bordereau.fileName];
+      }
+    }
+
     // A forced re-run must never regress a previously richer extraction.
     const extraction = existing ? mergeExtractions(existing, fresh) : fresh;
 
