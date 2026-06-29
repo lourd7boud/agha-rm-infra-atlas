@@ -72,8 +72,20 @@ export interface LlmVisionDocRequest {
   responseSchema?: Record<string, unknown>;
 }
 
+/** Per-chunk event of a streaming completion. `delta` carries new text appended
+ *  to the assistant's response as it generates; `finish` arrives exactly once,
+ *  last, with the model + final token counts (so callers can log + bill). */
+export type LlmStreamEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'finish'; model: string; inputTokens: number; outputTokens: number };
+
 export interface LlmClient {
   complete(request: LlmRequest): Promise<LlmCompletion>;
+  /** OPTIONAL streaming variant — yields delta chunks as they arrive then a
+   *  final `finish` event. Providers that implement this enable token-by-token
+   *  UX on /chat. When undefined, the chat service falls back to `complete()`
+   *  and emits one big delta + finish to keep the SSE protocol uniform. */
+  streamComplete?(request: LlmRequest): AsyncIterable<LlmStreamEvent>;
   /** Vision read of a single image (scanned notices, plans…) → text. */
   completeVision(request: LlmVisionRequest): Promise<LlmCompletion>;
   /** Multi-image document read (scanned DCE pages) → structured answer. The
@@ -143,6 +155,66 @@ export class AnthropicLlmClient implements LlmClient {
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,
     };
+  }
+
+  /** Streams an Anthropic completion via the SDK's `messages.stream` API,
+   *  mapping each `content_block_delta` (text-delta type) to our `delta` event
+   *  and emitting a single `finish` once the stream resolves. Errors before the
+   *  first byte (auth/quota/timeout) surface as ServiceUnavailableException —
+   *  same as `complete()` — so the controller can return a clean HTTP code
+   *  before any SSE bytes are written. */
+  async *streamComplete(request: LlmRequest): AsyncIterable<LlmStreamEvent> {
+    const model = this.tierModels[request.tier];
+    const messages: Anthropic.MessageParam[] = [
+      { role: 'user', content: request.prompt },
+    ];
+    if (request.prefill) {
+      messages.push({ role: 'assistant', content: request.prefill });
+    }
+    let stream: ReturnType<Anthropic['messages']['stream']>;
+    try {
+      stream = this.client.messages.stream({
+        model,
+        max_tokens: request.maxTokens ?? 1024,
+        temperature: 0,
+        system: request.system,
+        messages,
+      });
+    } catch (error) {
+      const status = error instanceof Anthropic.APIError ? error.status : undefined;
+      new Logger('LlmClient').error(
+        `LLM stream call failed (${model}): ${(error as Error).message}`,
+      );
+      throw new ServiceUnavailableException(
+        `Service IA momentanément indisponible${status ? ` (HTTP ${status})` : ''} — réessayer dans quelques instants`,
+      );
+    }
+    try {
+      for await (const ev of stream) {
+        if (
+          ev.type === 'content_block_delta' &&
+          ev.delta.type === 'text_delta' &&
+          ev.delta.text
+        ) {
+          yield { type: 'delta', text: ev.delta.text };
+        }
+      }
+      const final = await stream.finalMessage();
+      yield {
+        type: 'finish',
+        model: final.model,
+        inputTokens: final.usage.input_tokens,
+        outputTokens: final.usage.output_tokens,
+      };
+    } catch (error) {
+      // Mid-stream provider failures bubble — the controller logs them; the
+      // browser has already received SSE prelude and will show whatever bytes
+      // arrived. Don't translate to 503 here (headers are already flushed).
+      new Logger('LlmClient').warn(
+        `LLM stream mid-error (${model}): ${(error as Error).message}`,
+      );
+      throw error;
+    }
   }
 
   async completeVision(request: LlmVisionRequest): Promise<LlmCompletion> {
@@ -712,6 +784,25 @@ export class FakeLlmClient implements LlmClient {
     const text = this.queue.shift();
     if (text === undefined) throw new Error('FakeLlmClient queue exhausted');
     return { text, model: `fake-${request.tier}`, inputTokens: 10, outputTokens: 10 };
+  }
+
+  /** Streams the next queued response as 3 deterministic chunks + finish, so
+   *  the chat-service stream tests are stable without timing assumptions. */
+  async *streamComplete(request: LlmRequest): AsyncIterable<LlmStreamEvent> {
+    this.requests.push(request);
+    const text = this.queue.shift();
+    if (text === undefined) throw new Error('FakeLlmClient queue exhausted');
+    // Split into 3 roughly-equal parts. Keep order deterministic for tests.
+    const third = Math.max(1, Math.ceil(text.length / 3));
+    for (let i = 0; i < text.length; i += third) {
+      yield { type: 'delta', text: text.slice(i, i + third) };
+    }
+    yield {
+      type: 'finish',
+      model: `fake-${request.tier}`,
+      inputTokens: 10,
+      outputTokens: 10,
+    };
   }
 
   async completeVision(request: LlmVisionRequest): Promise<LlmCompletion> {

@@ -13,7 +13,17 @@ import {
   Post,
   Query,
   Req,
+  Res,
 } from '@nestjs/common';
+/** Minimal SSE-write surface needed for the streaming chat route — kept inline
+ *  to avoid pulling @types/express into the @atlas/core dependencies. Matches
+ *  the Express Response shape that NestJS injects via @Res(). */
+interface SseResponse {
+  setHeader(name: string, value: string): void;
+  flushHeaders?(): void;
+  write(chunk: string): boolean;
+  end(): void;
+}
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import {
@@ -321,6 +331,54 @@ export class TenderController {
     const parsed = chatBodySchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     return this.chat.ask(id, parsed.data.question, parsed.data.history ?? []);
+  }
+
+  /** Streaming variant — datao-grade token-by-token UX. Same body schema as
+   *  /chat. Returns text/event-stream with `data: {type:'delta'|'finish'}` plus
+   *  a closing `data: [DONE]`. Pre-flight pattern: pull the first event before
+   *  flushing headers, so validation/NotFound/ServiceUnavailable still surface
+   *  as clean HTTP error codes instead of mid-stream noise.
+   *  Web BFF proxy: apps/web/src/app/api/tenders/[id]/chat/stream/route.ts */
+  @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
+  @Throttle({ default: { ttl: 60_000, limit: 30 } })
+  @Post('tenders/:id/chat/stream')
+  async chatStreamOnTender(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Res() res: SseResponse,
+  ): Promise<void> {
+    const parsed = chatBodySchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+
+    const gen = this.chat.streamAsk(id, parsed.data.question, parsed.data.history ?? []);
+    // Pre-flight: any throw here propagates as HTTP (NestJS exception filter).
+    const first = await gen.next();
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // nginx — don't buffer SSE
+    res.flushHeaders?.();
+
+    try {
+      if (!first.done && first.value) {
+        res.write(`data: ${JSON.stringify(first.value)}\n\n`);
+      }
+      if (!first.done) {
+        for (let step = await gen.next(); !step.done; step = await gen.next()) {
+          res.write(`data: ${JSON.stringify(step.value)}\n\n`);
+        }
+      }
+      res.write('data: [DONE]\n\n');
+    } catch (error) {
+      const msg = (error as Error).message;
+      res.write(
+        `data: ${JSON.stringify({ type: 'error', errorText: msg })}\n\n`,
+      );
+      res.write('data: [DONE]\n\n');
+    } finally {
+      res.end();
+    }
   }
 
   /** Assistant IA — natural-language search → {filters, narrative, matches}. */

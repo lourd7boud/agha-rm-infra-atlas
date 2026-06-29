@@ -914,14 +914,16 @@ function TenderChat({ tenderId, reference }: { tenderId: string; reference: stri
     const q = input.trim();
     if (!q || pending) return;
     setError(null);
-    const next: ChatMsg[] = [...messages, { role: 'user', content: q }];
-    setMessages(next);
+    // Optimistic: append the user message + an empty assistant slot we'll grow
+    // delta-by-delta as the SSE stream arrives (datao-grade token-by-token UX).
+    const baseline: ChatMsg[] = [...messages, { role: 'user', content: q }];
+    setMessages([...baseline, { role: 'assistant', content: '' }]);
     setInput('');
     setPending(true);
     try {
-      const res = await fetch(`/api/tenders/${tenderId}/chat`, {
+      const res = await fetch(`/api/tenders/${tenderId}/chat/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({
           question: q,
           history: messages.slice(-12),
@@ -931,11 +933,49 @@ function TenderChat({ tenderId, reference }: { tenderId: string; reference: stri
         const detail = await res.text().catch(() => '');
         throw new Error(`HTTP ${res.status}${detail ? ' — ' + detail.slice(0, 200) : ''}`);
       }
-      const data = (await res.json()) as { answer: string };
-      setMessages([...next, { role: 'assistant', content: data.answer }]);
+      if (!res.body) throw new Error('Réponse vide du serveur');
+
+      // SSE parser: each frame is `data: <payload>\n\n`. Payload is either
+      // [DONE] or a JSON event {type:'delta'|'finish'|'error', ...}.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      let accumulated = '';
+      let sawError: string | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          if (!frame.startsWith('data:')) continue;
+          const payload = frame.slice(5).trim();
+          if (payload === '[DONE]') continue;
+          try {
+            const ev = JSON.parse(payload) as
+              | { type: 'delta'; text: string }
+              | { type: 'finish'; model: string; inputTokens: number; outputTokens: number }
+              | { type: 'error'; errorText: string };
+            if (ev.type === 'delta' && ev.text) {
+              accumulated += ev.text;
+              const grown = accumulated;
+              setMessages([...baseline, { role: 'assistant', content: grown }]);
+            } else if (ev.type === 'error') {
+              sawError = ev.errorText || 'Erreur du flux';
+            }
+          } catch {
+            // Ignore malformed frames — keep streaming.
+          }
+        }
+      }
+      if (sawError) throw new Error(sawError);
+      if (!accumulated.trim()) throw new Error('Réponse vide');
     } catch (e) {
       setError((e as Error).message);
-      // Roll back the optimistic user message on failure so the user can edit/retry.
+      // Roll back the optimistic exchange so the user can edit/retry.
       setMessages(messages);
       setInput(q);
     } finally {

@@ -7,7 +7,11 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { LLM_CLIENT, type LlmClient } from '../brain/llm.client';
+import {
+  LLM_CLIENT,
+  type LlmClient,
+  type LlmStreamEvent,
+} from '../brain/llm.client';
 import { readDossierExtraction } from './dossier-extraction';
 import { readAiEnrichment } from './ai-enrichment';
 import {
@@ -195,5 +199,72 @@ export class TenderChatService {
       model: completion.model,
       contextChars: chars,
     };
+  }
+
+  /**
+   * Streaming variant of `ask()` — same validation, same prompt, but yields
+   * token deltas as they arrive (or simulates streaming via a single delta
+   * when the provider only supports non-streaming `complete()`). The caller
+   * (controller) wraps these events in SSE for the browser. We never throw
+   * mid-stream: any provider failure surfaces BEFORE the first delta so the
+   * controller can return a clean HTTP error code; once we've started
+   * streaming, transport-level errors are the controller's responsibility.
+   */
+  async *streamAsk(
+    tenderId: string,
+    question: string,
+    history: readonly ChatMessage[] = [],
+  ): AsyncGenerator<LlmStreamEvent> {
+    if (!this.llm) {
+      throw new ServiceUnavailableException('LLM non configuré (clé manquante)');
+    }
+    const q = question.trim();
+    if (!q) throw new BadRequestException('Question vide');
+    if (q.length > MAX_QUESTION_CHARS) {
+      throw new BadRequestException(
+        `Question trop longue (max ${MAX_QUESTION_CHARS} caractères)`,
+      );
+    }
+    const tender = await this.tenders.findById(tenderId);
+    if (!tender) throw new NotFoundException(`Tender not found: ${tenderId}`);
+
+    const { text: context, chars } = buildTenderContext(tender);
+    const bounded = history.slice(-MAX_HISTORY_MESSAGES);
+    const histText = bounded
+      .map((m) => `${m.role === 'user' ? 'Q' : 'R'}: ${m.content}`)
+      .join('\n');
+    const prompt = `${context}\n\n=== HISTORIQUE ===\n${histText || '(aucun)'}\n\n=== NOUVELLE QUESTION ===\n${q}\n\nRéponds maintenant.`;
+
+    const req = {
+      tier: 'T1' as const,
+      system: TENDER_CHAT_SYSTEM_PROMPT,
+      prompt,
+      maxTokens: 800,
+    };
+
+    let totalDeltaChars = 0;
+    if (this.llm.streamComplete) {
+      // Provider supports native streaming (Anthropic stream, Gemini SSE…).
+      for await (const ev of this.llm.streamComplete(req)) {
+        if (ev.type === 'delta') totalDeltaChars += ev.text.length;
+        yield ev;
+      }
+    } else {
+      // Fallback: single non-streaming call → emit one delta + finish so the
+      // SSE protocol stays uniform. Costs the same, just no progressive UX.
+      const c = await this.llm.complete(req);
+      const text = c.text.trim().slice(0, 4000);
+      totalDeltaChars = text.length;
+      yield { type: 'delta', text };
+      yield {
+        type: 'finish',
+        model: c.model,
+        inputTokens: c.inputTokens,
+        outputTokens: c.outputTokens,
+      };
+    }
+    this.logger.log(
+      `chat.stream ${tender.reference} q=${q.length}ch ctx=${chars}ch → ${totalDeltaChars}ch`,
+    );
   }
 }
