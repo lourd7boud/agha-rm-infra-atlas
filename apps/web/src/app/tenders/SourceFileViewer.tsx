@@ -4,11 +4,19 @@ import { useEffect, useState } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 
 /**
- * datao's "Voir le fichier source": a split overlay listing every document in
- * the tender's DCE and rendering the selected one INLINE in its native shape —
- * PDF/images served same-origin (/files/raw), Office files (Word/Excel, incl.
- * legacy .doc/.xls) rendered pixel-faithfully by the Microsoft Office Online
- * viewer (view.officeapps.live.com), exactly like datao.
+ * datao's "Voir le fichier source": split overlay that renders the selected DCE
+ * document INLINE in its native shape — PDF/images served same-origin
+ * (/files/raw), Office files (Word/Excel incl. legacy .doc/.xls) rendered
+ * pixel-faithfully by the Microsoft Office Online viewer
+ * (view.officeapps.live.com), exactly like datao.
+ *
+ * Two display modes:
+ *   modal — full-screen overlay with the complete DCE file list (used by the
+ *           tender header button to browse the whole dossier).
+ *   side  — 640px panel docked immediately to the LEFT of the 640px tender
+ *           drawer, so BPU stays visible at right and the bordereau opens
+ *           alongside. Matches datao 1:1 when bordereauOnly is set: only the
+ *           BPU's source file is listed + auto-selected.
  */
 
 type FileKind = 'pdf' | 'excel' | 'word' | 'image' | 'other';
@@ -23,6 +31,8 @@ interface DceFile {
 interface Props {
   tenderId: string;
   onClose: () => void;
+  mode?: 'modal' | 'side';
+  bordereauOnly?: boolean;
 }
 
 const KIND_ICON: Record<FileKind, IconName> = {
@@ -33,13 +43,26 @@ const KIND_ICON: Record<FileKind, IconName> = {
   other: 'documents',
 };
 
+const BORDEREAU_NAME_RE = /bordereau|bpu|estimatif|bpde|d[ée]tail/i;
+
 function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} o`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} Ko`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
 }
 
-export function SourceFileViewer({ tenderId, onClose }: Props) {
+function pickBordereau(files: ReadonlyArray<DceFile>): DceFile | null {
+  const byName = files.find((f) => BORDEREAU_NAME_RE.test(f.name));
+  if (byName) return byName;
+  return files.find((f) => f.kind === 'excel') ?? files[0] ?? null;
+}
+
+export function SourceFileViewer({
+  tenderId,
+  onClose,
+  mode = 'modal',
+  bordereauOnly = false,
+}: Props) {
   const [files, setFiles] = useState<DceFile[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [active, setActive] = useState<DceFile | null>(null);
@@ -52,8 +75,13 @@ export function SourceFileViewer({ tenderId, onClose }: Props) {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { files: DceFile[] };
         if (cancelled) return;
-        setFiles(data.files);
-        setActive(data.files[0] ?? null);
+        const visible = bordereauOnly
+          ? data.files.filter(
+              (f) => BORDEREAU_NAME_RE.test(f.name) || f.kind === 'excel',
+            )
+          : data.files;
+        setFiles(visible);
+        setActive(bordereauOnly ? pickBordereau(visible) : visible[0] ?? null);
       } catch (e) {
         if (!cancelled) setListError((e as Error).message);
       }
@@ -61,7 +89,7 @@ export function SourceFileViewer({ tenderId, onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [tenderId]);
+  }, [tenderId, bordereauOnly]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -71,6 +99,60 @@ export function SourceFileViewer({ tenderId, onClose }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // datao-style side panel: 640px column docked to the left of the tender
+  // drawer (which is already pinned right with max-w-[640px]). No backdrop —
+  // the drawer stays interactive and BPU stays visible at right.
+  if (mode === 'side') {
+    return (
+      <div
+        className="fixed inset-y-0 right-[640px] z-[59] flex w-full max-w-[640px] flex-col border-r border-line bg-paper shadow-raised"
+        role="dialog"
+        aria-modal="false"
+        aria-label="Fichier source du bordereau"
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+          <p className="truncate text-sm font-semibold text-ink">
+            {active?.label ?? (listError ? 'Indisponible' : 'Chargement…')}
+          </p>
+          <div className="flex shrink-0 items-center gap-2">
+            {active && (
+              <a
+                href={`/api/tenders/${tenderId}/files/raw?name=${encodeURIComponent(active.name)}`}
+                download={active.label}
+                className="inline-flex items-center gap-1 rounded-lg border border-line px-2.5 py-1.5 text-xs font-semibold text-ink-2 hover:bg-sand"
+              >
+                <Icon name="download" size={14} /> Télécharger
+              </a>
+            )}
+            <button
+              onClick={onClose}
+              className="rounded p-1 text-muted hover:bg-sand hover:text-ink"
+              aria-label="Fermer"
+            >
+              <Icon name="close" size={18} />
+            </button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto">
+          {listError ? (
+            <p className="p-4 text-sm text-rose">
+              Dossier indisponible — réessayer dans un instant. ({listError})
+            </p>
+          ) : !files ? (
+            <p className="p-4 text-sm text-muted">Chargement des fichiers…</p>
+          ) : files.length === 0 ? (
+            <p className="p-4 text-sm text-muted">
+              Bordereau non trouvé dans le dossier de consultation.
+            </p>
+          ) : active ? (
+            <FileRender tenderId={tenderId} file={active} />
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  // modal (legacy): full file browser with sidebar.
   return (
     <div
       className="fixed inset-0 z-[60] flex bg-ink/70 backdrop-blur-sm"

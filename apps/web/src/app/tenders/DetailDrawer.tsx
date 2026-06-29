@@ -124,13 +124,16 @@ export function DetailDrawer({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<Tab>('resume');
-  const [showFiles, setShowFiles] = useState(false);
+  // 'none' = closed, 'all' = legacy modal browser of every DCE file (header
+  // button), 'bordereau' = datao-style side panel showing only the BPU source
+  // (BPU-tab button). See SourceFileViewer for the two render modes.
+  const [showFiles, setShowFiles] = useState<'none' | 'all' | 'bordereau'>('none');
   const panelRef = useRef<HTMLElement>(null);
 
   // Reset to the first tab whenever a different tender is opened.
   useEffect(() => {
     setTab('resume');
-    setShowFiles(false);
+    setShowFiles('none');
   }, [item?.id]);
 
   // Move focus into the panel when it opens (keyboard + screen-reader).
@@ -388,7 +391,7 @@ export function DetailDrawer({
             {hasSource && (
               <button
                 type="button"
-                onClick={() => setShowFiles(true)}
+                onClick={() => setShowFiles('all')}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-cyan px-3 py-2 text-sm font-semibold text-paper transition hover:brightness-110"
               >
                 <Icon name="documents" size={16} /> Voir le fichier source
@@ -669,7 +672,7 @@ export function DetailDrawer({
                 {hasSource && (
                   <button
                     type="button"
-                    onClick={() => setShowFiles(true)}
+                    onClick={() => setShowFiles('bordereau')}
                     className="inline-flex items-center gap-1.5 text-sm font-semibold text-cyan hover:underline"
                   >
                     <Icon name="documents" size={15} /> Voir le fichier source
@@ -749,8 +752,13 @@ export function DetailDrawer({
           </div>
         </div>
       </aside>
-      {showFiles && (
-        <SourceFileViewer tenderId={item.id} onClose={() => setShowFiles(false)} />
+      {showFiles !== 'none' && (
+        <SourceFileViewer
+          tenderId={item.id}
+          onClose={() => setShowFiles('none')}
+          mode={showFiles === 'bordereau' ? 'side' : 'modal'}
+          bordereauOnly={showFiles === 'bordereau'}
+        />
       )}
     </div>
   );
