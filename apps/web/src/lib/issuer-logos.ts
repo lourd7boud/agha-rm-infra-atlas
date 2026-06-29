@@ -1,40 +1,14 @@
 /**
- * Real issuer logos mapped to normalized buyer-name fragments. The lookup is
- * substring-based on a normalized form (lower-case, accent-stripped, no
- * punctuation), so a single curated logo covers every regional sub-entity
- * that ships its tenders under the same umbrella (every "Direction Provinciale
- * de l'Equipement" provincial office matches the same pattern, etc.).
+ * Curated issuer logos — 129 unique assets pulled from datao.ma's public
+ * Supabase Storage and committed under apps/web/public/issuers/datao/. The
+ * lookup is keyed on a NORMALIZED form of the buyer name (lower-case,
+ * accent-stripped, punctuation collapsed) so spelling variants all hit the
+ * same logo. ~250 procuring entities map onto these 129 assets because
+ * organizational hierarchies share logos (every DP Éducation hits one row,
+ * every Al Omrane regional company hits one row, etc.).
  *
- * Assets are PNG 1000x1000 sourced from datao's public Storage bucket and
- * committed to `apps/web/public/issuers/`. Add an entry to LOGO_RULES to wire
- * up a new logo: drop the .png into that folder and append a row here -- first
- * substring match wins, so put more-specific patterns ABOVE more-general ones.
+ * Add a new logo: drop the .png into /issuers/datao/ and append a row below.
  */
-
-interface LogoRule {
-  /** Lowercase, accent-free substring that must appear in the normalized name. */
-  match: RegExp;
-  /** Filename under /public/issuers (without the leading slash). */
-  file: string;
-}
-
-/** Order matters: first match wins. Specific patterns first. */
-const LOGO_RULES: readonly LogoRule[] = [
-  { match: /\bofppt\b/, file: 'ofppt.png' },
-  { match: /onee.*electricite|office national.*electricite/, file: 'onee-electricite.png' },
-  {
-    match: /direction provinciale.*equipement|direction provinciale.*transport.*logistique/,
-    file: 'direction-provinciale-equipement-transport-logistique.png',
-  },
-  {
-    match: /direction provinciale.*agriculture/,
-    file: 'direction-provinciale-agriculture.png',
-  },
-  {
-    match: /fonds d.equipement communal|\bfec\b/,
-    file: 'fonds-equipement-communal.png',
-  },
-];
 
 /** Normalize a buyer name for matching: lowercase, strip accents/diacritics,
  *  collapse punctuation+whitespace to single spaces. */
@@ -42,20 +16,308 @@ export function normalizeIssuerName(name: string): string {
   return name
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 }
 
+/** Exact (normalized) buyer name → asset filename. */
+const NAME_TO_ASSET: Readonly<Record<string, string>> = {
+  "academie regionale d education et de formation casablanca settat": "2482d4f7-603f-422d-9e85-7f031d9d835a.png",
+  "administration des douanes et impots indirects": "9364bdb6-5b6b-467b-8027-1211754d591e.png",
+  "agence de developpement du digital": "02702664-1c80-4cd4-a53e-4faffdb03b57.jpg",
+  "agence de developpement du haut atlas": "44d8298d-1b08-48a6-8f8c-ffeed698ae05.png",
+  "agence de l oriental": "7fa51e92-b4ee-444e-8b41-865e2d1a4a8c.png",
+  "agence de logements et d equipements militaires": "ec904be5-7a6d-40fb-aa88-2a6a00b9be4f.png",
+  "agence du bassin hydraulique de draa oued noun": "72e7a2d9-d158-4afd-8b52-e52ebc3e38df.png",
+  "agence du bassin hydraulique de l oum er rbia": "d2264663-db21-4a9c-9bc8-b61ccb5a0b4e.png",
+  "agence du bassin hydraulique du bouregreg et de la chaouia": "50210047-63f5-486a-add8-f5fc67b8b2f2.png",
+  "agence du bassin hydraulique du loukkos": "1ce91dab-52fb-4837-b102-9b514cefdc48.png",
+  "agence du bassin hydraulique du sebou": "496635f1-e8c5-410a-b5b4-449d76f618f5.png",
+  "agence maghreb arabe presse": "b49fe51d-4c58-47f9-9787-07fb1053b624.png",
+  "agence marocaine du medicament et des produits de sante": "92afea07-8130-4871-9932-9a1c46199ab5.png",
+  "agence marocaine du sang et de ses derives": "22abf544-6509-4522-b4e4-54d351c62d6b.png",
+  "agence nationale de la conservation fonciere du cadastre et de la cartographie": "56686ba2-936f-4fc1-bb8b-b78025eccfbc.png",
+  "agence nationale des eaux et forets": "8bf0947e-8280-4192-bb67-e938ed07f541.png",
+  "agence nationale des equipements publics": "df210e14-cef2-46ea-be0b-09b290cf84cb.png",
+  "agence nationale des ports": "bd494a19-c706-4bfc-8b41-b6b466a75644.png",
+  "agence nationale des ports casablanca": "5cca4a5d-f860-4368-9a1c-8fd9b11fc4c6.png",
+  "agence nationale des ports direction du port de casablanca et region": "7100550f-cb29-4e0f-88b4-370d2e1015b1.png",
+  "agence nationale des ports direction du port de jorf lasfar et region": "7100550f-cb29-4e0f-88b4-370d2e1015b1.png",
+  "agence nationale des ports direction du port de safi et region": "7100550f-cb29-4e0f-88b4-370d2e1015b1.png",
+  "agence pour la promotion et le developpement economique et social des prefectures et provinces du nord du royaume": "bf45bb0f-3499-4972-9586-32d6ed6193c5.png",
+  "agence pour la promotion et le developpement economique et sociale des provinces du sud du royaume": "ad5d7118-3e6e-4ece-881a-b4c999708512.png",
+  "agence regionale d execution des projets casablanca settat": "0b363a62-76c3-4404-9cbb-f6f33eb85f91.png",
+  "agence regionale d execution des projets de l oriental": "0b363a62-76c3-4404-9cbb-f6f33eb85f91.png",
+  "agence regionale d execution des projets de la region beni mellal khenifra": "0b363a62-76c3-4404-9cbb-f6f33eb85f91.png",
+  "agence regionale d execution des projets de la region marrakech safi": "0b363a62-76c3-4404-9cbb-f6f33eb85f91.png",
+  "agence regionale d execution des projets de la region rabat sale kenitra": "0b363a62-76c3-4404-9cbb-f6f33eb85f91.png",
+  "agence urbaine d al hoceima": "e3f96a63-ce92-4012-b06f-558fce145b22.png",
+  "agence urbaine de meknes": "15859d60-9404-400e-b207-036406bf22f5.png",
+  "al omrane casablanca settat": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "al omrane rabat sale kenitra": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "al omrane tanger tetouan al hoceima": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "amendis": "13882d00-b445-4dda-aa11-74274a3cd3fd.png",
+  "anapec": "39efd1b3-5f15-4587-b67c-8d2bb1b17275.png",
+  "caisse de compensation": "fb20bc52-167c-4c38-a880-c91c50ba0474.png",
+  "caisse marocaine des retraites": "066202c4-411d-48ac-8f86-a34e57d0d145.png",
+  "casablanca amenagement sa": "3c0e5736-e0a0-4378-9a15-a321e2879ee6.png",
+  "casablanca prestations": "45b110ac-398c-43c4-91ed-9ac2066717c4.png",
+  "casablanca transport en site amenage sa": "34c144e8-f89b-48ba-a286-6bc1e7a24e19.png",
+  "centre hospitalier ibn roched casablanca": "6cd08e97-c5b9-41cd-baef-99d9b45caa87.png",
+  "centre hospitalier universitaire hassan ii fes": "3a69ffa7-6e2d-4704-977f-d6fc7fea50fe.png",
+  "centre hospitalier universitaire ibn sina rabat": "d47517db-6c3d-456d-a6aa-2fa3e49528bd.png",
+  "centre hospitalier universitaire mohammed vi marrakech": "15716b48-f06e-47f1-a394-296898cb393a.png",
+  "centre hospitalier universitaire mohammed vi oujda": "49d7fa23-6b31-4146-b92a-3d3f75e0d97b.png",
+  "centre national pour la recherche scientifique et technique": "2b887c34-2aed-40ee-ac2b-cc01eccd9426.png",
+  "centre regional d investissement region guelmim oued noun": "b843ee8a-7377-40d5-a7aa-9d685dd6841d.png",
+  "chambre d agriculture de la region bni mellal khenifra": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "chef du gouvernement": "784b07a7-3c2e-4a13-a057-a06d1eae403e.png",
+  "collectivite territoriale de tighmi": "6a086ad1-5e9b-4137-9448-8358b24e1ea6.png",
+  "commune d agadir": "bbd39366-1269-45f2-80a4-3bc4557738ef.png",
+  "commune de casablanca": "29d77d56-1cb9-476c-aaa9-8bf825ca6a49.png",
+  "commune de taounate": "08b8e308-7a2b-4aba-a9f8-d988ae3c886e.png",
+  "commune urbaine de el marsa": "38c223d4-0c38-4670-b498-e5e35d09f351.png",
+  "commune urbaine de taounate": "08b8e308-7a2b-4aba-a9f8-d988ae3c886e.png",
+  "commune urbaine de tiznit": "17263074-9879-4c46-b5ce-9582d89efc5b.png",
+  "conseil de la prefecture de meknes": "a46b1542-274d-4ea4-92e3-b0d6d2c42e9d.png",
+  "conseil provincial de tiznit": "19698e0c-e1af-4561-94c3-9d920429696f.png",
+  "delegation provinciale de la jeunesse et sports chichaoua": "31187161-787e-4fc3-9ced-491e85a8e506.png",
+  "direction generale de la meteorologie": "b732c218-6a39-4955-b9ee-ee869ef69497.png",
+  "direction generale de la protection civile": "8019c013-9937-4e0f-a243-4d419b67f9b7.png",
+  "direction provinciale d agriculture d agadir": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture d agadir": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture d al hoceima": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture de driouch": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture de guercif": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture de jerada": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture de ouezzane": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture de rhamna": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture de safi": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture de sidi ifni": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture de taourirt": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture de tata": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture de taza": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l agriculture de tetouan": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction provinciale de l education nationale d azilal": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale d el jadida": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale d errachidia": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale d es smara": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale d oujda angad": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de beni mellal": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de benslimane": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de chefchaouen": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de essaouira": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de figuig": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de fqih ben saleh": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de guercif": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de haouz": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de kelaa es sraghna": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de kenitra": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de khemisset": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de khenifra": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de larache": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de marrakech": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de mdiq fnideq": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de meknes": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de midelt": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de mohammadia": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de moulay yacoub": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de ouarzazate": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de ouezzane": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de rhamna": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de safi": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de sale": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de sidi kacem": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de sidi slimane": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de taourirt": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de taroudant": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de tata": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de tetouan": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de tiznit": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l education nationale de zagoura": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "direction provinciale de l equipement du transport de la logistique et de l eau boujdour": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement du transport de la logistique et de l eau de safi": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement du transport et de la logistique d azilal": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement du transport et de la logistique d el jadida": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement du transport et de la logistique de chtouka inezgane": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement du transport et de la logistique de guercif": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement du transport et de la logistique de larache": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement du transport et de la logistique de sefrou": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement du transport et de la logistique de sidi ifni": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement du transport et de la logistique de taroudannt": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement du transport et de la logistique de taza": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement du transport et de la logistique oujda angad": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement et des transports de chichaoua": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale de l equipement et du transport de berkane": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "direction provinciale des impots de meknes": "26c2b3f9-71b1-4fff-8972-59b1713bfb8b.png",
+  "direction regionale d agriculture dakhla oued eddahab": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction regionale de l agence nationale des eaux et forets de draa tafilalet": "8bf0947e-8280-4192-bb67-e938ed07f541.png",
+  "direction regionale de l agence nationale des eaux et forets de fes meknes": "8bf0947e-8280-4192-bb67-e938ed07f541.png",
+  "direction regionale de l agence nationale des eaux et forets de souss massa": "8bf0947e-8280-4192-bb67-e938ed07f541.png",
+  "direction regionale de l agence nationale des eaux et forets marrakech safi": "8bf0947e-8280-4192-bb67-e938ed07f541.png",
+  "direction regionale de l agence nationale des eaux et forets rabat sale kenitra": "8bf0947e-8280-4192-bb67-e938ed07f541.png",
+  "direction regionale de l agence nationale des equipements publics de rabat sale kenitra": "df210e14-cef2-46ea-be0b-09b290cf84cb.png",
+  "direction regionale de l agence nationale des equipements publics du centre ouest": "df210e14-cef2-46ea-be0b-09b290cf84cb.png",
+  "direction regionale de l agence nationale des equipements publics du sud": "df210e14-cef2-46ea-be0b-09b290cf84cb.png",
+  "direction regionale de l agriculture de rabat sale kenitra": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "direction regionale de la sante et de la protection sociale draa tafilalet": "94f65fb6-aabc-4d86-a2c2-173206e615aa.png",
+  "direction regionale du conseil agricole de la region de beni mellal khenifra": "836da57a-68f6-456e-8b27-373bd7462f41.png",
+  "ecole hassania des travaux publics": "61cb0c9d-8bf8-4630-96a4-74c42b2454c2.png",
+  "ecole hassania des travaux puplics": "f5af64fb-842a-4028-9013-f258b1c31cd9.png",
+  "ecole mohammadia d ingenieurs": "6a73e1da-07b6-48c4-a33c-57535e5ae6ea.png",
+  "ecole nationale d agriculture de meknes": "75c3d657-bca2-473d-8264-e59f0a71dd69.png",
+  "ecole nationale des sciences appliquees marrakech": "b3408757-badf-4343-acd0-67340418483b.png",
+  "ecole nationale des sciences appliquees tanger": "1d5bdff1-07f4-4c30-bc5f-270cceb072f9.png",
+  "ecole nationale superieure de l administration": "08582d09-cdfa-4ac4-814f-3784762026a3.png",
+  "ecole normale superieure ain chok": "38924cad-ef71-4177-bc44-260fb869df1f.png",
+  "ecole normale superieure de fes": "e41f9287-d852-42a1-a97e-3eadaca6e227.png",
+  "ecole normale superieure de rabat": "1620ac3f-ac97-4244-8922-1606e73eeaf6.png",
+  "ecole normale superieure marrakech": "b3408757-badf-4343-acd0-67340418483b.png",
+  "ecole superieure de technologie laayoune": "a4913004-e76a-4010-a01d-939785a68a2f.png",
+  "encg settat": "db651584-a047-40ef-9717-ba26d8eea19e.png",
+  "faculte de medecine dentaire de casablanca": "f9089732-1f58-4601-aaf6-b904236190bb.png",
+  "faculte des lettres et des sciences humaines d el jadida": "7f64c90a-942c-4318-913b-3903a7adb273.png",
+  "faculte des sciences et techniques de settat": "8280977d-9c74-44c8-9ae4-4aa8aa6b65d8.png",
+  "faculte des sciences et techniques marrakech": "b3408757-badf-4343-acd0-67340418483b.png",
+  "fondation mohammed vi de promotion des uvres sociales de l education formation": "a2720c5a-f655-44d9-b97f-c48f6ea1e740.png",
+  "fondation nationale des musees": "95146cab-9078-4723-83ac-4b226c6608d7.png",
+  "fonds d equipement communal": "a41276ab-308b-4048-88f9-0aa027e602a6.png",
+  "gouverneur de la province d al hoceima": "2e2c1ea6-7ed5-4745-b9c2-068176cfc83a.png",
+  "gouverneur de la province de settat": "71265fee-16bd-4239-8b11-89304f5c4b49.png",
+  "gouverneur de la province de tata": "f325ef95-01a3-45c4-b318-04d75ff791da.png",
+  "holding al omrane": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "inspection generale des forces auxiliaires zone sud": "1c5a1ee5-8948-4616-afca-11687634b4f9.png",
+  "institut agronomique et veterinaire hassan ii": "b382648a-cbee-453b-b518-30b770d2c451.png",
+  "institut agronomique et veterinaire hassan ii complexe horticole d agadir": "b382648a-cbee-453b-b518-30b770d2c451.png",
+  "institut de technologie des peches maritimes tan tan": "aa4fba5d-4547-4bbc-adc4-a91d8cbf555f.png",
+  "institut national de la recherche agronomique": "bbdec963-5ba0-4ddb-b3da-ae3f347421b0.png",
+  "institut national de recherche halieutique": "5ae69094-4193-4808-92a1-c70311a150aa.png",
+  "institut technique agricole de taroudant": "563b0a8a-dd80-4ddf-b57f-4beccdd2f929.png",
+  "la societe marchica med": "955f74d3-d0e3-408d-b5c0-d6723c490edc.png",
+  "madaef": "40d2eef1-d3b0-4c84-8206-93c58cd90c4e.png",
+  "maison de l artisan": "1380a7d6-05f3-4d79-8ce1-918b41d62fe1.png",
+  "maroc pme": "2e908645-bcdf-48ac-83f2-6ddafaec9805.png",
+  "ministere de l economie et des finances": "931223c9-b4df-4634-b1cd-f602bc7eaca7.png",
+  "ministere de l education nationale du prescolaire et des sports": "a72aa028-7630-4085-89b6-5d0f1e9a803f.png",
+  "ministere de la sante et de la protection sociale": "94f65fb6-aabc-4d86-a2c2-173206e615aa.png",
+  "ministere des habous et des affaires islamiques": "287cefce-c213-43e7-91e4-7511c1dc3c0e.png",
+  "narsa": "651c4212-0605-4761-8c82-7347bd3c5bf7.png",
+  "office de developpement de la cooperation": "2c618938-aaf3-4c78-a59b-41dbc015a8d0.png",
+  "office national de securite sanitaire des produits alimentaires": "815293ea-0c99-4752-96d9-c6204ab1af21.png",
+  "office national de securite sanitaire des produits alimentaires direction regionale de la region de souss massa": "815293ea-0c99-4752-96d9-c6204ab1af21.png",
+  "office national de securite sanitaire des produits alimentaires direction regionale de la region marrakech safi": "815293ea-0c99-4752-96d9-c6204ab1af21.png",
+  "office national de securite sanitaire des produits alimentaires direction regionale de la region rabat sale kenitra": "815293ea-0c99-4752-96d9-c6204ab1af21.png",
+  "office national du conseil agricole": "836da57a-68f6-456e-8b27-373bd7462f41.png",
+  "office national du conseil agricole direction regionale de l oriental": "836da57a-68f6-456e-8b27-373bd7462f41.png",
+  "office national du conseil agricole direction regionale tanger tetouan al hoceima": "836da57a-68f6-456e-8b27-373bd7462f41.png",
+  "office national marocain du tourisme": "80f7cbd0-1476-4eb9-b1a3-551aa5b27546.png",
+  "office regional de mise en valeur agricole d el gharb": "554096e4-f219-4410-be40-454626b05472.png",
+  "office regional de mise en valeur agricole d el haouz": "554096e4-f219-4410-be40-454626b05472.png",
+  "office regional de mise en valeur agricole de doukkala": "554096e4-f219-4410-be40-454626b05472.png",
+  "ofppt": "941ccdeb-a317-4924-bda6-d1b03cd0ff1f.png",
+  "oncf": "5a7270ca-5391-4030-842b-df1756f3b583.png",
+  "onda": "a47ba955-bed6-47c9-b7c8-81df07ad028b.png",
+  "onee": "71de3eba-f53e-42ff-a015-d2d6051c375a.png",
+  "onee branche eau": "71de3eba-f53e-42ff-a015-d2d6051c375a.png",
+  "onee branche electricite": "de4233d9-e76d-475e-87e5-36f50f52bc77.png",
+  "onhym": "c8117bb3-2113-47f5-bd53-b5ef0183b0c3.png",
+  "onhym midstream co s a": "c8117bb3-2113-47f5-bd53-b5ef0183b0c3.png",
+  "prefecture de meknes": "a46b1542-274d-4ea4-92e3-b0d6d2c42e9d.png",
+  "prefecture de police de laayoune": "11a9f653-1ed3-4708-9f23-d613e58b77e4.png",
+  "prefecture de rabat": "801aba19-63e7-4af4-a5e8-02881507a3b3.png",
+  "prefecture de sale": "a084b668-24b0-42bd-9280-3e73e32200ca.png",
+  "presidence de l universite ibn zohr agadir": "71d0504d-23cd-47c5-b64a-b2d7beee1a68.png",
+  "presidence de l universitee abdelmalek essaadi": "b08df6db-b231-45d2-93f1-ed50f1dddfa9.png",
+  "province de guercif": "bc7669be-d93c-44a1-9d13-02aec76da8d4.png",
+  "province de midelt": "9f131b21-df03-482a-84e9-0374a6de3691.png",
+  "province de taounate": "08b8e308-7a2b-4aba-a9f8-d988ae3c886e.png",
+  "province de taourirt": "243d8353-9189-4c6e-8fdc-3e7a5b908285.png",
+  "province de tiznit": "19698e0c-e1af-4561-94c3-9d920429696f.png",
+  "province de zagora": "542dc067-b007-425a-81dc-423f1261239a.png",
+  "rabat region amenagement": "2503dcbc-5e39-42ca-9bf6-75d81232db25.png",
+  "radeet": "e8aa971d-fa93-4a8a-bde4-3a45c7869340.png",
+  "ram handling": "58af7341-de74-4ef2-970b-a16bcb16382f.png",
+  "region de sous massa": "a9672849-f590-4e5d-91fb-00b5919c2498.png",
+  "sdr fes region amenagement": "8c0ab887-437b-4838-a496-3d8e11f31b7d.png",
+  "service de l equipement du transport et de la logistique de rhamna": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "service de l equipement du transport et de la logistique de sidi slimane": "220c110a-d549-46c3-a359-3cfaa66f8e96.png",
+  "societe al omrane beni mellal khenifra": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "societe al omrane casablanca": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "societe al omrane draa tafilalet": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "societe al omrane fes meknes": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "societe al omrane marrakech safi": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "societe al omrane region de l oriental": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "societe al omrane souss massa": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "societe alomrane region de l oriental": "59ab5100-2c80-4650-9263-b7bd81731fd5.png",
+  "societe de developpement local agadir souss massa amenagement sa": "fb985367-8bb8-49c2-83e5-1522ad59e17a.png",
+  "societe de developpement local marrakech mobility sa": "a1ddffd1-5a6f-40d4-a256-a687e4ff5e1b.png",
+  "societe de developpement touristique souss massa sdr sa": "549c04f2-dd95-4cf7-a571-97fea7d4cf65.png",
+  "societe rabat region amenagements": "2503dcbc-5e39-42ca-9bf6-75d81232db25.png",
+  "societe regionale multiservices casablanca settat sa": "0e2bd73a-caf0-4eec-8288-1a7fa0cb7e40.png",
+  "societe regionale multiservices de l oriental s a": "339385ab-d83c-4369-8bdc-c0b62c04516e.png",
+  "societe regionale multiservices rabat sale kenitra sa": "7aff5b26-a83a-49ba-aec9-f9ffff80b82a.png",
+  "societe regionale multiservices souss massa": "99a33e18-ea9a-4a12-b0fd-31c173e8822f.png",
+  "societe regionale multiservices souss massa sa": "99a33e18-ea9a-4a12-b0fd-31c173e8822f.png",
+  "tresorerie generale du royaume": "71541112-3b25-4d69-a2af-7eafa0589f4d.png",
+  "universite cadi ayyad": "b3408757-badf-4343-acd0-67340418483b.png",
+  "wilaya de la region marrakech safi prefecture de marrakech": "6e2837de-2997-4760-b516-9c5255d1108d.png",
+};
+
+interface FallbackRule {
+  match: RegExp;
+  file: string;
+}
+
+/** Substring-regex fallbacks for ATLAS buyer-name variants not in the exact
+ *  map (acronyms, slight wording shifts). Order matters — most specific first. */
+const FALLBACK_RULES: readonly FallbackRule[] = [
+  { match: /\bofppt\b/, file: '941ccdeb-a317-4924-bda6-d1b03cd0ff1f.png' },
+  { match: /\boncf\b|office.*chemins.*fer/, file: '5a7270ca-5391-4030-842b-df1756f3b583.png' },
+  { match: /\bonda\b|office.*aeroports/, file: 'a47ba955-bed6-47c9-b7c8-81df07ad028b.png' },
+  { match: /\bnarsa\b|securite.*routiere/, file: '651c4212-0605-4761-8c82-7347bd3c5bf7.png' },
+  { match: /\banapec\b/, file: '39efd1b3-5f15-4587-b67c-8d2bb1b17275.png' },
+  { match: /\bonhym\b/, file: 'c8117bb3-2113-47f5-bd53-b5ef0183b0c3.png' },
+  { match: /\bonee\b.*electricite|branche electricite/, file: 'de4233d9-e76d-475e-87e5-36f50f52bc77.png' },
+  { match: /\bonee\b|office.*electricite.*eau/, file: '71de3eba-f53e-42ff-a015-d2d6051c375a.png' },
+  { match: /\banep\b|agence nationale.*equipements publics/, file: 'df210e14-cef2-46ea-be0b-09b290cf84cb.png' },
+  { match: /\banp\b|agence nationale des ports/, file: 'bd494a19-c706-4bfc-8b41-b6b466a75644.png' },
+  { match: /al omrane|holding.*omrane/, file: '59ab5100-2c80-4650-9263-b7bd81731fd5.png' },
+  { match: /direction provinciale.*equipement|service.*equipement.*transport/, file: '220c110a-d549-46c3-a359-3cfaa66f8e96.png' },
+  { match: /direction provinciale.*agriculture|direction regionale.*agriculture|chambre.*agriculture/, file: '75c3d657-bca2-473d-8264-e59f0a71dd69.png' },
+  { match: /direction provinciale.*education|ministere.*education/, file: 'a72aa028-7630-4085-89b6-5d0f1e9a803f.png' },
+  { match: /office.*conseil.*agricole/, file: '836da57a-68f6-456e-8b27-373bd7462f41.png' },
+  { match: /office.*securite.*sanitaire.*produits.*alimentaires|\bonssa\b/, file: '815293ea-0c99-4752-96d9-c6204ab1af21.png' },
+  { match: /agence nationale.*eaux.*forets|\banef\b/, file: '8bf0947e-8280-4192-bb67-e938ed07f541.png' },
+  { match: /agence regionale.*execution.*projets/, file: '0b363a62-76c3-4404-9cbb-f6f33eb85f91.png' },
+  { match: /fonds d.equipement communal|\bfec\b/, file: 'a41276ab-308b-4048-88f9-0aa027e602a6.png' },
+  { match: /office.*mise en valeur agricole|\bormva\b/, file: '554096e4-f219-4410-be40-454626b05472.png' },
+  { match: /ministere.*sante|sante.*protection sociale/, file: '94f65fb6-aabc-4d86-a2c2-173206e615aa.png' },
+  { match: /habous.*affaires islamiques/, file: '287cefce-c213-43e7-91e4-7511c1dc3c0e.png' },
+  { match: /douanes.*impots.*indirects/, file: '9364bdb6-5b6b-467b-8027-1211754d591e.png' },
+  { match: /tresorerie generale/, file: '71541112-3b25-4d69-a2af-7eafa0589f4d.png' },
+  { match: /caisse.*compensation/, file: 'fb20bc52-167c-4c38-a880-c91c50ba0474.png' },
+  { match: /caisse marocaine.*retraites/, file: '066202c4-411d-48ac-8f86-a34e57d0d145.png' },
+  { match: /protection civile/, file: '8019c013-9937-4e0f-a243-4d419b67f9b7.png' },
+  { match: /direction generale.*meteorologie/, file: 'b732c218-6a39-4955-b9ee-ee869ef69497.png' },
+  { match: /universite cadi ayyad|ensa marrakech/, file: 'b3408757-badf-4343-acd0-67340418483b.png' },
+  { match: /chu.*marrakech|hospitalier.*mohammed vi.*marrakech/, file: '15716b48-f06e-47f1-a394-296898cb393a.png' },
+  { match: /chu.*oujda|hospitalier.*mohammed vi.*oujda/, file: '49d7fa23-6b31-4146-b92a-3d3f75e0d97b.png' },
+  { match: /chu.*fes|hassan ii.*fes/, file: '3a69ffa7-6e2d-4704-977f-d6fc7fea50fe.png' },
+  { match: /chu.*ibn sina|ibn sina.*rabat/, file: 'd47517db-6c3d-456d-a6aa-2fa3e49528bd.png' },
+  { match: /ibn roched|ibn rochd/, file: '6cd08e97-c5b9-41cd-baef-99d9b45caa87.png' },
+];
+
 /** Returns the public path to the curated logo for this issuer, or null when
- *  no rule matches -- the caller falls back to the initials avatar. */
+ *  no rule matches — the caller falls back to the initials avatar.
+ *  Tries the exact normalized-name table first, then substring-regex. */
 export function lookupIssuerLogo(name: string): string | null {
   if (!name) return null;
   const normalized = normalizeIssuerName(name);
-  for (const rule of LOGO_RULES) {
-    if (rule.match.test(normalized)) {
-      return `/issuers/${rule.file}`;
-    }
+  const exact = NAME_TO_ASSET[normalized];
+  if (exact) return `/issuers/datao/${exact}`;
+  for (const rule of FALLBACK_RULES) {
+    if (rule.match.test(normalized)) return `/issuers/datao/${rule.file}`;
   }
   return null;
 }
