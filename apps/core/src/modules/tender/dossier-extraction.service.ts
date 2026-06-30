@@ -200,7 +200,7 @@ export class DossierExtractionService {
 
     let fresh: DossierExtraction;
     let sourceNames: string[];
-    let mode: 'text' | 'vision' | 'bordereau-only';
+    let mode: 'text' | 'vision' | 'text+vision' | 'bordereau-only';
     try {
       if (digitalReadable) {
         // Digital text layer present → cheap text→LLM path (unchanged behaviour).
@@ -210,6 +210,58 @@ export class DossierExtractionService {
           reference: tender.reference,
           objet: tender.objet,
         });
+        // datao-parity: digital DCEs commonly ship a SCANNED Avis (image-only
+        // PDF) whose text layer is empty — RC/CPS are text-rich enough for
+        // `digitalReadable` to pass, but the budget + caution provisoire live
+        // ONLY in that scanned Avis. When text mode returned null for either,
+        // run vision as a supplement and merge JUST the financial/timing
+        // scalars back. BPU/qualifs/contact stay as text-mode parsed them
+        // (those live in RC/CPS, not Avis), so we never regress the deep
+        // coverage that already passed. Best-effort: a vision failure here
+        // never fails the whole extraction.
+        if (
+          fresh.estimationMad == null ||
+          fresh.cautionProvisoireMad == null
+        ) {
+          try {
+            const vis = await buildVisionInput(dossier.bytes);
+            if (vis.images.length > 0) {
+              const visFresh = await aiExtractDossierVision(
+                llm,
+                vis.images,
+                vis.digitalText,
+                vis.sourceFiles,
+                { reference: tender.reference, objet: tender.objet },
+              );
+              fresh = {
+                ...fresh,
+                estimationMad: fresh.estimationMad ?? visFresh.estimationMad,
+                cautionProvisoireMad:
+                  fresh.cautionProvisoireMad ?? visFresh.cautionProvisoireMad,
+                cautionDefinitivePct:
+                  fresh.cautionDefinitivePct ?? visFresh.cautionDefinitivePct,
+                retenueGarantiePct:
+                  fresh.retenueGarantiePct ?? visFresh.retenueGarantiePct,
+                delaiGarantieMois:
+                  fresh.delaiGarantieMois ?? visFresh.delaiGarantieMois,
+                delaiExecutionMois:
+                  fresh.delaiExecutionMois ?? visFresh.delaiExecutionMois,
+                chiffreAffairesMinMad:
+                  fresh.chiffreAffairesMinMad ?? visFresh.chiffreAffairesMinMad,
+              };
+              mode = 'text+vision';
+              sourceNames = [
+                ...new Set([...sourceNames, ...vis.sourceFiles]),
+              ];
+            }
+          } catch (visErr) {
+            this.logger.warn(
+              `dossier.extract ${tender.reference}: vision supplement failed (${
+                (visErr as Error).message
+              }) — text-mode result kept`,
+            );
+          }
+        }
       } else {
         // 2) Scanned → VISION path: render pages to images and let the multimodal
         //    model OCR + understand + extract in one call (datao-grade; replaces
