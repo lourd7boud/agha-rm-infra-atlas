@@ -23,18 +23,20 @@ describe('extractDossierText', () => {
 
     const out = await extractDossierText(zip, echoExtract);
 
-    // RC(0) → BPU(1) → CPS(2) → AVIS(4); empty.pdf + the .docx are excluded.
-    // RC leads because it carries the headline estimation/caution figures.
+    // AVIS(0) → BPU(1) → RC(2) → CPS(4); empty.pdf + the .docx are excluded.
+    // AVIS leads because it carries the headline estimation/caution figures
+    // for marché-cadre tenders (SRM/ONEE/RADEEMA) where they're absent from
+    // RC; BPU second because its last row holds the total estimatif.
     expect(out.files.map((f) => f.name)).toEqual([
-      'RC AO 06-2026.pdf',
-      'BPU 06-2026.pdf',
-      'CPS AO 06-2026.pdf',
       'AVIS AO 06-2026.pdf',
+      'BPU 06-2026.pdf',
+      'RC AO 06-2026.pdf',
+      'CPS AO 06-2026.pdf',
     ]);
+    expect(out.text.indexOf('avis content')).toBeLessThan(out.text.indexOf('rc content'));
     expect(out.text.indexOf('rc content')).toBeLessThan(out.text.indexOf('cps content'));
-    expect(out.text.indexOf('cps content')).toBeLessThan(out.text.indexOf('avis content'));
     expect(out.text).not.toContain('must be ignored');
-    expect(out.text).toContain('===== RC AO 06-2026.pdf =====');
+    expect(out.text).toContain('===== AVIS AO 06-2026.pdf =====');
   });
 
   test('bounds the combined text to the char budget', async () => {
@@ -163,21 +165,22 @@ describe('extractDossierText', () => {
   });
 
   test('per-bucket budget prevents a fat RC from starving the BPU', async () => {
-    // RC fills its 24k bucket; BPU still gets its own 20k bucket; total stays
-    // bounded but BPU is no longer starved (the pre-bucket version would have
-    // truncated BPU to 0 since RC could eat the whole global budget).
+    // BPU fills its bucket first (priority 1); RC gets its own bucket after
+    // (priority 2). Total stays bounded; BPU is no longer starved by an
+    // outsized RC (pre-bucket version would have let RC eat the whole
+    // global budget). Order is now BPU → RC because BPU outranks RC.
     const zip = zipSync({
       'RC 07-2026.pdf': strToU8('R'.repeat(60_000)),
       'BPU 07-2026.pdf': strToU8('B'.repeat(30_000)),
     });
     const out = await extractDossierText(zip, echoExtract);
-    const rcChars = (
-      out.text.split('===== BPU 07-2026.pdf =====')[0] ?? ''
-    ).replace(/^.*?===== RC 07-2026.pdf =====/s, '');
-    const bpuChars = out.text.split('===== BPU 07-2026.pdf =====')[1] ?? '';
-    expect(rcChars.length).toBeLessThanOrEqual(24_064);
-    expect(rcChars.length).toBeGreaterThan(20_000);
+    const bpuChars = (
+      out.text.split('===== RC 07-2026.pdf =====')[0] ?? ''
+    ).replace(/^.*?===== BPU 07-2026.pdf =====/s, '');
+    const rcChars = out.text.split('===== RC 07-2026.pdf =====')[1] ?? '';
     expect(bpuChars.length).toBeLessThanOrEqual(20_064);
     expect(bpuChars.length).toBeGreaterThan(15_000);
+    expect(rcChars.length).toBeLessThanOrEqual(24_064);
+    expect(rcChars.length).toBeGreaterThan(20_000);
   });
 });

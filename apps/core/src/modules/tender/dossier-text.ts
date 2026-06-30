@@ -101,11 +101,19 @@ export function isDataBearingDoc(name: string): boolean {
 
 export function docPriority(name: string): number {
   const n = name.toLowerCase();
-  if (/(^|[^a-z])rc([^a-z]|$)|reglement|règlement/.test(n)) return 0;
-  if (n.includes('bpu') || n.includes('bordereau') || n.includes('estimatif')) return 1;
-  if (n.includes('cps')) return 2;
+  // AVIS first — it's a 1-2 page document that almost always carries the
+  // budget + caution provisoire (the two fields ATLAS most often misses on
+  // marché-cadre tenders). When a 60-page scanned CPS competes for the same
+  // 20-page vision budget, AVIS lost every time. Now it wins.
+  if (n.includes('avis')) return 0;
+  // BPDE / Bordereau / Détail estimatif second — for marché-cadre tenders
+  // (SRM, ONEE-Branche-Eau, RADEEMA…) the budget is in the LAST row of this
+  // table, not the Avis. Both AVIS and BPDE together cap at <10 pages so
+  // they comfortably fit before RC/CPS get their turn.
+  if (n.includes('bpu') || n.includes('bordereau') || n.includes('estimatif') || n.includes('bpde')) return 1;
+  if (/(^|[^a-z])rc([^a-z]|$)|reglement|règlement/.test(n)) return 2;
   if (n.includes('cct') || n.includes('ccap') || n.includes('cctp')) return 3;
-  if (n.includes('avis')) return 4;
+  if (n.includes('cps')) return 4;
   return 5;
 }
 

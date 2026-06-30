@@ -127,7 +127,21 @@ export async function buildVisionInput(
       txt = '';
     }
     const measured = txt.replace(/\s+/g, ' ').trim();
+    // AVIS, BPDE and Bordereau files are the ones that carry budget+caution
+    // (AVIS) and the financial total (BPDE). They are ALWAYS rendered to
+    // images — even when pdf-parse pulled a thin junk OCR layer that would
+    // otherwise pass the digital gate and skip rendering. This is the bug
+    // that caused SRM/ONEE marché-cadre tenders to keep returning budget=null
+    // even with text+vision mode on. Datao gets these because their pipeline
+    // necessarily images the small documents; this aligns ATLAS with that.
+    const lname = name.toLowerCase();
+    const mustImage =
+      lname.includes('avis') ||
+      lname.includes('bpde') ||
+      lname.includes('bordereau') ||
+      lname.includes('estimatif');
     const isDigital =
+      !mustImage &&
       measured.length >= MIN_READABLE_FILE_CHARS &&
       (pages <= 0 || measured.length / pages >= MIN_CHARS_PER_PAGE_DIGITAL);
     if (isDigital) {
