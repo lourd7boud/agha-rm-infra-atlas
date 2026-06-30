@@ -186,8 +186,13 @@ export const DOSSIER_EXTRACTION_SYSTEM_PROMPT = `Tu es analyste de marchés publ
 }
 Règles STRICTES:
 - Tous les montants en dirhams (DH/MAD) comme NOMBRES sans séparateur ni devise: "Trois cent soixante-dix-neuf mille cent quatre dirhams (379 104,00 Dhs)" -> 379104. "Sept Mille (7 000,00) dirhams" -> 7000.
-- "estimationMad": l'estimation des coûts établie par le maître d'ouvrage / le montant de l'estimation. Si absente: null.
-- "cautionProvisoireMad": le montant du cautionnement provisoire. Si "sans caution" ou absent: null.
+- "estimationMad" — montant total estimatif du marché en DH. RECHERCHE OBLIGATOIRE dans cet ordre, ne mets null QUE si réellement absent des 5 sources suivantes:
+  (1) Avis (champ « Estimation des coûts », « Budget prévisionnel », « Montant prévisionnel »),
+  (2) RC (article ou paragraphe « Estimation », « Budget », « Enveloppe budgétaire »),
+  (3) BPDE / Bordereau des prix / Détail estimatif: DERNIÈRE ligne du tableau, libellés « Montant estimatif total », « TOTAL HT », « Total estimatif », « Total Général » — c'est LA source pour les marchés-cadres (SRM, ONEE-Branche-Eau, RADEEMA, etc.) où l'estimation n'est ni dans l'avis ni dans le RC,
+  (4) CPS (rare): article « Montant prévisionnel du marché »,
+  (5) toute mention isolée « X DH HT » au pied d'un tableau ou dans un récapitulatif.
+- "cautionProvisoireMad" — montant du cautionnement provisoire. RECHERCHE OBLIGATOIRE: avis d'appel d'offres (champ « Cautionnement provisoire » / « Caution provisoire ») ou RC (article « Cautionnement provisoire »). Si le texte écrit explicitement « Sans caution provisoire » / « Caution non exigée » -> null. Sinon ne renvoie null QUE si réellement absent.
 - "cautionDefinitivePct"/"retenueGarantiePct": en POURCENTAGE (3 -> 3). "delaiGarantieMois"/"delaiExecutionMois": en MOIS (convertis les jours: 90 jours -> 3).
 - "chiffreAffairesMinMad": chiffre d'affaires annuel minimum exigé en DH, sinon null.
 - "qualifications": chaque (secteur/activité, qualification, classe) exigé. Aucune exigée: [].
