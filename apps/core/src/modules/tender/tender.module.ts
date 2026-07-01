@@ -381,6 +381,48 @@ export class TenderController {
     }
   }
 
+  /**
+   * Datao-parity dual-lane FTS search. Runs `websearch_to_tsquery('french', q)`
+   * against the trigger-maintained `fts_search` and `fts_bdp_search` columns
+   * (migration 0027_tender_dual_fts.sql). Every hit is enriched with the
+   * calling tender's headline fields + `hitBdp` so the frontend can badge
+   * bordereau-only matches ("Trouvé dans le BPU"), the search dimension ATLAS
+   * previously lacked and datao's users rely on.
+   */
+  @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
+  @Throttle({ default: { ttl: 60_000, limit: 60 } })
+  @Get('tenders/search')
+  async searchTenders(
+    @Query('q') q: string,
+    @Query('limit') limitRaw?: string,
+  ) {
+    const query = typeof q === 'string' ? q.trim() : '';
+    if (query.length < 2) return { query, hits: [] };
+    const limit = Math.min(50, Math.max(1, Number.parseInt(limitRaw ?? '20', 10) || 20));
+    const idHits = await this.repository.searchIdsByFts(query, limit);
+    if (idHits.length === 0) return { query, hits: [] };
+
+    const idMap = new Map(idHits.map((h) => [h.id, h] as const));
+    const records = await Promise.all(
+      idHits.map((h) => this.repository.findById(h.id)),
+    );
+    const hits = records
+      .filter((r): r is TenderRecord => r !== null)
+      .map((r) => {
+        const match = idMap.get(r.id)!;
+        return {
+          id: r.id,
+          reference: r.reference,
+          objet: r.objet,
+          buyerName: r.buyerName,
+          deadlineAt: r.deadlineAt,
+          hitBdp: match.hitBdp,
+          rank: match.rank,
+        };
+      });
+    return { query, hits };
+  }
+
   /** Assistant IA — natural-language search → {filters, narrative, matches}. */
   @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
   @Throttle({ default: { ttl: 60_000, limit: 20 } })

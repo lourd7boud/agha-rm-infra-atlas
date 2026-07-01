@@ -90,6 +90,17 @@ export interface TenderRepository {
     amounts: EnrichmentAmounts,
     rawMerge: Record<string, unknown>,
   ): Promise<TenderRecord | null>;
+  /**
+   * Datao-parity dual-lane French FTS lookup. Runs
+   * `websearch_to_tsquery('french', q)` against both `fts_search` and
+   * `fts_bdp_search`, returning ranked ids plus a flag telling the caller
+   * whether the hit came from the bordereau lane — the frontend surfaces
+   * that as a "Trouvé dans le BPU" badge. In-memory fallback returns [].
+   */
+  searchIdsByFts(
+    q: string,
+    limit: number,
+  ): Promise<Array<{ id: string; hitBdp: boolean; rank: number }>>;
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
@@ -225,6 +236,14 @@ export class InMemoryTenderRepository implements TenderRepository {
     };
     this.records = this.records.map((r) => (r.id === id ? updated : r));
     return updated;
+  }
+
+  async searchIdsByFts(): Promise<
+    Array<{ id: string; hitBdp: boolean; rank: number }>
+  > {
+    // In-memory fallback has no tsvector infra; callers fall back to the
+    // substring path in inventory.domain when this returns [].
+    return [];
   }
 }
 
@@ -394,6 +413,39 @@ export class DrizzleTenderRepository implements TenderRepository {
       .where(eq(tenders.id, id))
       .returning();
     return row ? toRecord(row) : null;
+  }
+
+  async searchIdsByFts(
+    q: string,
+    limit: number,
+  ): Promise<Array<{ id: string; hitBdp: boolean; rank: number }>> {
+    // Both lanes run through websearch_to_tsquery('french') so a phrase like
+    // "câbles électriques" hits tenders whose title carries it AND tenders
+    // whose bordereau lists it as a BPU line item. The GREATEST() rank keeps
+    // the ordering intuitive regardless of which lane matched.
+    const rows = await this.db.execute<{
+      id: string;
+      hit_bdp: boolean;
+      rank: number;
+    }>(sql`
+      SELECT t.id::text AS id,
+             (t.fts_bdp_search @@ tsq) AS hit_bdp,
+             GREATEST(
+               ts_rank(t.fts_search, tsq),
+               ts_rank(t.fts_bdp_search, tsq)
+             ) AS rank
+        FROM tender.tender AS t,
+             websearch_to_tsquery('french', ${q}) AS tsq
+       WHERE t.fts_search @@ tsq
+          OR t.fts_bdp_search @@ tsq
+       ORDER BY rank DESC
+       LIMIT ${limit}
+    `);
+    return rows.rows.map((r) => ({
+      id: r.id,
+      hitBdp: r.hit_bdp,
+      rank: Number(r.rank),
+    }));
   }
 }
 
