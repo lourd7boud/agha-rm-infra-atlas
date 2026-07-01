@@ -431,15 +431,15 @@ export class TenderController {
     const idHits = await this.repository.searchIdsByFts(query, limit);
     if (idHits.length === 0) return { query, hits: [] };
 
-    const idMap = new Map(idHits.map((h) => [h.id, h] as const));
-    const records = await Promise.all(
-      idHits.map((h) => this.repository.findById(h.id)),
-    );
-    const hits = records
-      .filter((r): r is TenderRecord => r !== null)
-      .map((r) => {
-        const match = idMap.get(r.id)!;
-        return {
+    // One batched SELECT (no N+1), then re-ordered by FTS rank since the
+    // db returns rows in arbitrary order.
+    const records = await this.repository.findByIds(idHits.map((h) => h.id));
+    const recordById = new Map(records.map((r) => [r.id, r] as const));
+    const hits = idHits.flatMap((match) => {
+      const r = recordById.get(match.id);
+      if (!r) return [];
+      return [
+        {
           id: r.id,
           reference: r.reference,
           objet: r.objet,
@@ -447,8 +447,9 @@ export class TenderController {
           deadlineAt: r.deadlineAt,
           hitBdp: match.hitBdp,
           rank: match.rank,
-        };
-      });
+        },
+      ];
+    });
     return { query, hits };
   }
 

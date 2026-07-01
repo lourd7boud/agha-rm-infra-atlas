@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import type { Db } from '../../db/client';
 import { tenders } from '../../db/schema';
@@ -57,6 +57,11 @@ export interface TenderRepository {
   create(input: CreateTender): Promise<TenderRecord>;
   findAll(): Promise<TenderRecord[]>;
   findById(id: string): Promise<TenderRecord | null>;
+  /**
+   * Batch lookup — one round-trip for N ids (the FTS search endpoint feeds up
+   * to 50 ids at once). Order is NOT guaranteed; callers re-order by rank.
+   */
+  findByIds(ids: string[]): Promise<TenderRecord[]>;
   /**
    * Fills sourceUrl on an already-stored tender (matched by reference+buyer)
    * only when it is currently NULL — never overwrites a known value. Returns
@@ -131,6 +136,11 @@ export class InMemoryTenderRepository implements TenderRepository {
 
   async findById(id: string): Promise<TenderRecord | null> {
     return this.records.find((r) => r.id === id) ?? null;
+  }
+
+  async findByIds(ids: string[]): Promise<TenderRecord[]> {
+    const wanted = new Set(ids);
+    return this.records.filter((r) => wanted.has(r.id));
   }
 
   async backfillSourceUrl(
@@ -300,6 +310,15 @@ export class DrizzleTenderRepository implements TenderRepository {
     return row ? toRecord(row) : null;
   }
 
+  async findByIds(ids: string[]): Promise<TenderRecord[]> {
+    if (ids.length === 0) return [];
+    const rows = await this.db
+      .select()
+      .from(tenders)
+      .where(inArray(tenders.id, ids));
+    return rows.map(toRecord);
+  }
+
   async backfillSourceUrl(
     reference: string,
     buyerName: string,
@@ -396,8 +415,9 @@ export class DrizzleTenderRepository implements TenderRepository {
     amounts: EnrichmentAmounts,
     rawMerge: Record<string, unknown>,
   ): Promise<TenderRecord | null> {
-    const existing = await this.findById(id);
-    if (!existing) return null;
+    // Single atomic statement: the JSONB merge runs server-side, so two
+    // concurrent writers (auto-extract + manual trigger on the same tender)
+    // can never clobber each other's keys through a stale read.
     const [row] = await this.db
       .update(tenders)
       .set({
@@ -407,7 +427,7 @@ export class DrizzleTenderRepository implements TenderRepository {
         ...(amounts.cautionProvisoireMad !== undefined
           ? { cautionProvisoireMad: amounts.cautionProvisoireMad.toString() }
           : {}),
-        raw: { ...(existing.raw ?? {}), ...rawMerge },
+        raw: sql`COALESCE(${tenders.raw}, '{}'::jsonb) || ${JSON.stringify(rawMerge)}::jsonb`,
         updatedAt: new Date(),
       })
       .where(eq(tenders.id, id))
