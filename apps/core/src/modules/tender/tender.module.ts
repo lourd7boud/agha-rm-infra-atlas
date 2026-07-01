@@ -50,6 +50,7 @@ import {
   parsePmmpRefs,
 } from '../portal/live-participants.crawler';
 import { buildComplianceChecklist } from './compliance.domain';
+import { buildTenderCompetitorIntel } from './competitor-intel.domain';
 import { DossierService } from './dossier.service';
 import { DossierExtractionService } from './dossier-extraction.service';
 import { EnrichmentService } from './enrichment.service';
@@ -185,6 +186,10 @@ const orchestratorCache = new TtlCache<unknown>();
 // and portal politeness (30 clicks × 60 s throttle would still be one hit).
 const LIVE_PARTICIPANTS_CACHE_TTL_MS = 60_000;
 const liveParticipantsCache = new TtlCache<unknown>();
+// Competitor intel reads the full competitor_bid scan; cache 60 s so a burst
+// of drawer opens collapses to one scan. Keyed by tenderId.
+const COMPETITOR_INTEL_CACHE_TTL_MS = 60_000;
+const competitorIntelCache = new TtlCache<unknown>();
 
 interface RequestWithUser {
   user?: AuthenticatedUser;
@@ -794,6 +799,39 @@ export class TenderController {
       cacheKey,
       LIVE_PARTICIPANTS_CACHE_TTL_MS,
       () => this.liveParticipants.fetch(refs.refConsultation, refs.orgAcronyme),
+    );
+  }
+
+  /**
+   * Competitor Intelligence — the datao-beating surface. Reads the harvested
+   * PV/result history (intel.competitor_bid) and returns, for THIS tender:
+   *   - CLOSED (result harvested): the REAL participants + amounts + winner,
+   *     same-day from the PV notice — ahead of datao's daily snapshot.
+   *   - OPEN (no result yet): PREDICTIVE intel from this buyer's history —
+   *     the firms that most often bid this buyer, their win counts, and the
+   *     typical winning-rebate level. Real data, honestly framed as historique.
+   * Cached 60 s (keyed by tenderId) so a burst of drawer opens is one scan.
+   */
+  @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
+  @Throttle({ default: { ttl: 60_000, limit: 60 } })
+  @Get('tenders/:id/competitor-intel')
+  async competitorIntel(@Param('id') id: string) {
+    const tender = await this.findOr404(id);
+    return competitorIntelCache.getOrCompute(
+      id,
+      COMPETITOR_INTEL_CACHE_TTL_MS,
+      async () => {
+        const bids = await this.intel.listAllBids();
+        return buildTenderCompetitorIntel(
+          {
+            reference: tender.reference,
+            buyerName: tender.buyerName,
+            deadlineAt: tender.deadlineAt,
+          },
+          bids,
+          new Date(),
+        );
+      },
     );
   }
 
