@@ -1,10 +1,15 @@
 name: atlas-platform
 
+# Resource caps are sized for the 2 vCPU / 3.7 GB staging VPS. Without them a
+# single JVM (Keycloak/Metabase) or an Odoo worker burst can OOM the whole box
+# — the root cause behind the "everything is slow" episodes. cpus are ceilings.
 services:
   postgres:
     # pgvector build of Postgres 16 — required by initdb (CREATE EXTENSION vector)
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    cpus: 1.0
+    mem_limit: 640m
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
@@ -20,6 +25,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 128m
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redisdata:/data
@@ -32,6 +39,8 @@ services:
   minio:
     image: minio/minio:latest
     restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 256m
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -47,6 +56,8 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     restart: unless-stopped
+    cpus: 0.75
+    mem_limit: 512m
     command: ["start", "--http-enabled", "true", "--proxy-headers", "xforwarded"]
     environment:
       KC_DB: postgres
@@ -56,6 +67,13 @@ services:
       KC_HOSTNAME: https://auth.${DOMAIN}
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    healthcheck:
+      # Image ships no curl/wget: a bash TCP open proves the listener is up.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,12 +81,26 @@ services:
   odoo:
     image: odoo:18
     restart: unless-stopped
+    cpus: 0.75
+    mem_limit: 512m
     environment:
       HOST: postgres
       USER: odoo
       PASSWORD: ${ODOO_DB_PASSWORD}
     volumes:
       - odoodata:/var/lib/odoo
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8069/web/health', timeout=4)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     depends_on:
       postgres:
         condition: service_healthy
@@ -76,6 +108,8 @@ services:
   metabase:
     image: metabase/metabase:latest
     restart: unless-stopped
+    cpus: 0.75
+    mem_limit: 640m
     environment:
       MB_DB_TYPE: postgres
       MB_DB_DBNAME: metabase
@@ -83,6 +117,12 @@ services:
       MB_DB_USER: metabase
       MB_DB_PASS: ${METABASE_DB_PASSWORD}
       MB_DB_HOST: postgres
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "-s", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,6 +132,8 @@ services:
     #   docker compose exec backup /scripts/pg-restore-drill.sh
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 128m
     entrypoint:
       ["sh", "-c", "while true; do /scripts/pg-backup.sh; sleep 86400; done"]
     environment:
@@ -109,6 +151,8 @@ services:
   caddy:
     image: caddy:2
     restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 128m
     ports:
       - "80:80"
       - "443:443"

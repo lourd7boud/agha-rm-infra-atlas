@@ -21,6 +21,22 @@ services:
       # stays free for HTTP requests and Next.js SSR (no more /tenders 504s
       # during extraction bursts).
       WATCH_WORKER_ENABLED: "false"
+    # Caps sized for the 2 vCPU / 3.7 GB VPS: no single container may starve
+    # the box. cpus are ceilings, not reservations.
+    cpus: 1.5
+    mem_limit: 512m
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     # No published port: Caddy reaches core:3000 on the shared network.
 
   worker:
@@ -40,8 +56,25 @@ services:
       NODE_ENV: production
       PORT: "3000"
       WATCH_WORKER_ENABLED: "true"
+    # The extraction pipeline (PDF vision + LLM) is the known CPU/RAM hog:
+    # cap it at one core so the API always keeps a core for HTTP.
+    cpus: 1.0
+    mem_limit: 768m
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
-      - core
+      core:
+        condition: service_healthy
     # No published port: internal-only, never receives HTTP traffic.
 
   web:
@@ -52,8 +85,23 @@ services:
     env_file: .env.apps
     environment:
       NODE_ENV: production
+    cpus: 1.0
+    mem_limit: 512m
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
-      - core
+      core:
+        condition: service_healthy
 
 networks:
   default:
