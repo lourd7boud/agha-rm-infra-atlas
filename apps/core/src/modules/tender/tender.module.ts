@@ -44,6 +44,11 @@ import {
   type VaultRepository,
 } from '../vault/vault.repository';
 import { IntelModule } from '../intel/intel.module';
+import { PortalModule } from '../portal/portal.module';
+import {
+  LiveParticipantsCrawlerService,
+  parsePmmpRefs,
+} from '../portal/live-participants.crawler';
 import { buildComplianceChecklist } from './compliance.domain';
 import { DossierService } from './dossier.service';
 import { DossierExtractionService } from './dossier-extraction.service';
@@ -175,6 +180,11 @@ const INVENTORY_CACHE_TTL_MS = 30_000;
 const ORCHESTRATOR_CACHE_TTL_MS = 30_000;
 const inventoryCache = new TtlCache<unknown>();
 const orchestratorCache = new TtlCache<unknown>();
+// Live-participants cache: 60 s is the sweet spot between UX freshness
+// (operator retries after adding a caution → sees the +1 within a minute)
+// and portal politeness (30 clicks × 60 s throttle would still be one hit).
+const LIVE_PARTICIPANTS_CACHE_TTL_MS = 60_000;
+const liveParticipantsCache = new TtlCache<unknown>();
 
 interface RequestWithUser {
   user?: AuthenticatedUser;
@@ -204,6 +214,8 @@ export class TenderController {
     @Inject(VAULT_REPOSITORY) private readonly vault: VaultRepository,
     @Inject(OUTCOME_REPOSITORY) private readonly outcomes: OutcomeRepository,
     @Inject(TENDER_EVENT_REPOSITORY) private readonly events: EventRepository,
+    @Inject(LiveParticipantsCrawlerService)
+    private readonly liveParticipants: LiveParticipantsCrawlerService,
   ) {}
 
   /** Financial Modeler (B4): G2 pricing scenarios grounded in C1 intel. */
@@ -749,6 +761,42 @@ export class TenderController {
     return found ? presentOutcome(found, record.estimationMad) : null;
   }
 
+  /**
+   * Live PMMP intelligence — the feature datao does not have. On any open
+   * consultation, hit the portal AUTHENTICATED (AGHID CONSTRUCTION session)
+   * and return the four public counters PMMP hides from anonymous callers:
+   *   - retraits (companies that pulled the DCE — the "how many competitors")
+   *   - questions (public Q&A posted by other bidders — with buyer's answers)
+   *   - cautions (companies that filed a caution provisoire — SERIOUS bidders)
+   *   - messagerie (secured messages exchanged)
+   * plus the portal's current deadline (used to detect extensions vs our DB).
+   *
+   * Cached 60 s server-side so a stampede of clicks stays polite to PMMP.
+   * Returns 503 with an operator hint when PORTAL_AUTH_LOGIN/PASSWORD are
+   * missing — the UI reads that to render a "configure PMMP account" state.
+   */
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 30 } })
+  @Get('tenders/:id/live-participants')
+  async liveParticipantsForTender(@Param('id') id: string) {
+    const tender = await this.findOr404(id);
+    if (!tender.sourceUrl) {
+      throw new BadRequestException(
+        "Cette consultation n'a pas d'URL PMMP — impossible de lancer le live.",
+      );
+    }
+    const refs = parsePmmpRefs(tender.sourceUrl);
+    if (!refs) {
+      throw new BadRequestException("URL PMMP invalide sur cette consultation.");
+    }
+    const cacheKey = `${refs.refConsultation}/${refs.orgAcronyme}`;
+    return liveParticipantsCache.getOrCompute(
+      cacheKey,
+      LIVE_PARTICIPANTS_CACHE_TTL_MS,
+      () => this.liveParticipants.fetch(refs.refConsultation, refs.orgAcronyme),
+    );
+  }
+
   /** The append-only transition history of one tender. */
   @Roles('marches', 'direction', 'admin-si')
   @Get('tenders/:id/events')
@@ -815,7 +863,7 @@ const tenderListsServiceProvider = {
 };
 
 @Module({
-  imports: [BrainModule, IntelModule, VaultModule],
+  imports: [BrainModule, IntelModule, VaultModule, PortalModule],
   controllers: [TenderController],
   providers: [
     tenderRepositoryProvider,

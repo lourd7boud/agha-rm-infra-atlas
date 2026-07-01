@@ -21,6 +21,7 @@ import {
 import { MesReponsesCrawlerService } from './mes-reponses.crawler';
 import { MesCautionsCrawlerService } from './mes-cautions.crawler';
 import { PortalOutcomeService } from './portal-outcome.service';
+import { LiveParticipantsCrawlerService } from './live-participants.crawler';
 
 /**
  * Portal connector module — wires the authenticated marchespublics.gov.ma
@@ -112,8 +113,9 @@ const portalQueueProvider = {
     MesReponsesCrawlerService,
     MesCautionsCrawlerService,
     PortalOutcomeService,
+    LiveParticipantsCrawlerService,
   ],
-  exports: [portalRepositoryProvider, PortalOutcomeService],
+  exports: [portalRepositoryProvider, PortalOutcomeService, LiveParticipantsCrawlerService],
 })
 export class PortalModule implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('PortalModule');
