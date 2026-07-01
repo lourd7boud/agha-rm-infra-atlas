@@ -1,4 +1,4 @@
-import { cookieHeader, PORTAL_UA, PORTAL_TIMEOUT } from '../watch/portal-fetch';
+import { cookieHeader, mergeCookieHeaders, PORTAL_UA, PORTAL_TIMEOUT } from '../watch/portal-fetch';
 import { parseFormInputs } from '../watch/prado';
 
 /**
@@ -160,9 +160,15 @@ export class PortalAuthSession {
 
     // Merge the GET cookie (PHPSESSID captured on the form fetch) with any
     // rotated cookie the POST returned — Set-Cookie on the 302 carries the
-    // now-authenticated principal.
-    const setFromPost = cookieHeader(postRes.headers.getSetCookie());
-    const mergedCookie = [getCookie, setFromPost].filter(Boolean).join('; ');
+    // now-authenticated principal. Uses name-aware dedup: the POST's fresh
+    // PHPSESSID overwrites the anonymous one from the GET. Naive concat
+    // sent both PHPSESSIDs and PMMP kept the first (anonymous) one, which
+    // is why authedFetch was landing on the "vous devez être authentifié"
+    // page even though the POST itself returned 302 correctly.
+    const mergedCookie = mergeCookieHeaders(
+      getCookie,
+      postRes.headers.getSetCookie(),
+    );
 
     let authedHtml: string;
     let sessionCookie: string;
@@ -184,13 +190,15 @@ export class PortalAuthSession {
         },
         signal: AbortSignal.timeout(PORTAL_TIMEOUT),
       });
-      sessionCookie =
-        cookieHeader(redirectRes.headers.getSetCookie()) || mergedCookie;
+      sessionCookie = mergeCookieHeaders(
+        mergedCookie,
+        redirectRes.headers.getSetCookie(),
+      );
       authedHtml = await redirectRes.text();
     } else {
       // Rare non-redirect path — some Atexo instances render the authed page
       // inline instead of 302ing. Keep the original single-shot behaviour.
-      sessionCookie = setFromPost || getCookie;
+      sessionCookie = mergedCookie;
       authedHtml = await postRes.text();
     }
 

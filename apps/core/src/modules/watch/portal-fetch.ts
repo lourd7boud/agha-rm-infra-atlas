@@ -23,6 +23,30 @@ export function cookieHeader(setCookies: readonly string[]): string {
     .join('; ');
 }
 
+/**
+ * Merge a running `Cookie:` header string with a fresh Set-Cookie batch,
+ * preserving jar semantics: later values for the same NAME overwrite earlier
+ * ones. Fixes the PMMP login flow where our naive concat sent BOTH the
+ * anonymous PHPSESSID (from the GET) and the authenticated PHPSESSID (from
+ * the 302 Set-Cookie) — PMMP read the first one and kept the caller anonymous.
+ */
+export function mergeCookieHeaders(
+  existingHeader: string,
+  setCookies: readonly string[],
+): string {
+  const jar = new Map<string, string>();
+  const addPair = (raw: string): void => {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const idx = trimmed.indexOf('=');
+    if (idx <= 0) return;
+    jar.set(trimmed.slice(0, idx), trimmed.slice(idx + 1));
+  };
+  if (existingHeader) for (const pair of existingHeader.split(';')) addPair(pair);
+  for (const raw of setCookies) addPair(raw.split(';')[0] ?? '');
+  return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
 export function imageMediaType(contentType: string | null): LlmImageMediaType {
   const ct = (contentType ?? '').toLowerCase();
   if (ct.includes('png')) return 'image/png';
