@@ -1,0 +1,150 @@
+# Trigger.dev v4 self-hosted — datao-parity orchestration layer.
+#
+# This is the SAME stack backend.datao.app runs (Remix webapp + Node worker +
+# Postgres + Redis + ClickHouse). Isolated from ATLAS's docker-compose.yml on
+# purpose: Trigger.dev owns its own DB/Redis/CH and must stay independent so a
+# task avalanche can never starve the API's DB pool.
+#
+# DEPLOY TARGET: a dedicated VPS with at least 8 GB RAM (16 GB recommended).
+# The current atlas.marocinfra.com VPS (3.7 GB, 85% disk) CANNOT host this
+# stack — datao itself hosts Trigger.dev on a separate Hetzner box for the
+# same reason.
+#
+# Bootstrap (on the target VPS):
+#   cd /opt/atlas/platform/trigger
+#   cp .env.example .env    # then fill secrets — see runbook
+#   docker compose up -d postgres redis clickhouse
+#   sleep 20
+#   docker compose up -d webapp
+#   # Read the worker token from webapp logs (shown ONCE at first boot):
+#   docker compose logs webapp | grep TRIGGER_WORKER_TOKEN
+#   # Paste that value into .env then:
+#   docker compose up -d worker registry minio
+#
+# See platform/runbooks/trigger-self-host.md for the full runbook.
+name: trigger
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: main
+    volumes:
+      - trigger-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d main"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - trigger-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.4-alpine
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - trigger-clickhouse:/var/lib/clickhouse
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      # Console for one-time bucket setup — bind to loopback only:
+      - "127.0.0.1:9101:9001"
+    volumes:
+      - trigger-minio:/data
+
+  registry:
+    image: registry:2
+    restart: unless-stopped
+    environment:
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: "Trigger Registry"
+    volumes:
+      - trigger-registry:/var/lib/registry
+      - ./htpasswd:/auth/htpasswd:ro
+
+  webapp:
+    image: ghcr.io/triggerdotdev/trigger.dev:${TRIGGER_IMAGE_TAG:-v4-beta}
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      clickhouse: { condition: service_started }
+    environment:
+      SESSION_SECRET: ${SESSION_SECRET}
+      MAGIC_LINK_SECRET: ${MAGIC_LINK_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      MANAGED_WORKER_SECRET: ${MANAGED_WORKER_SECRET}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/main?schema=public&sslmode=disable
+      DIRECT_URL:   postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/main?schema=public&sslmode=disable
+      APP_ORIGIN:   ${APP_ORIGIN}
+      LOGIN_ORIGIN: ${APP_ORIGIN}
+      API_ORIGIN:   ${APP_ORIGIN}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CLICKHOUSE_URL: http://${CLICKHOUSE_USER:-default}:${CLICKHOUSE_PASSWORD}@clickhouse:8123?secure=false
+      RUN_REPLICATION_CLICKHOUSE_URL: http://${CLICKHOUSE_USER:-default}:${CLICKHOUSE_PASSWORD}@clickhouse:8123
+      OBJECT_STORE_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-admin}
+      OBJECT_STORE_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      OBJECT_STORE_BASE_URL: http://minio:9000
+      OBJECT_STORE_REGION: auto
+      OBJECT_STORE_SERVICE: s3
+      DOCKER_REGISTRY_URL: registry:5000
+      DOCKER_REGISTRY_USERNAME: ${DOCKER_REGISTRY_USERNAME:-registry-user}
+      DOCKER_REGISTRY_PASSWORD: ${DOCKER_REGISTRY_PASSWORD}
+      DOCKER_REGISTRY_NAMESPACE: atlas
+      NODE_MAX_OLD_SPACE_SIZE: ${NODE_MAX_OLD_SPACE_SIZE:-4096}
+    ports:
+      # HTTP: bind loopback only; front with nginx + certbot on the target VPS.
+      - "127.0.0.1:8030:3000"
+
+  worker:
+    image: ghcr.io/triggerdotdev/trigger.dev-provider-docker:${TRIGGER_IMAGE_TAG:-v4-beta}
+    restart: unless-stopped
+    depends_on:
+      webapp: { condition: service_started }
+    environment:
+      TRIGGER_API_URL: ${APP_ORIGIN}
+      TRIGGER_WORKER_TOKEN: ${TRIGGER_WORKER_TOKEN}
+      MANAGED_WORKER_SECRET: ${MANAGED_WORKER_SECRET}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${APP_ORIGIN}/otel
+      DOCKER_REGISTRY_URL: registry:5000
+      DOCKER_REGISTRY_USERNAME: ${DOCKER_REGISTRY_USERNAME:-registry-user}
+      DOCKER_REGISTRY_PASSWORD: ${DOCKER_REGISTRY_PASSWORD}
+      DOCKER_REGISTRY_NAMESPACE: atlas
+    volumes:
+      # Task containers are spawned by the worker via the host Docker socket.
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  trigger-postgres:
+  trigger-redis:
+  trigger-clickhouse:
+  trigger-minio:
+  trigger-registry:
