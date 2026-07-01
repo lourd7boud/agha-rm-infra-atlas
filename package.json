@@ -7,6 +7,12 @@
   "engines": {
     "node": ">=22"
   },
+  "pnpm": {
+    "overrides": {
+      "multer": ">=2.2.0",
+      "undici": ">=7.28.0"
+    }
+  },
   "scripts": {
     "dev": "pnpm --filter @atlas/core dev",
     "start": "pnpm --filter @atlas/core start",

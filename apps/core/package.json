@@ -22,7 +22,7 @@
     "@nestjs/throttler": "^6.5.0",
     "bullmq": "^5.78.0",
     "cheerio": "^1.2.0",
-    "drizzle-orm": "^0.44.0",
+    "drizzle-orm": "^0.45.2",
     "fflate": "^0.8.3",
     "jose": "^6.2.3",
     "pdf-parse": "^2.4.5",
