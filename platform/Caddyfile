@@ -18,6 +18,10 @@ atlas.{$DOMAIN} {
 
 api.{$DOMAIN} {
 	import security_headers
+	# Prometheus scrapes core:3000 over the internal network — the public
+	# internet never needs the scrape endpoint (service fingerprinting risk).
+	@metrics path /api/metrics /api/metrics/*
+	respond @metrics 403
 	reverse_proxy core:3000
 }
 
@@ -38,6 +42,11 @@ s3.{$DOMAIN} {
 }
 
 s3c.{$DOMAIN} {
-	# MinIO console — restrict to Tailscale/VPN network in staging & prod.
+	# MinIO console — admin surface, only reachable from Tailscale (100.64/10)
+	# or private/LAN ranges. Everyone else gets a hard 403.
+	@public {
+		not remote_ip private_ranges 100.64.0.0/10
+	}
+	respond @public 403
 	reverse_proxy minio:9001
 }

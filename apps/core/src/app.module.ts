@@ -28,12 +28,12 @@ export class HealthController {
   @Public()
   @Get()
   get() {
+    // Public surface stays minimal — backend topology (DB engine, etc.)
+    // is not disclosed to unauthenticated callers.
     return {
       status: 'ok',
       service: 'atlas-core',
-      version: '0.1.0',
       uptimeSeconds: Math.round((Date.now() - STARTED_AT) / 1000),
-      persistence: process.env.DATABASE_URL ? 'postgres' : 'in-memory',
     };
   }
 }

@@ -16,7 +16,9 @@ interface Entry {
   expiresAt: number;
 }
 
-const TTL_MS = 10 * 60 * 1000; // 10 min — covers the viewer's fetch window
+// 3 min covers the viewer's fetch window (it may issue HEAD + ranged GETs,
+// so tokens stay multi-read within the TTL — strict single-use breaks it).
+const TTL_MS = 3 * 60 * 1000;
 const MAX_ENTRIES = 64; // bound memory (each ≤ a few MB)
 
 const store = new Map<string, Entry>();
