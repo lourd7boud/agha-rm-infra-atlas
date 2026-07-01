@@ -36,6 +36,7 @@ import type { AuthenticatedUser } from '../auth/auth.domain';
 import { Roles } from '../auth/auth.module';
 import { getDb } from '../../db/client';
 import { daysUntil } from '../../lib/dates';
+import { TtlCache } from '../../lib/ttl-cache';
 import { BrainModule } from '../brain/brain.module';
 import { VaultModule } from '../vault/vault.module';
 import {
@@ -163,6 +164,17 @@ const extractDossierBatchBodySchema = z.object({
 function present(record: TenderRecord) {
   return { ...record, daysLeft: daysUntil(record.deadlineAt, new Date()) };
 }
+
+// Level-2 datao-parity: hot handlers coalesced through a 30 s TTL cache.
+// The home page fans out 8 SSR calls in parallel; inventory + orchestrator are
+// the two heaviest (findAll+facet over ~5 400 rows). Under Sentinel load their
+// p99 climbed past nginx's 60 s default and produced the 504 the operator saw.
+// A 30 s stale window is invisible to human users (Sentinel breather is 5 s,
+// dossier extraction takes hours) and drops both to sub-ms on the warm path.
+const INVENTORY_CACHE_TTL_MS = 30_000;
+const ORCHESTRATOR_CACHE_TTL_MS = 30_000;
+const inventoryCache = new TtlCache<unknown>();
+const orchestratorCache = new TtlCache<unknown>();
 
 interface RequestWithUser {
   user?: AuthenticatedUser;
@@ -555,27 +567,29 @@ export class TenderController {
   @Roles('marches', 'direction', 'admin-si')
   @Get('orchestrator')
   async orchestrator() {
-    const now = new Date();
-    const [records, documents] = await Promise.all([
-      this.repository.findAll(),
-      this.vault.findAll(),
-    ]);
-    return records
-      .map((record) => {
-        const checklist = buildComplianceChecklist(record, documents, now);
-        return {
-          tenderId: record.id,
-          reference: record.reference,
-          etat: record.pipelineState,
-          daysLeft: daysUntil(record.deadlineAt, now),
-          actions: nextActions(
-            { ...record, checklistReady: checklist.ready },
-            now,
-          ),
-        };
-      })
-      .filter((entry) => entry.actions.length > 0)
-      .sort((a, b) => a.daysLeft - b.daysLeft);
+    return orchestratorCache.getOrCompute('all', ORCHESTRATOR_CACHE_TTL_MS, async () => {
+      const now = new Date();
+      const [records, documents] = await Promise.all([
+        this.repository.findAll(),
+        this.vault.findAll(),
+      ]);
+      return records
+        .map((record) => {
+          const checklist = buildComplianceChecklist(record, documents, now);
+          return {
+            tenderId: record.id,
+            reference: record.reference,
+            etat: record.pipelineState,
+            daysLeft: daysUntil(record.deadlineAt, now),
+            actions: nextActions(
+              { ...record, checklistReady: checklist.ready },
+              now,
+            ),
+          };
+        })
+        .filter((entry) => entry.actions.length > 0)
+        .sort((a, b) => a.daysLeft - b.daysLeft);
+    });
   }
 
   /** Deadline wall: every tender ordered by urgency. */
@@ -598,14 +612,28 @@ export class TenderController {
     const parsed = inventoryQuerySchema.safeParse(query);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const { limit, offset, ...filters } = parsed.data;
-    // One scan of competitor_bid joined to every tender by canonical reference
-    // — powers the lifecycle status (en_cours / cloture / attribue / infructueux)
-    // and the "Résultat de l'appel d'offre" surface in the drawer.
-    const [records, bids] = await Promise.all([
-      this.repository.findAll(),
-      this.intel.listAllBids(),
-    ]);
-    return buildInventory(records, filters, new Date(), { limit, offset }, bids);
+    // Cache key includes every filter + limit/offset so distinct queries stay
+    // isolated; the `since` delta is serialised to ISO so identical timestamps
+    // dedupe. Skip the cache entirely when a `since` cutoff is present — the
+    // live-refresh path needs fresh reads for its silent inventory delta.
+    if (filters.since) {
+      const [records, bids] = await Promise.all([
+        this.repository.findAll(),
+        this.intel.listAllBids(),
+      ]);
+      return buildInventory(records, filters, new Date(), { limit, offset }, bids);
+    }
+    const key = JSON.stringify({ ...filters, limit, offset });
+    return inventoryCache.getOrCompute(key, INVENTORY_CACHE_TTL_MS, async () => {
+      // One scan of competitor_bid joined to every tender by canonical reference
+      // — powers the lifecycle status (en_cours / cloture / attribue / infructueux)
+      // and the "Résultat de l'appel d'offre" surface in the drawer.
+      const [records, bids] = await Promise.all([
+        this.repository.findAll(),
+        this.intel.listAllBids(),
+      ]);
+      return buildInventory(records, filters, new Date(), { limit, offset }, bids);
+    });
   }
 
   /** Buyer Observatory: aggregated demand-side profile of every acheteur. */
