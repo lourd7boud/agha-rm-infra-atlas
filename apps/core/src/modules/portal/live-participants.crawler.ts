@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional, ServiceUnavailableException } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { PortalAuthSession } from './portal-auth';
 
 /**
@@ -139,7 +139,15 @@ export class LiveParticipantsCrawlerService {
   private readonly logger = new Logger('LiveParticipants');
 
   constructor(
-    @Optional() private readonly session: PortalAuthSession | null,
+    // Explicit @Inject(PortalAuthSession) token because emitDecoratorMetadata
+    // collapses the `PortalAuthSession | null` union to `Object` in
+    // design:paramtypes, and Nest can no longer resolve the provider by
+    // reflected type alone — it silently injects `undefined`, and this class
+    // then falls into the `!this.session` branch and 503s. Passing the class
+    // literal as an explicit token disambiguates the provider lookup.
+    @Optional()
+    @Inject(PortalAuthSession)
+    private readonly session: PortalAuthSession | null,
   ) {}
 
   /**
