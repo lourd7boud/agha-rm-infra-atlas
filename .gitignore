@@ -1,3 +1,7 @@
+# local distributed-worker secrets + helpers (never commit)
+.atlas-worker.env
+scripts-local/
+
 # Dependencies & build output
 node_modules/
 dist/
@@ -13,6 +17,10 @@ atlas-web-*.png
 test-results/
 playwright-report/
 
+# Recon/debug artifacts — screenshots and captured API dumps never belong in git
+/*.png
+datao-*.json
+
 # Environment & secrets — only templates are committed
 .env
 .env.*
@@ -23,7 +31,7 @@ playwright-report/
 platform/backups/
 
 # Local tool state
-.claude/settings.local.json
+.claude/
 *.log
 .DS_Store
 Thumbs.db
