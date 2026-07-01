@@ -13,13 +13,20 @@ import {
 import { UNKNOWN_BUYER_LABEL } from '../intel/rebate.domain';
 import { ocrBytesToText } from '../tender/pdf-ocr';
 import { extractDetailLinks, parseDetailPage } from './detail.parser';
-import { ANNONCE_TYPE_EXTRAIT_PV, extractAvisDownloadUrl } from './result.parser';
-import { EXTRAIT_PV_VISION_PROMPT, parseExtraitPvJson } from './pv.parser';
 import {
+  ANNONCE_TYPE_EXTRAIT_PV,
+  buildResultSearchBody,
+  extractAvisDownloadUrl,
+} from './result.parser';
+import { EXTRAIT_PV_VISION_PROMPT, parseExtraitPvJson } from './pv.parser';
+import { parseFormInputs } from './prado';
+import {
+  cookieHeader,
   DEFAULT_SEARCH_URL,
   fetchAvisBytes,
   fetchText,
-  pradoResultSearch,
+  PORTAL_TIMEOUT,
+  PORTAL_UA,
   sleepMs,
 } from './portal-fetch';
 
@@ -37,6 +44,14 @@ export interface PvCrawlSummary {
 export interface PvCrawlOptions {
   maxPv?: number;
   delayMs?: number;
+  /**
+   * Number of Extrait-de-PV listing pages to walk (PRADO postback "next").
+   * 1 = the historical first-page-only behaviour that starved intel to 56
+   * bids. The portal has 9,370 PV pages (~93,698 notices), so raising this
+   * is how the competitor DB reaches datao scale. Default 1 keeps callers
+   * that omit it (and the unit tests) on the old single-page path.
+   */
+  maxPages?: number;
 }
 
 export interface StoredPvBid {
@@ -54,6 +69,13 @@ export interface StoredPvBid {
 export interface PvCrawlDeps {
   /** GET the search form + POST with annonceType=5 → the PV-extract listing. */
   search: () => Promise<{ listingHtml: string; baseUrl: string }>;
+  /**
+   * Optional: PRADO postback to advance to the next page of the Extrait-PV
+   * listing (uses the cookie + PRADO_PAGESTATE captured by search). Returns the
+   * next page's HTML, or null when there are no more pages. Mirrors the result
+   * crawler's pager — the fix that lets the PV harvest exceed page 1.
+   */
+  nextPage?: () => Promise<{ listingHtml: string; baseUrl: string } | null>;
   fetchDetail: (url: string) => Promise<string>;
   /** Download the PV bytes (PDF or scanned image) from the portal. */
   fetchAvisBytes: (url: string) => Promise<Uint8Array>;
@@ -75,10 +97,31 @@ export async function crawlExtraitsPv(
   opts: PvCrawlOptions = {},
 ): Promise<PvCrawlSummary> {
   const maxPv = Math.max(0, Math.floor(opts.maxPv ?? 8));
+  const maxPages = Math.max(1, Math.floor(opts.maxPages ?? 1));
   const delayMs = Math.max(0, Math.floor(opts.delayMs ?? 1500));
 
-  const { listingHtml, baseUrl } = await deps.search();
-  const links = extractDetailLinks(listingHtml, baseUrl).slice(0, maxPv);
+  // Walk listing pages, accumulating UNIQUE detail links until we hit maxPv or
+  // run out of pages. Dedup on detailUrl because the portal re-surfaces the
+  // same consultation across pages during re-issues. Mirrors result.crawler.
+  const all: ReturnType<typeof extractDetailLinks> = [];
+  const seen = new Set<string>();
+  const first = await deps.search();
+  let baseUrl = first.baseUrl;
+  let pageHtml = first.listingHtml;
+  for (let page = 1; page <= maxPages; page += 1) {
+    for (const link of extractDetailLinks(pageHtml, baseUrl)) {
+      if (seen.has(link.detailUrl)) continue;
+      seen.add(link.detailUrl);
+      all.push(link);
+      if (all.length >= maxPv) break;
+    }
+    if (all.length >= maxPv || page === maxPages || !deps.nextPage) break;
+    const next = await deps.nextPage();
+    if (!next) break;
+    baseUrl = next.baseUrl;
+    pageHtml = next.listingHtml;
+  }
+  const links = all;
 
   let notices = 0;
   let pvRead = 0;
@@ -161,14 +204,81 @@ export class ExtraitPvCrawlerService {
       process.env.RESULT_SEARCH_URL ??
       DEFAULT_SEARCH_URL;
     let cookie = '';
+    // PRADO state captured by search() and refreshed by each nextPage(): the
+    // ~100KB PRADO_PAGESTATE + the "Aller à la page suivante" postback target
+    // for the PV listing pager. Replayed verbatim on every postback. Mirrors
+    // ResultCrawlerService — the pager that lets the harvest exceed page 1.
+    let lastFields: Record<string, string> | null = null;
+    let nextTarget: string | null = null;
+
+    const captureNext = (html: string): void => {
+      lastFields = parseFormInputs(html);
+      const m = /<a id="([^"]+)"[^>]*>\s*<img[^>]*Aller à la page suivante/i.exec(html);
+      if (!m) {
+        nextTarget = null;
+        return;
+      }
+      const id = m[1]!;
+      const sample = Object.keys(lastFields).find((n) => n.includes('$resultSearch$'));
+      const prefix = sample
+        ? sample.slice(0, sample.indexOf('$resultSearch$') + '$resultSearch$'.length)
+        : 'ctl0$CONTENU_PAGE$resultSearch$';
+      const clientPrefix = prefix.replace(/\$/g, '_');
+      const suffix = id.startsWith(clientPrefix) ? id.slice(clientPrefix.length) : id;
+      nextTarget = prefix + suffix.replace(/_/g, '$');
+    };
+
+    const search = async (): Promise<{ listingHtml: string; baseUrl: string }> => {
+      const formRes = await fetch(searchUrl, {
+        headers: { 'User-Agent': PORTAL_UA, Accept: 'text/html' },
+        signal: AbortSignal.timeout(PORTAL_TIMEOUT),
+      });
+      cookie = cookieHeader(formRes.headers.getSetCookie());
+      const body = buildResultSearchBody(await formRes.text(), ANNONCE_TYPE_EXTRAIT_PV);
+      const postRes = await fetch(searchUrl, {
+        method: 'POST',
+        headers: {
+          'User-Agent': PORTAL_UA,
+          Accept: 'text/html',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Referer: searchUrl,
+          ...(cookie ? { Cookie: cookie } : {}),
+        },
+        body,
+        signal: AbortSignal.timeout(PORTAL_TIMEOUT),
+      });
+      const html = await postRes.text();
+      captureNext(html);
+      return { listingHtml: html, baseUrl: searchUrl };
+    };
+
+    const nextPage = async (): Promise<{ listingHtml: string; baseUrl: string } | null> => {
+      if (!lastFields || !nextTarget) return null;
+      const body = new URLSearchParams(lastFields);
+      body.set('PRADO_POSTBACK_TARGET', nextTarget);
+      body.set('PRADO_POSTBACK_PARAMETER', '');
+      const res = await fetch(searchUrl, {
+        method: 'POST',
+        headers: {
+          'User-Agent': PORTAL_UA,
+          Accept: 'text/html',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Referer: searchUrl,
+          ...(cookie ? { Cookie: cookie } : {}),
+        },
+        body,
+        signal: AbortSignal.timeout(PORTAL_TIMEOUT),
+      });
+      if (!res.ok) return null;
+      const html = await res.text();
+      captureNext(html);
+      return { listingHtml: html, baseUrl: searchUrl };
+    };
 
     const summary = await crawlExtraitsPv(
       {
-        search: async () => {
-          const res = await pradoResultSearch(searchUrl, ANNONCE_TYPE_EXTRAIT_PV);
-          cookie = res.cookie;
-          return { listingHtml: res.listingHtml, baseUrl: res.baseUrl };
-        },
+        search,
+        nextPage,
         fetchDetail: (url) => fetchText(url, cookie),
         fetchAvisBytes: (url) => fetchAvisBytes(url, cookie),
         // OCR-first path: bytes → ocrmypdf (or pdf-parse for text-layer PDFs)

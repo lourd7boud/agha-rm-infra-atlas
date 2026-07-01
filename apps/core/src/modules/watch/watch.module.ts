@@ -111,11 +111,19 @@ export class WatchController {
    */
   @Roles('admin-si', 'marches', 'direction')
   @Post('harvest-results')
-  async harvestResults(@Query('max') max?: string) {
+  async harvestResults(
+    @Query('max') max?: string,
+    @Query('pages') pages?: string,
+  ) {
     const parsed = Number(max);
     const maxResults =
-      Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 50) : 8;
-    return this.resultCrawler.crawlOnce({ maxResults });
+      Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 300) : 8;
+    const parsedPages = Number(pages);
+    const maxPages =
+      Number.isFinite(parsedPages) && parsedPages > 0
+        ? Math.min(parsedPages, 60)
+        : 1;
+    return this.resultCrawler.crawlOnce({ maxResults, maxPages });
   }
 
   /**
@@ -126,10 +134,15 @@ export class WatchController {
    */
   @Roles('admin-si', 'marches', 'direction')
   @Post('harvest-pv')
-  async harvestPv(@Query('max') max?: string) {
+  async harvestPv(@Query('max') max?: string, @Query('pages') pages?: string) {
     const parsed = Number(max);
-    const maxPv = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 50) : 8;
-    return this.pvCrawler.crawlOnce({ maxPv });
+    const maxPv = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 300) : 8;
+    const parsedPages = Number(pages);
+    const maxPages =
+      Number.isFinite(parsedPages) && parsedPages > 0
+        ? Math.min(parsedPages, 60)
+        : 1;
+    return this.pvCrawler.crawlOnce({ maxPv, maxPages });
   }
 
   @Roles('admin-si', 'marches', 'direction')
