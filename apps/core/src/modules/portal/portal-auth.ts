@@ -147,12 +147,52 @@ export class PortalAuthSession {
         ...(getCookie ? { Cookie: getCookie } : {}),
       },
       body,
+      // Manual redirect: PMMP replies with 302 Location=?page=…AccueilAuthentifie
+      // and rotates the session cookie via Set-Cookie on that 302. Node fetch's
+      // default follow does NOT re-inject those new cookies into the follow-up
+      // GET, so authedHtml lands on the anonymous login form again and the
+      // marker gate throws. Following manually with the merged cookies matches
+      // what a browser (or curl -b/-c) does and is how the live P1 probe
+      // authenticated from the same VPS.
+      redirect: 'manual',
       signal: AbortSignal.timeout(PORTAL_TIMEOUT),
     });
-    // The POST may rotate the session cookie; prefer it, else keep the GET one.
-    const sessionCookie =
-      cookieHeader(postRes.headers.getSetCookie()) || getCookie;
-    const authedHtml = await postRes.text();
+
+    // Merge the GET cookie (PHPSESSID captured on the form fetch) with any
+    // rotated cookie the POST returned — Set-Cookie on the 302 carries the
+    // now-authenticated principal.
+    const setFromPost = cookieHeader(postRes.headers.getSetCookie());
+    const mergedCookie = [getCookie, setFromPost].filter(Boolean).join('; ');
+
+    let authedHtml: string;
+    let sessionCookie: string;
+
+    if (postRes.status >= 300 && postRes.status < 400) {
+      const location = postRes.headers.get('location');
+      if (!location) {
+        throw new Error(
+          `Portal login redirect missing Location for "${this.login}"`,
+        );
+      }
+      const redirectUrl = new URL(location, loginUrl).toString();
+      const redirectRes = await this.fetchImpl(redirectUrl, {
+        headers: {
+          'User-Agent': PORTAL_UA,
+          Accept: 'text/html',
+          Referer: loginUrl,
+          Cookie: mergedCookie,
+        },
+        signal: AbortSignal.timeout(PORTAL_TIMEOUT),
+      });
+      sessionCookie =
+        cookieHeader(redirectRes.headers.getSetCookie()) || mergedCookie;
+      authedHtml = await redirectRes.text();
+    } else {
+      // Rare non-redirect path — some Atexo instances render the authed page
+      // inline instead of 302ing. Keep the original single-shot behaviour.
+      sessionCookie = setFromPost || getCookie;
+      authedHtml = await postRes.text();
+    }
 
     if (isLoginForm(authedHtml) || !authedHtml.includes(AUTHED_MARKER)) {
       // Never echo the password; identify the account only by login.
