@@ -16,7 +16,33 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+      # datao-parity: this is the API-only process. Sentinel + BullMQ worker
+      # live in the separate `worker` service below, so the event loop here
+      # stays free for HTTP requests and Next.js SSR (no more /tenders 504s
+      # during extraction bursts).
+      WATCH_WORKER_ENABLED: "false"
     # No published port: Caddy reaches core:3000 on the shared network.
+
+  worker:
+    # Same image as `core` (built once), different role: this container is the
+    # ONLY process that runs the Sentinel scheduler + BullMQ consumer + dossier
+    # extraction. Isolates the CPU-heavy PDF-vision + LLM extraction from the
+    # HTTP API process — mirrors datao's architecture where extraction lives on
+    # a separate worker (Vercel Functions / dedicated infra). Consumes the same
+    # Redis queue as core would have; only one of the two ever schedules a
+    # sweep because of the WATCH_WORKER_ENABLED gate in watch.module.ts.
+    build:
+      context: ..
+      dockerfile: apps/core/Dockerfile
+    restart: unless-stopped
+    env_file: .env.apps
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      WATCH_WORKER_ENABLED: "true"
+    depends_on:
+      - core
+    # No published port: internal-only, never receives HTTP traffic.
 
   web:
     build:

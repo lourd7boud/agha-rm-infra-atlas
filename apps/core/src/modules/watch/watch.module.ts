@@ -249,6 +249,18 @@ export class WatchModule implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    // datao-parity: only the dedicated worker container runs the BullMQ
+    // consumer + Sentinel scheduler. The API container serves HTTP requests
+    // only, so /tenders SSR is never blocked by an in-flight sweep's PDF
+    // rendering + LLM bursts. datao isolates extraction on separate infra
+    // (Vercel Functions / dedicated worker); here it's a second container
+    // (`worker` in docker-compose.apps.yml) that is the ONLY process with
+    // WATCH_WORKER_ENABLED=true. The API-only process (core) sees this env
+    // absent/false and exits onModuleInit early, keeping its event loop free.
+    if (process.env.WATCH_WORKER_ENABLED !== 'true') {
+      this.logger.log('Sentinel worker DISABLED — this is an API-only process');
+      return;
+    }
     // A Sentinel sweep chains listing crawl → enrichment → dossier extraction;
     // the extraction stage alone (PDF parsing + LLM calls + XLSX bordereau) can
     // run 30+ min on a large WATCH_EXTRACT_LIMIT. BullMQ's default lockDuration
