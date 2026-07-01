@@ -15,6 +15,7 @@ import {
 } from '@/lib/tenders';
 import { fmtMad } from '@/lib/projects';
 import { SourceFileViewer } from './SourceFileViewer';
+import { LiveParticipantsButton } from './LiveParticipantsButton';
 
 type Tab = 'resume' | 'faq' | 'lots' | 'bpu' | 'chat';
 
@@ -223,6 +224,7 @@ export function DetailDrawer({
             </p>
             <p className="font-mono text-xs text-faint">{item.reference}</p>
           </div>
+          {hasSource ? <LiveParticipantsButton tenderId={item.id} /> : null}
           <AddToListButton tenderId={item.id} />
           <Link
             href={`/tenders/${item.id}`}
