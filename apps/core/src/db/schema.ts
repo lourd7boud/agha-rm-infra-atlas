@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   boolean,
   check,
+  customType,
   date,
   index,
   integer,
@@ -13,6 +14,16 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+
+// Postgres tsvector — populated exclusively by the tender_fts_refresh trigger
+// (see drizzle/0027_tender_dual_fts.sql). Declared here so drizzle-kit
+// generate treats the columns as part of the schema and never emits a DROP.
+// Application code reads via raw SQL (websearch_to_tsquery); never writes.
+const tsvector = customType<{ data: string }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
 
 // Each ATLAS module owns its PostgreSQL schema (enterprise-architecture §3).
 export const vault = pgSchema('vault');
@@ -460,6 +471,19 @@ export const tenders = tender.table('tender', {
   qualification: jsonb('qualification'),
   sourceUrl: text('source_url'),
   raw: jsonb('raw'),
+  // Datao-parity dual-lane French FTS. Both are trigger-owned (see migration
+  // 0027_tender_dual_fts.sql): fts_search folds reference/objet/buyer_name/
+  // location/summary; fts_bdp_search folds every raw.dossierExtraction.bpu[]
+  // designation so a search for "câbles électriques" hits tenders whose BPU
+  // carries that line item, matching datao's competitive discovery UX.
+  ftsSearch: tsvector('fts_search'),
+  ftsBdpSearch: tsvector('fts_bdp_search'),
+  // Datao-parity atomic dimensions (migration 0029_tender_parity_columns.sql).
+  // Populated by DossierExtractionService as it processes each tender.
+  isSimplified: boolean('is_simplified').notNull().default(false),
+  rectified: boolean('rectified').notNull().default(false),
+  milestonesCount: integer('milestones_count'),
+  attributedAt: timestamp('attributed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -1010,3 +1034,50 @@ export const invoiceLines = sales.table(
   },
   (table) => [index('sales_invoice_line_invoice_id_idx').on(table.invoiceId)],
 );
+
+// ── Datao-parity reference dimensions (seeded with datao's exact UUIDs in
+// migration 0028_tender_reference_tables.sql). Sharing the same IDs makes
+// bidder/tender records referencing a foreign UUID resolve trivially.
+
+export const tenderStatuses = tender.table('tender_status', {
+  id: uuid('id').primaryKey(),
+  code: text('code').notNull().unique(),
+  label: text('label').notNull(),
+  sortId: integer('sort_id').notNull(),
+});
+
+export const tenderCategories = tender.table('tender_category', {
+  id: uuid('id').primaryKey(),
+  label: text('label').notNull().unique(),
+});
+
+// cluster: 'PUBLIC' = Marchés publics (État & collectivités),
+//          'EEP'    = Établissements & Entreprises Publics.
+export const tenderModes = tender.table('tender_mode', {
+  id: uuid('id').primaryKey(),
+  code: text('code').notNull().unique(),
+  label: text('label').notNull(),
+  cluster: text('cluster').notNull(),
+}, (table) => [
+  check('tender_mode_cluster_check', sql`${table.cluster} IN ('PUBLIC', 'EEP')`),
+]);
+
+export const subModes = tender.table('sub_mode', {
+  id: uuid('id').primaryKey(),
+  modeId: uuid('mode_id').notNull().references(() => tenderModes.id),
+  code: text('code').notNull(),
+  label: text('label').notNull(),
+}, (table) => [
+  uniqueIndex('sub_mode_mode_code_uniq').on(table.modeId, table.code),
+]);
+
+export const regions = tender.table('region', {
+  id: uuid('id').primaryKey(),
+  name: text('name').notNull().unique(),
+});
+
+export const bidderStatuses = tender.table('bidder_status', {
+  id: uuid('id').primaryKey(),
+  code: text('code').notNull().unique(),
+  label: text('label').notNull(),
+});
