@@ -108,6 +108,9 @@ describe('DrizzleTenderRepository.findByIds', () => {
 
     const records = await repo.findByIds(['row-1', 'row-2', 'row-3']);
 
+    // The stub returns a fixed row set, so this test only guarantees the
+    // round-trip COUNT (no N+1) and the toRecord mapping — WHERE-clause
+    // filtering is covered by the InMemory tests above.
     expect(stub.calls.select).toBe(1);
     expect(records).toHaveLength(1);
     expect(records[0]!.id).toBe('row-1');
@@ -161,5 +164,20 @@ describe('InMemoryTenderRepository.updateEnrichment (merge semantics)', () => {
       aiEnrichment: { resume: 'A' },
       dossierExtraction: { budget: 1 },
     });
+  });
+
+  it('documents the SHALLOW merge contract: re-writing a top-level key replaces it whole', async () => {
+    // Both impls share this contract (JS spread in-memory, jsonb || in SQL):
+    // callers must write a COMPLETE object per top-level key — sub-keys from
+    // an earlier write under the SAME key are intentionally not deep-merged.
+    const repo = new InMemoryTenderRepository();
+    const t = await repo.create(makeInput());
+
+    await repo.updateEnrichment(t.id, {}, { aiEnrichment: { resume: 'A', cost: 1 } });
+    await repo.updateEnrichment(t.id, {}, { aiEnrichment: { lots: ['L1'] } });
+
+    const after = await repo.findById(t.id);
+    expect(after?.raw?.aiEnrichment).toEqual({ lots: ['L1'] });
+    expect(after?.raw?.aiEnrichment).not.toHaveProperty('resume');
   });
 });

@@ -437,7 +437,14 @@ export class TenderController {
     const recordById = new Map(records.map((r) => [r.id, r] as const));
     const hits = idHits.flatMap((match) => {
       const r = recordById.get(match.id);
-      if (!r) return [];
+      if (!r) {
+        // FTS index knew an id the table no longer has (row deleted between
+        // the two queries) — dropped from results, but never silently.
+        new Logger('TenderModule').warn(
+          `searchTenders: FTS hit ${match.id} missing from batch lookup`,
+        );
+        return [];
+      }
       return [
         {
           id: r.id,

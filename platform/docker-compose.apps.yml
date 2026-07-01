@@ -59,7 +59,7 @@ services:
     # The extraction pipeline (PDF vision + LLM) is the known CPU/RAM hog:
     # cap it at one core so the API always keeps a core for HTTP.
     cpus: 1.0
-    mem_limit: 768m
+    mem_limit: 640m
     healthcheck:
       test:
         [
@@ -86,7 +86,7 @@ services:
     environment:
       NODE_ENV: production
     cpus: 1.0
-    mem_limit: 512m
+    mem_limit: 384m
     healthcheck:
       test:
         [

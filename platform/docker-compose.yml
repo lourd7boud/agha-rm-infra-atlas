@@ -3,13 +3,16 @@ name: atlas-platform
 # Resource caps are sized for the 2 vCPU / 3.7 GB staging VPS. Without them a
 # single JVM (Keycloak/Metabase) or an Odoo worker burst can OOM the whole box
 # — the root cause behind the "everything is slow" episodes. cpus are ceilings.
+# Memory budget (this file + docker-compose.apps.yml): 2240 + 1536 = 3776 MB,
+# i.e. the SUM of ceilings fits in RAM even in the worst case. The hot set
+# (postgres+redis+core+worker+web+caddy ≈ 2.3 GB) leaves ~1.4 GB for the JVMs.
 services:
   postgres:
     # pgvector build of Postgres 16 — required by initdb (CREATE EXTENSION vector)
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     cpus: 1.0
-    mem_limit: 640m
+    mem_limit: 512m
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
@@ -26,7 +29,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     cpus: 0.5
-    mem_limit: 128m
+    mem_limit: 96m
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redisdata:/data
@@ -40,7 +43,7 @@ services:
     image: minio/minio:latest
     restart: unless-stopped
     cpus: 0.5
-    mem_limit: 256m
+    mem_limit: 192m
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -67,9 +70,18 @@ services:
       KC_HOSTNAME: https://auth.${DOMAIN}
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      # Exposes /health/ready on the management port (9000) for the healthcheck.
+      KC_HEALTH_ENABLED: "true"
     healthcheck:
-      # Image ships no curl/wget: a bash TCP open proves the listener is up.
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      # Official Keycloak guidance: the image ships no curl/wget, so probe the
+      # readiness endpoint over bash's /dev/tcp (explicitly bash — /bin/sh is
+      # not guaranteed to be bash on ubi9 variants). A plain TCP open is not
+      # enough: the port listens before the DB connection is ready.
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e \"GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3 && grep -q \"200\" <&3'",
+        ]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -79,10 +91,12 @@ services:
         condition: service_healthy
 
   odoo:
+    # No ATLAS integration yet (zero code references) — kept alive for manual
+    # use only, so it gets the smallest JVM-free budget of the heavy trio.
     image: odoo:18
     restart: unless-stopped
     cpus: 0.75
-    mem_limit: 512m
+    mem_limit: 288m
     environment:
       HOST: postgres
       USER: odoo
@@ -109,7 +123,7 @@ services:
     image: metabase/metabase:latest
     restart: unless-stopped
     cpus: 0.75
-    mem_limit: 640m
+    mem_limit: 512m
     environment:
       MB_DB_TYPE: postgres
       MB_DB_DBNAME: metabase
@@ -118,7 +132,12 @@ services:
       MB_DB_PASS: ${METABASE_DB_PASSWORD}
       MB_DB_HOST: postgres
     healthcheck:
-      test: ["CMD", "curl", "--fail", "-s", "http://127.0.0.1:3000/api/health"]
+      # curl today, wget fallback in case an upstream base-image swap drops it.
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fs http://127.0.0.1:3000/api/health || wget -qO- http://127.0.0.1:3000/api/health || exit 1",
+        ]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -133,7 +152,7 @@ services:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     cpus: 0.25
-    mem_limit: 128m
+    mem_limit: 48m
     entrypoint:
       ["sh", "-c", "while true; do /scripts/pg-backup.sh; sleep 86400; done"]
     environment:
@@ -152,7 +171,7 @@ services:
     image: caddy:2
     restart: unless-stopped
     cpus: 0.5
-    mem_limit: 128m
+    mem_limit: 80m
     ports:
       - "80:80"
       - "443:443"
