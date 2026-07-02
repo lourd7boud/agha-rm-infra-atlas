@@ -22,13 +22,24 @@ export async function GET(
   const token = await bearer();
   if (!token) return NextResponse.json({ error: 'Non authentifié' }, { status: 401 });
   const { id } = await params;
-  const upstream = await fetch(
-    `${API_URL}/tender/tenders/${encodeURIComponent(id)}/live-participants`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-      cache: 'no-store',
-    },
-  );
+  let upstream: Response;
+  try {
+    upstream = await fetch(
+      `${API_URL}/tender/tenders/${encodeURIComponent(id)}/live-participants`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+        // Core's PMMP crawl is capped at 40 s; without our own deadline this
+        // proxy inherits undici's 300 s HeadersTimeout and hangs the button.
+        signal: AbortSignal.timeout(60_000),
+      },
+    );
+  } catch {
+    return NextResponse.json(
+      { error: 'Le portail PMMP ne répond pas — réessayer dans un instant.' },
+      { status: 504 },
+    );
+  }
   return new Response(await upstream.text(), {
     status: upstream.status,
     headers: { 'Content-Type': upstream.headers.get('content-type') ?? 'application/json' },
