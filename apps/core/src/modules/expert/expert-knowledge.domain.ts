@@ -1,4 +1,4 @@
-import type { TenderRecord } from '../tender/tender.repository';
+import type { KnowledgeTenderRow } from '../tender/tender.repository';
 import type { ParticipationSummary } from '../intel/participation.domain';
 import type {
   BuyerRebate,
@@ -11,7 +11,6 @@ import {
   type CountEntry,
 } from '../tender/buyer-observatory.domain';
 import { inferCategory, inferSegment } from '../tender/inventory.domain';
-import { readDossierExtraction } from '../tender/dossier-extraction';
 
 /**
  * Expert knowledge base — what the AGHA-RM-INFRA agent has "learned" from the
@@ -83,7 +82,7 @@ function tally<T>(items: readonly T[], key: (item: T) => string): CountEntry[] {
 }
 
 export interface ExpertKnowledgeInput {
-  tenders: readonly TenderRecord[];
+  tenders: readonly KnowledgeTenderRow[];
   /** Pre-aggregated participation — the repository pushes the fold into SQL. */
   participation: ParticipationSummary;
   benchmarks: RebateBenchmarks | null;
@@ -96,10 +95,8 @@ export function buildExpertKnowledge(input: ExpertKnowledgeInput): ExpertKnowled
 
   const active = tenders.filter((t) => t.deadlineAt.getTime() >= now.getTime());
   const buyers = new Set(tenders.map((t) => t.buyerName));
-  const withBpu = tenders.filter((t) => {
-    const extraction = readDossierExtraction(t.raw);
-    return (extraction?.bpu?.length ?? 0) > 0;
-  }).length;
+  // hasBpu is computed in SQL by findAllForKnowledge — no raw jsonb here.
+  const withBpu = tenders.filter((t) => t.hasBpu).length;
 
   return {
     generatedAt: now.toISOString(),

@@ -21,6 +21,16 @@ const TERMINAL_STATES: readonly PipelineState[] = [
 const UNLOCATED = 'Non localisé';
 const TOP_SEGMENTS = 5;
 
+/**
+ * The only fields the observatory actually reads — declared as a Pick so the
+ * expert knowledge base can feed the slim findAllForKnowledge() projection
+ * (no raw jsonb) while every existing TenderRecord[] caller keeps compiling.
+ */
+export type BuyerObservationRow = Pick<
+  TenderRecord,
+  'buyerName' | 'objet' | 'procedure' | 'estimationMad' | 'deadlineAt' | 'pipelineState'
+>;
+
 export interface CountEntry {
   key: string;
   count: number;
@@ -50,7 +60,7 @@ function tally<T>(items: readonly T[], key: (item: T) => string): CountEntry[] {
     .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
 }
 
-function profileFor(buyerName: string, group: readonly TenderRecord[]): BuyerProfile {
+function profileFor(buyerName: string, group: readonly BuyerObservationRow[]): BuyerProfile {
   const region =
     tally(group, (r) => inferRegion(r.buyerName, r.objet) ?? UNLOCATED)[0]?.key ??
     UNLOCATED;
@@ -85,9 +95,9 @@ function profileFor(buyerName: string, group: readonly TenderRecord[]): BuyerPro
 
 /** One aggregated profile per distinct buyer, busiest first. */
 export function buildBuyerProfiles(
-  tenders: readonly TenderRecord[],
+  tenders: readonly BuyerObservationRow[],
 ): BuyerProfile[] {
-  const groups = new Map<string, TenderRecord[]>();
+  const groups = new Map<string, BuyerObservationRow[]>();
   for (const tender of tenders) {
     const list = groups.get(tender.buyerName);
     if (list) list.push(tender);
@@ -103,7 +113,7 @@ export function buildBuyerProfiles(
 
 /** The profile of one buyer (exact name match), or null if unseen. */
 export function buildBuyerProfile(
-  tenders: readonly TenderRecord[],
+  tenders: readonly BuyerObservationRow[],
   buyerName: string,
 ): BuyerProfile | null {
   const group = tenders.filter((t) => t.buyerName === buyerName);
@@ -131,7 +141,7 @@ export interface MarketContext {
  */
 export function buildMarketContext(
   tender: Pick<TenderRecord, 'buyerName' | 'objet'>,
-  allTenders: readonly TenderRecord[],
+  allTenders: readonly BuyerObservationRow[],
 ): MarketContext {
   const profile = buildBuyerProfile(allTenders, tender.buyerName);
   return {

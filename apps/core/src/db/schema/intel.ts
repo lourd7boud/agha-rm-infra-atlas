@@ -53,6 +53,18 @@ export const resultNotices = intel.table(
   (table) => [uniqueIndex('result_notice_id_avis_uniq').on(table.idAvis)],
 );
 
+/**
+ * Single-row store of the expert agent's precomputed knowledge base. The
+ * worker recomputes it in the background (after each sweep); the API serves
+ * it in one tiny read — user latency stays constant no matter how large the
+ * catalogue and the bid archive grow.
+ */
+export const knowledgeSnapshots = intel.table('knowledge_snapshot', {
+  id: numeric('id', { precision: 1, scale: 0 }).primaryKey(),
+  payload: text('payload').notNull(),
+  computedAt: timestamp('computed_at', { withTimezone: true }).notNull(),
+});
+
 export const competitorBids = intel.table(
   'competitor_bid',
   {

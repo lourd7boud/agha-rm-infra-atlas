@@ -18,6 +18,7 @@ import { Roles } from '../auth/auth.module';
 import { TenderModule } from '../tender/tender.module';
 import { BrainModule } from '../brain/brain.module';
 import { IntelModule } from '../intel/intel.module';
+import { ExpertModule } from '../expert/expert.module';
 import { DetailCrawlerService } from './detail.crawler';
 import { ResultCrawlerService } from './result.crawler';
 import { ExtraitPvCrawlerService } from './pv.crawler';
@@ -238,7 +239,7 @@ const snapshotRepositoryProvider = {
 };
 
 @Module({
-  imports: [TenderModule, BrainModule, IntelModule],
+  imports: [TenderModule, BrainModule, IntelModule, ExpertModule],
   controllers: [WatchController],
   providers: [
     portalSourceProvider,

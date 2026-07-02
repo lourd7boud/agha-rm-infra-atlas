@@ -218,6 +218,13 @@
       "when": 1782913926700,
       "tag": "0030_intel_result_notice",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1782913926800,
+      "tag": "0031_intel_knowledge_snapshot",
+      "breakpoints": true
     }
   ]
 }

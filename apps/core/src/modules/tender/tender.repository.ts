@@ -39,6 +39,24 @@ export interface TenderRecord extends CreateTender {
   updatedAt: Date;
 }
 
+/**
+ * The slim projection the expert knowledge base aggregates over. Excludes the
+ * heavy columns (raw jsonb with full extractions/BPUs, tsvectors) that made a
+ * full-table read minutes-slow — hasBpu is computed INSIDE the SQL instead of
+ * shipping every dossier extraction to JS just to test one array's length.
+ */
+export interface KnowledgeTenderRow {
+  reference: string;
+  buyerName: string;
+  procedure: TenderProcedure;
+  objet: string;
+  estimationMad?: number;
+  cautionProvisoireMad?: number;
+  deadlineAt: Date;
+  pipelineState: PipelineState;
+  hasBpu: boolean;
+}
+
 export interface EnrichmentAmounts {
   estimationMad?: number;
   cautionProvisoireMad?: number;
@@ -56,6 +74,8 @@ export const TENDER_REPOSITORY = Symbol('TENDER_REPOSITORY');
 export interface TenderRepository {
   create(input: CreateTender): Promise<TenderRecord>;
   findAll(): Promise<TenderRecord[]>;
+  /** Slim full-catalogue read for knowledge aggregation — never ships raw. */
+  findAllForKnowledge(): Promise<KnowledgeTenderRow[]>;
   findById(id: string): Promise<TenderRecord | null>;
   /**
    * Batch lookup — one round-trip for N ids (the FTS search endpoint feeds up
@@ -132,6 +152,26 @@ export class InMemoryTenderRepository implements TenderRepository {
 
   async findAll(): Promise<TenderRecord[]> {
     return [...this.records];
+  }
+
+  async findAllForKnowledge(): Promise<KnowledgeTenderRow[]> {
+    return this.records.map((r) => {
+      const extraction = (r.raw as { dossierExtraction?: { bpu?: unknown } } | null)
+        ?.dossierExtraction;
+      return {
+        reference: r.reference,
+        buyerName: r.buyerName,
+        procedure: r.procedure,
+        objet: r.objet,
+        ...(r.estimationMad !== undefined ? { estimationMad: r.estimationMad } : {}),
+        ...(r.cautionProvisoireMad !== undefined
+          ? { cautionProvisoireMad: r.cautionProvisoireMad }
+          : {}),
+        deadlineAt: r.deadlineAt,
+        pipelineState: r.pipelineState,
+        hasBpu: Array.isArray(extraction?.bpu) && extraction.bpu.length > 0,
+      };
+    });
   }
 
   async findById(id: string): Promise<TenderRecord | null> {
@@ -299,6 +339,39 @@ export class DrizzleTenderRepository implements TenderRepository {
       .from(tenders)
       .orderBy(asc(tenders.deadlineAt));
     return rows.map(toRecord);
+  }
+
+  async findAllForKnowledge(): Promise<KnowledgeTenderRow[]> {
+    const rows = await this.db
+      .select({
+        reference: tenders.reference,
+        buyerName: tenders.buyerName,
+        procedure: tenders.procedure,
+        objet: tenders.objet,
+        estimationMad: tenders.estimationMad,
+        cautionProvisoireMad: tenders.cautionProvisoireMad,
+        deadlineAt: tenders.deadlineAt,
+        pipelineState: tenders.pipelineState,
+        // Array-length test stays in the database — the raw jsonb never
+        // crosses the wire for a knowledge read.
+        hasBpu: sql<boolean>`case when jsonb_typeof(${tenders.raw}->'dossierExtraction'->'bpu') = 'array' then jsonb_array_length(${tenders.raw}->'dossierExtraction'->'bpu') > 0 else false end`,
+      })
+      .from(tenders);
+    return rows.map((row) => ({
+      reference: row.reference,
+      buyerName: row.buyerName,
+      procedure: row.procedure as TenderProcedure,
+      objet: row.objet,
+      ...(row.estimationMad != null
+        ? { estimationMad: Number(row.estimationMad) }
+        : {}),
+      ...(row.cautionProvisoireMad != null
+        ? { cautionProvisoireMad: Number(row.cautionProvisoireMad) }
+        : {}),
+      deadlineAt: row.deadlineAt,
+      pipelineState: row.pipelineState as PipelineState,
+      hasBpu: row.hasBpu,
+    }));
   }
 
   async findById(id: string): Promise<TenderRecord | null> {

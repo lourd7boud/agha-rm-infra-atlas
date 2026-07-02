@@ -40,6 +40,10 @@ import {
 } from '../vault/vault.repository';
 import { BID_REQUIRED_KINDS, computeReadiness } from '../vault/validity';
 import {
+  KNOWLEDGE_SNAPSHOT_REPOSITORY,
+  type KnowledgeSnapshotRepository,
+} from './knowledge-snapshot.repository';
+import {
   buildExpertKnowledge,
   summarizeParticipation,
   type ExpertKnowledge,
@@ -65,7 +69,8 @@ import {
  *   - dossier:   administrative + financial submission checklist
  */
 
-const KNOWLEDGE_TTL_MS = 5 * 60_000;
+/** In-memory micro-cache over the persisted snapshot (spares pg on bursts). */
+const KNOWLEDGE_TTL_MS = 60_000;
 /** Default expected competitors when no participation data exists yet. */
 const DEFAULT_COMPETITOR_ASSUMPTION = 5;
 /** Hard cap on BPU lines sent to the LLM for unit-price suggestions. */
@@ -183,9 +188,17 @@ export class ExpertService {
     @Optional()
     @Inject(VAULT_REPOSITORY)
     private readonly vault: VaultRepository | null = null,
+    @Optional()
+    @Inject(KNOWLEDGE_SNAPSHOT_REPOSITORY)
+    private readonly snapshots: KnowledgeSnapshotRepository | null = null,
   ) {}
 
-  /** The agent's current knowledge base (cached briefly, single-flight). */
+  /**
+   * The agent's knowledge base. Serves the PRECOMPUTED snapshot (one tiny pg
+   * read) — the expensive aggregation runs in the background worker via
+   * refreshKnowledge(), so user latency stays constant as the data grows.
+   * Inline compute only happens once, when no snapshot exists yet.
+   */
   async getKnowledge(now = new Date()): Promise<ExpertKnowledge> {
     if (
       this.knowledgeCache &&
@@ -193,12 +206,34 @@ export class ExpertService {
     ) {
       return this.knowledgeCache.value;
     }
+    if (this.snapshots) {
+      const snapshot = await this.snapshots.read().catch((error: unknown) => {
+        this.logger.warn(`snapshot read failed: ${(error as Error).message}`);
+        return null;
+      });
+      if (snapshot) {
+        this.knowledgeCache = { value: snapshot.payload, at: Date.now() };
+        return snapshot.payload;
+      }
+    }
+    return this.refreshKnowledge(now);
+  }
+
+  /** Recompute + persist the snapshot (called by the worker after sweeps). */
+  async refreshKnowledge(now = new Date()): Promise<ExpertKnowledge> {
     if (this.knowledgeInflight) return this.knowledgeInflight;
     this.knowledgeInflight = this.computeKnowledge(now)
-      .then((value) => {
-        // Stamp at COMPLETION, not call time — a slow findAll must not eat
+      .then(async (value) => {
+        // Stamp at COMPLETION, not call time — a slow compute must not eat
         // into the TTL window it just paid for.
         this.knowledgeCache = { value, at: Date.now() };
+        if (this.snapshots) {
+          await this.snapshots
+            .write(value, new Date())
+            .catch((error: unknown) =>
+              this.logger.warn(`snapshot write failed: ${(error as Error).message}`),
+            );
+        }
         return value;
       })
       .finally(() => {
@@ -212,7 +247,7 @@ export class ExpertService {
     // for 150k-300k rows, so the knowledge base must never full-load it.
     // The empty-fold fallback keeps the old degraded-read contract.
     const [tenders, participation, benchmarks] = await Promise.all([
-      this.tenders.findAll(),
+      this.tenders.findAllForKnowledge(),
       this.intel.participationStats().catch((error: unknown) => {
         this.logger.warn(`participationStats failed: ${(error as Error).message}`);
         return summarizeParticipation([]);
@@ -231,7 +266,7 @@ export class ExpertService {
     if (!tender) throw new NotFoundException(`Tender not found: ${id}`);
 
     const [all, participation, benchmarks] = await Promise.all([
-      this.tenders.findAll(),
+      this.tenders.findAllForKnowledge(),
       this.intel.participationStats().catch(() => summarizeParticipation([])),
       this.intel.rebateBenchmarks().catch(() => null as RebateBenchmarks | null),
     ]);

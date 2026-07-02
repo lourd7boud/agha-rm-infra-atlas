@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { TenderRecord } from '../tender/tender.repository';
+import type { KnowledgeTenderRow, TenderRecord } from '../tender/tender.repository';
 import type { CompetitorBidRecord } from '../intel/intel.repository';
 import type { RebateBenchmarks } from '../intel/rebate.domain';
 import {
@@ -8,6 +8,25 @@ import {
 } from './expert-knowledge.domain';
 
 const NOW = new Date('2026-07-02T12:00:00Z');
+
+/** Mirrors findAllForKnowledge's slim projection (hasBpu folded from raw). */
+function toKnowledgeRow(t: TenderRecord): KnowledgeTenderRow {
+  const bpu = (t.raw as { dossierExtraction?: { bpu?: unknown } } | null)
+    ?.dossierExtraction?.bpu;
+  return {
+    reference: t.reference,
+    buyerName: t.buyerName,
+    procedure: t.procedure,
+    objet: t.objet,
+    ...(t.estimationMad !== undefined ? { estimationMad: t.estimationMad } : {}),
+    ...(t.cautionProvisoireMad !== undefined
+      ? { cautionProvisoireMad: t.cautionProvisoireMad }
+      : {}),
+    deadlineAt: t.deadlineAt,
+    pipelineState: t.pipelineState,
+    hasBpu: Array.isArray(bpu) && bpu.length > 0,
+  };
+}
 
 function tender(overrides: Partial<TenderRecord>): TenderRecord {
   return {
@@ -148,7 +167,7 @@ describe('buildExpertKnowledge', () => {
       }),
     ];
     const knowledge = buildExpertKnowledge({
-      tenders,
+      tenders: tenders.map(toKnowledgeRow),
       participation: summarizeParticipation([bid({ id: 'b1' })]),
       benchmarks,
       now: NOW,
@@ -170,7 +189,7 @@ describe('buildExpertKnowledge', () => {
 
   test('degrades cleanly with no benchmarks and no bids', () => {
     const knowledge = buildExpertKnowledge({
-      tenders: [tender({})],
+      tenders: [toKnowledgeRow(tender({}))],
       participation: summarizeParticipation([]),
       benchmarks: null,
       now: NOW,

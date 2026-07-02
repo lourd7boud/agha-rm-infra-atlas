@@ -16,6 +16,7 @@ import { parsePmmpResults } from './watch.parser';
 import { PORTAL_SOURCE, type PortalSource } from './watch.source';
 import { EnrichmentService } from '../tender/enrichment.service';
 import { DossierExtractionService } from '../tender/dossier-extraction.service';
+import { ExpertService } from '../expert/expert.service';
 
 /** Per-run caps for the post-crawl auto-analysis (bounded cost + memory). */
 const DEFAULT_ENRICH_LIMIT = 80;
@@ -111,6 +112,9 @@ export class WatchService {
     @Optional()
     @Inject(DossierExtractionService)
     private readonly dossierExtraction: DossierExtractionService | null = null,
+    @Optional()
+    @Inject(ExpertService)
+    private readonly expert: ExpertService | null = null,
   ) {
     // Defensive finite guards: a poisoned env (NaN) must not silently disable
     // the crawl (page <= NaN is false → zero fetches) or the politeness delay.
@@ -360,6 +364,19 @@ export class WatchService {
         }
       } catch (error) {
         this.logger.error(`auto-extract failed: ${(error as Error).message}`);
+      }
+    }
+    // Stage-6: refresh the expert agent's knowledge snapshot in the worker so
+    // the API always serves a precomputed read (constant latency for users).
+    // Every sweep just added data — this is the moment the agent "re-learns".
+    if (this.expert) {
+      try {
+        await this.expert.refreshKnowledge();
+        this.logger.log('expert knowledge snapshot refreshed');
+      } catch (error) {
+        this.logger.error(
+          `knowledge refresh failed: ${(error as Error).message}`,
+        );
       }
     }
     return summary;

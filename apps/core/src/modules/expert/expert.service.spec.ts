@@ -236,8 +236,8 @@ describe('ExpertService.getKnowledge', () => {
     const tenders = new InMemoryTenderRepository();
     await seedTender(tenders, { estimation: 1_000_000 });
     let findAllCalls = 0;
-    const originalFindAll = tenders.findAll.bind(tenders);
-    tenders.findAll = async () => {
+    const originalFindAll = tenders.findAllForKnowledge.bind(tenders);
+    tenders.findAllForKnowledge = async () => {
       findAllCalls += 1;
       return originalFindAll();
     };
