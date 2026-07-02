@@ -157,6 +157,62 @@ export class DetailCrawlerService {
     return summary;
   }
 
+  /**
+   * DB-driven backfill — the fix for the "page-1 blindness" that left fresh
+   * tenders without their caution. Instead of walking the portal listing, it
+   * targets OUR rows that still miss the caution (newest first) through their
+   * stored canonical detail URL. Zero LLM. Every visited row gets the
+   * raw.detail stamp — even when the page prints no caution — so a row is
+   * attempted exactly once and the work list always shrinks.
+   */
+  async backfillMissing(opts: CrawlOptions = {}): Promise<CrawlSummary> {
+    const maxDetails = Math.max(0, Math.floor(opts.maxDetails ?? 40));
+    const delayMs = Math.max(0, Math.floor(opts.delayMs ?? 800));
+    const targets = await this.tenders.findDetailBackfillTargets(maxDetails);
+
+    let fetched = 0;
+    let matched = 0;
+    let enriched = 0;
+    let errors = 0;
+
+    for (let i = 0; i < targets.length; i += 1) {
+      const target = targets[i]!;
+      try {
+        const html = await this.fetchDetail(target.sourceUrl);
+        fetched += 1;
+        const fields = parseDetailPage(html);
+        matched += 1;
+
+        const amounts: { estimationMad?: number; cautionProvisoireMad?: number } = {};
+        if (target.estimationMad === undefined && fields.estimationMad != null) {
+          amounts.estimationMad = fields.estimationMad;
+        }
+        if (
+          target.cautionProvisoireMad === undefined &&
+          fields.cautionProvisoireMad != null
+        ) {
+          amounts.cautionProvisoireMad = fields.cautionProvisoireMad;
+        }
+
+        await this.tenders.updateEnrichment(target.id, amounts, {
+          detail: {
+            url: target.sourceUrl,
+            categorie: fields.categorie,
+            fetchedAt: new Date().toISOString(),
+          },
+        });
+        if (Object.keys(amounts).length > 0) enriched += 1;
+      } catch {
+        errors += 1;
+      }
+      if (delayMs > 0 && i < targets.length - 1) await sleepMs(delayMs);
+    }
+
+    const summary = { linksFound: targets.length, fetched, matched, enriched, errors };
+    this.logger.log(`detail backfill complete ${JSON.stringify(summary)}`);
+    return summary;
+  }
+
   private async fetchDetail(url: string): Promise<string> {
     const response = await fetch(url, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' },

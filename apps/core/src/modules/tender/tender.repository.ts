@@ -57,6 +57,15 @@ export interface KnowledgeTenderRow {
   hasBpu: boolean;
 }
 
+/** Work item for the DB-driven detail backfill (fill-only-empty semantics). */
+export interface DetailBackfillTarget {
+  id: string;
+  reference: string;
+  estimationMad?: number;
+  cautionProvisoireMad?: number;
+  sourceUrl: string;
+}
+
 export interface EnrichmentAmounts {
   estimationMad?: number;
   cautionProvisoireMad?: number;
@@ -76,6 +85,13 @@ export interface TenderRepository {
   findAll(): Promise<TenderRecord[]>;
   /** Slim full-catalogue read for knowledge aggregation — never ships raw. */
   findAllForKnowledge(): Promise<KnowledgeTenderRow[]>;
+  /**
+   * Newest-first tenders still missing their caution whose detail page was
+   * never fetched (no raw.detail marker) — the work list for the DB-driven
+   * detail backfill. One attempt per row: the crawler stamps raw.detail even
+   * when the page prints no caution, so this list always shrinks.
+   */
+  findDetailBackfillTargets(limit: number): Promise<DetailBackfillTarget[]>;
   findById(id: string): Promise<TenderRecord | null>;
   /**
    * Batch lookup — one round-trip for N ids (the FTS search endpoint feeds up
@@ -172,6 +188,27 @@ export class InMemoryTenderRepository implements TenderRepository {
         hasBpu: Array.isArray(extraction?.bpu) && extraction.bpu.length > 0,
       };
     });
+  }
+
+  async findDetailBackfillTargets(limit: number): Promise<DetailBackfillTarget[]> {
+    return this.records
+      .filter(
+        (r) =>
+          r.sourceUrl !== undefined &&
+          r.cautionProvisoireMad === undefined &&
+          !(r.raw && 'detail' in r.raw),
+      )
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, Math.max(0, limit))
+      .map((r) => ({
+        id: r.id,
+        reference: r.reference,
+        ...(r.estimationMad !== undefined ? { estimationMad: r.estimationMad } : {}),
+        ...(r.cautionProvisoireMad !== undefined
+          ? { cautionProvisoireMad: r.cautionProvisoireMad }
+          : {}),
+        sourceUrl: r.sourceUrl as string,
+      }));
   }
 
   async findById(id: string): Promise<TenderRecord | null> {
@@ -371,6 +408,38 @@ export class DrizzleTenderRepository implements TenderRepository {
       deadlineAt: row.deadlineAt,
       pipelineState: row.pipelineState as PipelineState,
       hasBpu: row.hasBpu,
+    }));
+  }
+
+  async findDetailBackfillTargets(limit: number): Promise<DetailBackfillTarget[]> {
+    const rows = await this.db
+      .select({
+        id: tenders.id,
+        reference: tenders.reference,
+        estimationMad: tenders.estimationMad,
+        cautionProvisoireMad: tenders.cautionProvisoireMad,
+        sourceUrl: tenders.sourceUrl,
+      })
+      .from(tenders)
+      .where(
+        and(
+          isNull(tenders.cautionProvisoireMad),
+          sql`${tenders.sourceUrl} IS NOT NULL`,
+          sql`NOT (${tenders.raw} ? 'detail')`,
+        ),
+      )
+      .orderBy(sql`${tenders.createdAt} DESC`)
+      .limit(Math.max(0, limit));
+    return rows.map((row) => ({
+      id: row.id,
+      reference: row.reference,
+      ...(row.estimationMad != null
+        ? { estimationMad: Number(row.estimationMad) }
+        : {}),
+      ...(row.cautionProvisoireMad != null
+        ? { cautionProvisoireMad: Number(row.cautionProvisoireMad) }
+        : {}),
+      sourceUrl: row.sourceUrl as string,
     }));
   }
 

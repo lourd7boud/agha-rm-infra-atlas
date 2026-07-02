@@ -303,6 +303,19 @@ export class WatchService {
           `detail enrichment failed: ${(error as Error).message}`,
         );
       }
+      // Stage-2b: DB-driven caution backfill — targets OUR rows still missing
+      // the caution through their stored detail URL (newest first, zero LLM).
+      // The listing crawl above only ever sees page 1; this stage is what
+      // actually guarantees "no tender stays without its caution".
+      try {
+        const maxDetails = envLimit('WATCH_DETAIL_BACKFILL', 40);
+        if (maxDetails > 0) {
+          const backfill = await this.detailCrawler.backfillMissing({ maxDetails });
+          this.logger.log(`detail backfill ${JSON.stringify(backfill)}`);
+        }
+      } catch (error) {
+        this.logger.error(`detail backfill failed: ${(error as Error).message}`);
+      }
     }
     // Stage-3: harvest a few published results (vision-read scanned notices →
     // competitor wins). Bounded to cap vision cost; failures never fail the run.
