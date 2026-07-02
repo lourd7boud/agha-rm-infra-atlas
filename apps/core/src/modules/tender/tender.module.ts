@@ -90,6 +90,7 @@ const chatBodySchema = z.object({
 import { buildInventory } from './inventory.domain';
 import {
   INTEL_REPOSITORY,
+  type CompetitorBidRecord,
   type IntelRepository,
 } from '../intel/intel.repository';
 
@@ -190,6 +191,18 @@ const liveParticipantsCache = new TtlCache<unknown>();
 // of drawer opens collapses to one scan. Keyed by tenderId.
 const COMPETITOR_INTEL_CACHE_TTL_MS = 60_000;
 const competitorIntelCache = new TtlCache<unknown>();
+// The ?since= delta poll and the buyer observatory need the FULL catalogue
+// (facets/totals span everything), so they can't be bounded in SQL without
+// breaking the client contract. Instead every consumer shares one short-lived
+// snapshot of the two scans: N concurrent pollers/pages → at most one
+// findAll + listAllBids per window, single-flighted by TtlCache. 10 s keeps
+// the live refresh honest (client polls are slower than that).
+const CATALOG_SNAPSHOT_TTL_MS = 10_000;
+interface CatalogSnapshot {
+  records: TenderRecord[];
+  bids: CompetitorBidRecord[];
+}
+const catalogSnapshotCache = new TtlCache<CatalogSnapshot>();
 
 interface RequestWithUser {
   user?: AuthenticatedUser;
@@ -621,7 +634,7 @@ export class TenderController {
   @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
   @Get('tenders')
   async list() {
-    const records = await this.repository.findAll();
+    const { records } = await this.loadCatalogSnapshot();
     return [...records]
       .sort((a, b) => a.deadlineAt.getTime() - b.deadlineAt.getTime())
       .map(present);
@@ -639,24 +652,19 @@ export class TenderController {
     const { limit, offset, ...filters } = parsed.data;
     // Cache key includes every filter + limit/offset so distinct queries stay
     // isolated; the `since` delta is serialised to ISO so identical timestamps
-    // dedupe. Skip the cache entirely when a `since` cutoff is present — the
-    // live-refresh path needs fresh reads for its silent inventory delta.
+    // dedupe. The `since` path skips the RESULT cache (each client's cutoff is
+    // unique) but reads from the shared 10 s catalogue snapshot — previously it
+    // ran both full scans on EVERY poll of EVERY client.
     if (filters.since) {
-      const [records, bids] = await Promise.all([
-        this.repository.findAll(),
-        this.intel.listAllBids(),
-      ]);
+      const { records, bids } = await this.loadCatalogSnapshot();
       return buildInventory(records, filters, new Date(), { limit, offset }, bids);
     }
     const key = JSON.stringify({ ...filters, limit, offset });
     return inventoryCache.getOrCompute(key, INVENTORY_CACHE_TTL_MS, async () => {
-      // One scan of competitor_bid joined to every tender by canonical reference
-      // — powers the lifecycle status (en_cours / cloture / attribue / infructueux)
-      // and the "Résultat de l'appel d'offre" surface in the drawer.
-      const [records, bids] = await Promise.all([
-        this.repository.findAll(),
-        this.intel.listAllBids(),
-      ]);
+      // The bid scan joined to every tender by canonical reference powers the
+      // lifecycle status (en_cours / cloture / attribue / infructueux) and the
+      // "Résultat de l'appel d'offre" surface in the drawer.
+      const { records, bids } = await this.loadCatalogSnapshot();
       return buildInventory(records, filters, new Date(), { limit, offset }, bids);
     });
   }
@@ -665,7 +673,7 @@ export class TenderController {
   @Roles('marches', 'direction', 'admin-si')
   @Get('buyers')
   async buyers() {
-    const records = await this.repository.findAll();
+    const { records } = await this.loadCatalogSnapshot();
     return buildBuyerProfiles(records);
   }
 
@@ -673,7 +681,7 @@ export class TenderController {
   @Roles('marches', 'direction', 'admin-si')
   @Get('buyers/:name')
   async buyer(@Param('name') name: string) {
-    const records = await this.repository.findAll();
+    const { records } = await this.loadCatalogSnapshot();
     const profile = buildBuyerProfile(records, name);
     if (!profile) throw new NotFoundException(`Buyer not found: ${name}`);
     return profile;
@@ -829,7 +837,7 @@ export class TenderController {
       id,
       COMPETITOR_INTEL_CACHE_TTL_MS,
       async () => {
-        const bids = await this.intel.listAllBids();
+        const { bids } = await this.loadCatalogSnapshot();
         return buildTenderCompetitorIntel(
           {
             reference: tender.reference,
@@ -855,6 +863,22 @@ export class TenderController {
     const record = await this.repository.findById(id);
     if (!record) throw new NotFoundException(`Tender not found: ${id}`);
     return record;
+  }
+
+  /** Shared 10 s snapshot of the tender catalogue + competitor bids — every
+   *  full-scan consumer funnels through here (see CATALOG_SNAPSHOT_TTL_MS). */
+  private loadCatalogSnapshot(): Promise<CatalogSnapshot> {
+    return catalogSnapshotCache.getOrCompute(
+      'snapshot',
+      CATALOG_SNAPSHOT_TTL_MS,
+      async () => {
+        const [records, bids] = await Promise.all([
+          this.repository.findAll(),
+          this.intel.listAllBids(),
+        ]);
+        return { records, bids };
+      },
+    );
   }
 }
 

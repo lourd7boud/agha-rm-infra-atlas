@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { InMemoryIntelRepository } from './intel.repository';
+import type { Db } from '../../db/client';
+import { DrizzleIntelRepository, InMemoryIntelRepository } from './intel.repository';
 
 /**
  * Wiring test: an inserted winner's estimation + objet must survive into the
@@ -199,5 +200,49 @@ describe('InMemoryIntelRepository.upsertResult', () => {
 
     const [row] = await repo.listResults(10);
     expect(row?.buyerName).toBe('ORMVAH');
+  });
+});
+
+/**
+ * Call-counting stub for the drizzle Db — asserts HOW the repository talks to
+ * Postgres (round-trip count), same pattern as tender.repository.spec.ts.
+ * The InMemory implementation carries the behavioral contract above; this
+ * spec guards the query SHAPE as competitor_bid grows with the PV harvest.
+ */
+function stubStatsDb() {
+  const calls = { select: 0 };
+  const statsRows = [
+    { id: 'c1', canonicalName: 'SOTRAVO', wins: 2, totalMad: '1500000' },
+    { id: 'c2', canonicalName: 'GTR', wins: 0, totalMad: '0' },
+  ];
+  const db = {
+    select: () => {
+      calls.select += 1;
+      return {
+        from: () =>
+          Object.assign(Promise.resolve(statsRows), {
+            leftJoin: () => ({
+              groupBy: () => ({ orderBy: async () => statsRows }),
+            }),
+          }),
+      };
+    },
+  } as unknown as Db;
+  return { db, calls };
+}
+
+describe('DrizzleIntelRepository.listCompetitorStats', () => {
+  it('aggregates in ONE grouped query — no dual full scan + JS join', async () => {
+    const stub = stubStatsDb();
+    const repo = new DrizzleIntelRepository(stub.db);
+
+    const stats = await repo.listCompetitorStats();
+
+    expect(stub.calls.select).toBe(1);
+    // numeric SUM comes back as a string from pg — must be coerced.
+    expect(stats).toEqual([
+      { id: 'c1', canonicalName: 'SOTRAVO', wins: 2, totalMad: 1_500_000 },
+      { id: 'c2', canonicalName: 'GTR', wins: 0, totalMad: 0 },
+    ]);
   });
 });

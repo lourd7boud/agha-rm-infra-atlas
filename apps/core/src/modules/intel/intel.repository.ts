@@ -400,24 +400,27 @@ export class DrizzleIntelRepository implements IntelRepository {
   }
 
   async listCompetitorStats(): Promise<CompetitorStats[]> {
-    const [allCompetitors, allBids] = await Promise.all([
-      this.db.select().from(competitors),
-      this.db.select().from(competitorBids),
-    ]);
-    return allCompetitors
-      .map((competitor) => {
-        const bids = allBids.filter((b) => b.competitorId === competitor.id);
-        return {
-          id: competitor.id,
-          canonicalName: competitor.canonicalName,
-          wins: bids.filter((b) => b.isWinner).length,
-          totalMad: bids.reduce(
-            (sum, b) => sum + (b.amountMad ? Number(b.amountMad) : 0),
-            0,
-          ),
-        };
+    // One grouped query instead of two full scans + a JS join — the bid table
+    // grows linearly with the PV harvest, the competitor count with it, so the
+    // old O(competitors × bids) filter was the intel page's scaling cliff.
+    const totalMad = sql<string>`coalesce(sum(${competitorBids.amountMad}), 0)`;
+    const rows = await this.db
+      .select({
+        id: competitors.id,
+        canonicalName: competitors.canonicalName,
+        wins: sql<number>`count(*) filter (where ${competitorBids.isWinner})`,
+        totalMad,
       })
-      .sort((a, b) => b.totalMad - a.totalMad);
+      .from(competitors)
+      .leftJoin(competitorBids, eq(competitorBids.competitorId, competitors.id))
+      .groupBy(competitors.id, competitors.canonicalName)
+      .orderBy(sql`${totalMad} desc`);
+    return rows.map((r) => ({
+      id: r.id,
+      canonicalName: r.canonicalName,
+      wins: Number(r.wins),
+      totalMad: Number(r.totalMad),
+    }));
   }
 
   async getProfile(competitorId: string): Promise<CompetitorProfile | null> {
