@@ -26,8 +26,11 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Unit tests
+      - name: Unit tests (core + web)
         run: pnpm test
+
+      - name: Core coverage report
+        run: pnpm --filter @atlas/core test:coverage
 
       - name: Build web portal
         run: pnpm --filter @atlas/web build
