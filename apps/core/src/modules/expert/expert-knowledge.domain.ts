@@ -1,15 +1,10 @@
 import type { TenderRecord } from '../tender/tender.repository';
-import {
-  normalizeCompanyName,
-  type CompetitorBidRecord,
-} from '../intel/intel.repository';
-import {
-  canonicalBuyerKey,
-  UNKNOWN_BUYER_KEY,
-  type BuyerRebate,
-  type RebateBenchmarks,
-  type RebateDistribution,
-  type SegmentRebate,
+import type { ParticipationSummary } from '../intel/participation.domain';
+import type {
+  BuyerRebate,
+  RebateBenchmarks,
+  RebateDistribution,
+  SegmentRebate,
 } from '../intel/rebate.domain';
 import {
   buildBuyerProfiles,
@@ -26,175 +21,23 @@ import { readDossierExtraction } from '../tender/dossier-extraction';
  * so every new crawl/harvest immediately deepens the agent's expertise.
  */
 
+// The participation fold moved to intel/participation.domain so the intel
+// repository can push it into SQL (competitor_bid at 150k-300k rows must not
+// be full-loaded into JS). Re-exported to keep the expert-side import path —
+// the pure fn still backs the InMemory repository and the domain specs.
+export {
+  summarizeParticipation,
+  type ParticipationBid,
+  type ParticipationByBuyer,
+  type ParticipationSummary,
+  type TopCompetitor,
+} from '../intel/participation.domain';
+
 /** Caps applied to the published knowledge lists (full data stays queryable). */
 const TOP_BUYERS = 15;
 const TOP_COMPETITORS = 15;
 const TOP_SEGMENTS = 8;
 const TOP_REBATE_ROWS = 10;
-
-const round1 = (value: number): number => Math.round(value * 10) / 10;
-
-export interface ParticipationByBuyer {
-  buyerName: string;
-  /** Distinct consultations of this buyer with at least one published bid. */
-  tendersObserved: number;
-  avgBidders: number;
-}
-
-export interface TopCompetitor {
-  name: string;
-  participations: number;
-  wins: number;
-  totalWonMad: number;
-}
-
-export interface ParticipationSummary {
-  /** Total published bid rows observed (every soumissionnaire, all PVs). */
-  resultsObserved: number;
-  /** Distinct consultations with at least one published bid. */
-  tendersWithResults: number;
-  /** Mean bidder count per consultation, or null before any result lands. */
-  avgBiddersPerTender: number | null;
-  byBuyer: ParticipationByBuyer[];
-  topCompetitors: TopCompetitor[];
-}
-
-interface ReferenceGroup {
-  bidders: Set<string>;
-  buyerNames: Map<string, number>;
-}
-
-function mostFrequent(counts: ReadonlyMap<string, number>): string | null {
-  let best: string | null = null;
-  let bestCount = 0;
-  for (const [key, count] of counts) {
-    if (count > bestCount) {
-      best = key;
-      bestCount = count;
-    }
-  }
-  return best;
-}
-
-/**
- * Groups published bids per consultation to answer the founding competition
- * questions: how many bidders show up (globally and per buyer) and who keeps
- * winning. Bidder identity is the entity-resolved competitorId, falling back
- * to the normalized company name for legacy rows.
- */
-export function summarizeParticipation(
-  bids: readonly CompetitorBidRecord[],
-): ParticipationSummary {
-  const byReference = new Map<string, ReferenceGroup>();
-  const competitors = new Map<
-    string,
-    { names: Map<string, number>; refs: Set<string>; wins: number; totalWonMad: number }
-  >();
-
-  for (const bid of bids) {
-    const refKey = bid.reference.trim().toUpperCase().replace(/[^A-Z0-9]+/g, ' ');
-    const bidderKey = bid.competitorId || normalizeCompanyName(bid.bidderName);
-
-    const group = byReference.get(refKey) ?? {
-      bidders: new Set<string>(),
-      buyerNames: new Map<string, number>(),
-    };
-    group.bidders.add(bidderKey);
-    if (bid.buyerName) {
-      group.buyerNames.set(
-        bid.buyerName,
-        (group.buyerNames.get(bid.buyerName) ?? 0) + 1,
-      );
-    }
-    byReference.set(refKey, group);
-
-    const competitor = competitors.get(bidderKey) ?? {
-      names: new Map<string, number>(),
-      refs: new Set<string>(),
-      wins: 0,
-      totalWonMad: 0,
-    };
-    competitor.names.set(
-      bid.bidderName,
-      (competitor.names.get(bid.bidderName) ?? 0) + 1,
-    );
-    // Distinct consultations, not raw rows — duplicate ingestion of the same
-    // (reference, bidder) pair must not inflate the participation count.
-    competitor.refs.add(refKey);
-    if (bid.isWinner) {
-      competitor.wins += 1;
-      if (typeof bid.amountMad === 'number' && Number.isFinite(bid.amountMad)) {
-        competitor.totalWonMad += bid.amountMad;
-      }
-    }
-    competitors.set(bidderKey, competitor);
-  }
-
-  const perReferenceCounts = [...byReference.values()].map((g) => g.bidders.size);
-  const avgBiddersPerTender =
-    perReferenceCounts.length > 0
-      ? round1(
-          perReferenceCounts.reduce((sum, n) => sum + n, 0) /
-            perReferenceCounts.length,
-        )
-      : null;
-
-  // Per-buyer participation: group the reference groups on the canonical buyer
-  // key (same fold the rebate aggregation uses) so name drift cannot split one
-  // buyer into fragments.
-  const buyers = new Map<
-    string,
-    { names: Map<string, number>; counts: number[] }
-  >();
-  for (const group of byReference.values()) {
-    const displayName = mostFrequent(group.buyerNames);
-    if (!displayName) continue;
-    const key = canonicalBuyerKey(displayName);
-    // The PV crawler's placeholder is not a buyer identity — mirroring the
-    // rebate aggregation's contract, it never forms a byBuyer bucket (the
-    // observations still count toward the global average above).
-    if (key === UNKNOWN_BUYER_KEY) continue;
-    const entry = buyers.get(key) ?? { names: new Map<string, number>(), counts: [] };
-    entry.names.set(displayName, (entry.names.get(displayName) ?? 0) + 1);
-    entry.counts.push(group.bidders.size);
-    buyers.set(key, entry);
-  }
-  const byBuyer: ParticipationByBuyer[] = [...buyers.values()]
-    .map((entry) => ({
-      buyerName: mostFrequent(entry.names) ?? '',
-      tendersObserved: entry.counts.length,
-      avgBidders: round1(
-        entry.counts.reduce((sum, n) => sum + n, 0) / entry.counts.length,
-      ),
-    }))
-    .sort(
-      (a, b) =>
-        b.tendersObserved - a.tendersObserved ||
-        a.buyerName.localeCompare(b.buyerName),
-    );
-
-  const topCompetitors: TopCompetitor[] = [...competitors.values()]
-    .map((entry) => ({
-      name: mostFrequent(entry.names) ?? '',
-      participations: entry.refs.size,
-      wins: entry.wins,
-      totalWonMad: Math.round(entry.totalWonMad),
-    }))
-    .sort(
-      (a, b) =>
-        b.wins - a.wins ||
-        b.participations - a.participations ||
-        a.name.localeCompare(b.name),
-    );
-
-  return {
-    resultsObserved: bids.length,
-    tendersWithResults: byReference.size,
-    avgBiddersPerTender,
-    byBuyer,
-    topCompetitors,
-  };
-}
 
 export interface KnowledgeBuyerProfile {
   buyerName: string;
@@ -241,14 +84,15 @@ function tally<T>(items: readonly T[], key: (item: T) => string): CountEntry[] {
 
 export interface ExpertKnowledgeInput {
   tenders: readonly TenderRecord[];
-  bids: readonly CompetitorBidRecord[];
+  /** Pre-aggregated participation — the repository pushes the fold into SQL. */
+  participation: ParticipationSummary;
   benchmarks: RebateBenchmarks | null;
   now: Date;
 }
 
 /** The agent's whole market memory, condensed for grounding and display. */
 export function buildExpertKnowledge(input: ExpertKnowledgeInput): ExpertKnowledge {
-  const { tenders, bids, benchmarks, now } = input;
+  const { tenders, participation, benchmarks, now } = input;
 
   const active = tenders.filter((t) => t.deadlineAt.getTime() >= now.getTime());
   const buyers = new Set(tenders.map((t) => t.buyerName));
@@ -256,8 +100,6 @@ export function buildExpertKnowledge(input: ExpertKnowledgeInput): ExpertKnowled
     const extraction = readDossierExtraction(t.raw);
     return (extraction?.bpu?.length ?? 0) > 0;
   }).length;
-
-  const participation = summarizeParticipation(bids);
 
   return {
     generatedAt: now.toISOString(),

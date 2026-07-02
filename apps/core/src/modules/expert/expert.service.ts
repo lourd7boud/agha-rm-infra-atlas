@@ -12,7 +12,6 @@ import { LLM_CLIENT, type LlmClient } from '../brain/llm.client';
 import { parseModelJson } from '../brain/extractor';
 import {
   INTEL_REPOSITORY,
-  type CompetitorBidRecord,
   type IntelRepository,
 } from '../intel/intel.repository';
 import { canonicalBuyerKey, type RebateBenchmarks } from '../intel/rebate.domain';
@@ -209,18 +208,21 @@ export class ExpertService {
   }
 
   private async computeKnowledge(now: Date): Promise<ExpertKnowledge> {
-    const [tenders, bids, benchmarks] = await Promise.all([
+    // participationStats aggregates in the database — competitor_bid is heading
+    // for 150k-300k rows, so the knowledge base must never full-load it.
+    // The empty-fold fallback keeps the old degraded-read contract.
+    const [tenders, participation, benchmarks] = await Promise.all([
       this.tenders.findAll(),
-      this.intel.listAllBids().catch((error: unknown) => {
-        this.logger.warn(`listAllBids failed: ${(error as Error).message}`);
-        return [] as CompetitorBidRecord[];
+      this.intel.participationStats().catch((error: unknown) => {
+        this.logger.warn(`participationStats failed: ${(error as Error).message}`);
+        return summarizeParticipation([]);
       }),
       this.intel.rebateBenchmarks().catch((error: unknown) => {
         this.logger.warn(`rebateBenchmarks failed: ${(error as Error).message}`);
         return null as RebateBenchmarks | null;
       }),
     ]);
-    return buildExpertKnowledge({ tenders, bids, benchmarks, now });
+    return buildExpertKnowledge({ tenders, participation, benchmarks, now });
   }
 
   /** Full expert read of one consultation. Numbers deterministic, prose LLM. */
@@ -228,9 +230,9 @@ export class ExpertService {
     const tender = await this.tenders.findById(id);
     if (!tender) throw new NotFoundException(`Tender not found: ${id}`);
 
-    const [all, bids, benchmarks] = await Promise.all([
+    const [all, participation, benchmarks] = await Promise.all([
       this.tenders.findAll(),
-      this.intel.listAllBids().catch(() => [] as CompetitorBidRecord[]),
+      this.intel.participationStats().catch(() => summarizeParticipation([])),
       this.intel.rebateBenchmarks().catch(() => null as RebateBenchmarks | null),
     ]);
 
@@ -239,7 +241,6 @@ export class ExpertService {
     const estimation = tender.estimationMad ?? extraction?.estimationMad ?? null;
     const segment = inferSegment(tender.objet, tender.buyerName);
     const marche = buildMarketContext(tender, all);
-    const participation = summarizeParticipation(bids);
     const competition = this.expectedCompetition(tender, participation);
     const benchmark = benchmarks
       ? selectRebateBenchmark(benchmarks, { buyerName: tender.buyerName, segment })
@@ -335,11 +336,10 @@ export class ExpertService {
 
     let rabais = opts.rabaisPct ?? null;
     if (rabais === null && estimation !== null) {
-      const [bids, benchmarks] = await Promise.all([
-        this.intel.listAllBids().catch(() => [] as CompetitorBidRecord[]),
+      const [participation, benchmarks] = await Promise.all([
+        this.intel.participationStats().catch(() => summarizeParticipation([])),
         this.intel.rebateBenchmarks().catch(() => null as RebateBenchmarks | null),
       ]);
-      const participation = summarizeParticipation(bids);
       const competition = this.expectedCompetition(tender, participation);
       const benchmark = benchmarks
         ? selectRebateBenchmark(benchmarks, { buyerName: tender.buyerName, segment })

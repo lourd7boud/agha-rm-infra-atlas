@@ -149,7 +149,7 @@ describe('buildExpertKnowledge', () => {
     ];
     const knowledge = buildExpertKnowledge({
       tenders,
-      bids: [bid({ id: 'b1' })],
+      participation: summarizeParticipation([bid({ id: 'b1' })]),
       benchmarks,
       now: NOW,
     });
@@ -171,7 +171,7 @@ describe('buildExpertKnowledge', () => {
   test('degrades cleanly with no benchmarks and no bids', () => {
     const knowledge = buildExpertKnowledge({
       tenders: [tender({})],
-      bids: [],
+      participation: summarizeParticipation([]),
       benchmarks: null,
       now: NOW,
     });

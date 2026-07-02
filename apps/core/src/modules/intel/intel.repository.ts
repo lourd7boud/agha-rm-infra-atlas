@@ -7,11 +7,22 @@ import { inferSegment } from '../tender/inventory.domain';
 import type { PublishedResult } from './intel.parser';
 import { buildCompetitorProfile, type CompetitorProfile } from './intel.profile';
 import {
+  normalizeCompanyName,
+  PARTICIPATION_TOP_LIMIT,
+  summarizeParticipation,
+  type ParticipationSummary,
+} from './participation.domain';
+import {
   summarizeRebates,
   UNKNOWN_BUYER_LABEL,
   type RebateBenchmarks,
   type RebateObservation,
 } from './rebate.domain';
+
+// The canonical company fold moved to participation.domain (the pure fold and
+// the repository must share it without a require cycle); re-exported so every
+// existing importer (portal outcome, expert knowledge, specs) keeps this path.
+export { normalizeCompanyName } from './participation.domain';
 
 export interface CompetitorRecord {
   id: string;
@@ -31,6 +42,14 @@ export interface CompetitorStats {
   wins: number;
   totalMad: number;
 }
+
+/**
+ * Repository-level participation aggregate — same shape as the pure
+ * `summarizeParticipation` output. Implementations cap byBuyer/topCompetitors
+ * at PARTICIPATION_TOP_LIMIT; the SQL implementation computes everything in
+ * the database so no consumer has to pull the full bid table into JS.
+ */
+export type ParticipationStats = ParticipationSummary;
 
 export const INTEL_REPOSITORY = Symbol('INTEL_REPOSITORY');
 
@@ -69,6 +88,14 @@ export interface IntelRepository {
   findWinnersByReferences(
     canonicalKeys: readonly string[],
   ): Promise<CompetitorBidRecord[]>;
+  /**
+   * Participation aggregates (bidders per consultation, per-buyer field,
+   * winners league) computed WITHOUT handing the bid table to the caller.
+   * competitor_bid is heading for 150k-300k rows (129k-notice historical
+   * backfill): consumers that only need these aggregates must use this
+   * instead of listAllBids(). Lists are capped at PARTICIPATION_TOP_LIMIT.
+   */
+  participationStats(): Promise<ParticipationStats>;
   listCompetitorStats(): Promise<CompetitorStats[]>;
   /** C2: full dossier for one competitor, null when unknown. */
   getProfile(competitorId: string): Promise<CompetitorProfile | null>;
@@ -145,24 +172,15 @@ function bidInsertValues(result: PublishedResult, competitorId: string) {
   };
 }
 
-/** Canonical normalization: accents/case/punctuation + legal-form suffixes. */
-export function normalizeCompanyName(rawName: string): string {
-  return normalizeFr(rawName)
-    .replace(/[.,]/g, ' ')
-    .replace(/\b(s\s?a\s?r\s?l|sarl|sa|s\s?a|ste|societe|au)\b/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 /**
  * Canonical join key for a market référence. The same market arrives from two
  * independent paths (our authenticated "Mes réponses" listing vs the public
  * result crawler) as short codes like "62/2025/DP A/IF", so case, spacing and
  * punctuation drift. Folding case + collapsing every non-alphanumeric run to a
  * single space keeps both sides agreeing on what "the same market" is. Lives
- * here (next to normalizeCompanyName) so the SQL canonicalizer in
- * findWinnersByReferences and the in-memory matcher share ONE definition with
- * the portal outcome domain, which re-exports it.
+ * here so the SQL canonicalizer in findWinnersByReferences and the in-memory
+ * matcher share ONE definition with the portal outcome domain, which
+ * re-exports it.
  */
 export function canonicalReferenceKey(reference: string): string {
   return normalizeFr(reference)
@@ -259,6 +277,17 @@ export class InMemoryIntelRepository implements IntelRepository {
     );
   }
 
+  async participationStats(): Promise<ParticipationStats> {
+    // The pure fold carries the behavioral contract; the repository layer only
+    // adds the top-N cap the SQL implementation enforces with LIMIT.
+    const summary = summarizeParticipation(this.bids);
+    return {
+      ...summary,
+      byBuyer: summary.byBuyer.slice(0, PARTICIPATION_TOP_LIMIT),
+      topCompetitors: summary.topCompetitors.slice(0, PARTICIPATION_TOP_LIMIT),
+    };
+  }
+
   async listCompetitorStats(): Promise<CompetitorStats[]> {
     return this.competitors
       .map((competitor) => {
@@ -284,6 +313,20 @@ export class InMemoryIntelRepository implements IntelRepository {
     return summarizeRebates(this.bids.map(bidToObservation));
   }
 }
+
+/**
+ * SQL twins of the participation.domain JS folds, for the pushed-down
+ * participationStats aggregation. Reference: trim + upper + collapse every
+ * non-alphanumeric run — mirrors summarizeParticipation's refKey exactly.
+ * Bidder: entity-resolved competitor_id, falling back to a folded bidder_name
+ * for legacy rows. Buyer: lower + collapse punctuation/whitespace keeping
+ * accented letters — Postgres has no unaccent here, so this does not match the
+ * JS canonicalBuyerKey character-for-character; it only needs to fold
+ * case/punctuation drift together and make the placeholder excludable.
+ */
+const SQL_REF_KEY = sql`regexp_replace(upper(btrim(reference)), '[^A-Z0-9]+', ' ', 'g')`;
+const SQL_BIDDER_KEY = sql`coalesce(competitor_id::text, btrim(regexp_replace(lower(bidder_name), '[^a-z0-9]+', ' ', 'g')))`;
+const SQL_BUYER_KEY = sql`btrim(lower(regexp_replace(buyer_name, '[^a-zA-Z0-9À-ÿ]+', ' ', 'g')))`;
 
 export class DrizzleIntelRepository implements IntelRepository {
   constructor(private readonly db: Db) {}
@@ -397,6 +440,159 @@ export class DrizzleIntelRepository implements IntelRepository {
         ),
       );
     return rows.map(mapBidRow);
+  }
+
+  async participationStats(): Promise<ParticipationStats> {
+    // Pushed down to SQL: competitor_bid is heading for 150k-300k rows and the
+    // old listAllBids() + summarizeParticipation JS fold would drag every row
+    // over the wire on each knowledge/analysis read. Three bounded aggregate
+    // queries (per_ref CTE → aggregates) return ~1 + 2×50 rows instead.
+    const [globals, byBuyer, topCompetitors] = await Promise.all([
+      this.participationGlobals(),
+      this.participationByBuyer(),
+      this.participationTopCompetitors(),
+    ]);
+    return { ...globals, byBuyer, topCompetitors };
+  }
+
+  private async participationGlobals(): Promise<
+    Pick<
+      ParticipationStats,
+      'resultsObserved' | 'tendersWithResults' | 'avgBiddersPerTender'
+    >
+  > {
+    const result = await this.db.execute<{
+      results_observed: string;
+      tenders_with_results: string;
+      avg_bidders: string | null;
+    }>(sql`
+      WITH per_ref AS (
+        SELECT ${SQL_REF_KEY} AS ref_key,
+               count(DISTINCT ${SQL_BIDDER_KEY}) AS bidders
+          FROM intel.competitor_bid
+         GROUP BY 1
+      )
+      SELECT (SELECT count(*) FROM intel.competitor_bid) AS results_observed,
+             count(*) AS tenders_with_results,
+             round(avg(bidders), 1) AS avg_bidders
+        FROM per_ref
+    `);
+    const row = result.rows[0];
+    return {
+      resultsObserved: Number(row?.results_observed ?? 0),
+      tendersWithResults: Number(row?.tenders_with_results ?? 0),
+      // avg() over zero references is SQL NULL — same "no data yet" contract
+      // as the JS fold.
+      avgBiddersPerTender: row?.avg_bidders != null ? Number(row.avg_bidders) : null,
+    };
+  }
+
+  private async participationByBuyer(): Promise<ParticipationStats['byBuyer']> {
+    // Buyer identity is the folded key; the display label is the most frequent
+    // raw spelling. The PV crawler's unknown-buyer placeholder is folded the
+    // same way and excluded — it is not a buyer identity (see rebate.domain);
+    // its consultations still count toward the globals above.
+    const result = await this.db.execute<{
+      buyer_name: string;
+      tenders_observed: string;
+      avg_bidders: string;
+    }>(sql`
+      WITH folded AS (
+        SELECT ${SQL_REF_KEY} AS ref_key,
+               buyer_name,
+               ${SQL_BUYER_KEY} AS buyer_key,
+               ${SQL_BIDDER_KEY} AS bidder_key
+          FROM intel.competitor_bid
+         WHERE ${SQL_BUYER_KEY} <> ''
+           AND ${SQL_BUYER_KEY} <> btrim(lower(regexp_replace(${UNKNOWN_BUYER_LABEL}, '[^a-zA-Z0-9À-ÿ]+', ' ', 'g')))
+      ),
+      per_ref AS (
+        SELECT buyer_key, ref_key, count(DISTINCT bidder_key) AS bidders
+          FROM folded
+         GROUP BY 1, 2
+      ),
+      stats AS (
+        SELECT buyer_key,
+               count(*) AS tenders_observed,
+               round(avg(bidders), 1) AS avg_bidders
+          FROM per_ref
+         GROUP BY 1
+      ),
+      label AS (
+        SELECT DISTINCT ON (buyer_key) buyer_key, buyer_name
+          FROM (
+            SELECT buyer_key, buyer_name, count(*) AS uses
+              FROM folded
+             GROUP BY 1, 2
+          ) names
+         ORDER BY buyer_key, uses DESC, buyer_name
+      )
+      SELECT label.buyer_name, stats.tenders_observed, stats.avg_bidders
+        FROM stats
+        JOIN label USING (buyer_key)
+       ORDER BY stats.tenders_observed DESC, label.buyer_name
+       LIMIT ${PARTICIPATION_TOP_LIMIT}
+    `);
+    return result.rows.map((row) => ({
+      buyerName: row.buyer_name,
+      tendersObserved: Number(row.tenders_observed),
+      avgBidders: Number(row.avg_bidders),
+    }));
+  }
+
+  private async participationTopCompetitors(): Promise<
+    ParticipationStats['topCompetitors']
+  > {
+    // participations = DISTINCT consultations (duplicate harvests of the same
+    // (reference, bidder) pair must not inflate the count); wins/totalWonMad
+    // stay row-based like the JS fold — the (reference, competitor_id) unique
+    // index keeps winner rows distinct per consultation anyway.
+    const result = await this.db.execute<{
+      name: string;
+      participations: string;
+      wins: string;
+      total_won_mad: string;
+    }>(sql`
+      WITH folded AS (
+        SELECT ${SQL_REF_KEY} AS ref_key,
+               bidder_name,
+               ${SQL_BIDDER_KEY} AS bidder_key,
+               is_winner,
+               amount_mad
+          FROM intel.competitor_bid
+      ),
+      stats AS (
+        SELECT bidder_key,
+               count(DISTINCT ref_key) AS participations,
+               count(*) FILTER (WHERE is_winner) AS wins,
+               round(coalesce(sum(amount_mad) FILTER (WHERE is_winner), 0)) AS total_won_mad
+          FROM folded
+         GROUP BY 1
+      ),
+      label AS (
+        SELECT DISTINCT ON (bidder_key) bidder_key, bidder_name
+          FROM (
+            SELECT bidder_key, bidder_name, count(*) AS uses
+              FROM folded
+             GROUP BY 1, 2
+          ) names
+         ORDER BY bidder_key, uses DESC, bidder_name
+      )
+      SELECT label.bidder_name AS name,
+             stats.participations,
+             stats.wins,
+             stats.total_won_mad
+        FROM stats
+        JOIN label USING (bidder_key)
+       ORDER BY stats.wins DESC, stats.participations DESC, name
+       LIMIT ${PARTICIPATION_TOP_LIMIT}
+    `);
+    return result.rows.map((row) => ({
+      name: row.name,
+      participations: Number(row.participations),
+      wins: Number(row.wins),
+      totalWonMad: Number(row.total_won_mad),
+    }));
   }
 
   async listCompetitorStats(): Promise<CompetitorStats[]> {

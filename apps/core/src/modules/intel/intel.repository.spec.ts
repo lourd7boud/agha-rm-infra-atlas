@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Db } from '../../db/client';
 import { DrizzleIntelRepository, InMemoryIntelRepository } from './intel.repository';
+import { PARTICIPATION_TOP_LIMIT } from './participation.domain';
 
 /**
  * Wiring test: an inserted winner's estimation + objet must survive into the
@@ -200,6 +201,117 @@ describe('InMemoryIntelRepository.upsertResult', () => {
 
     const [row] = await repo.listResults(10);
     expect(row?.buyerName).toBe('ORMVAH');
+  });
+});
+
+describe('InMemoryIntelRepository.participationStats', () => {
+  it('aggregates participation without exposing raw bids', async () => {
+    // Arrange — AO/1: two bidders, alpha wins; AO/2: placeholder buyer.
+    const repo = new InMemoryIntelRepository();
+    const alpha = await repo.upsertCompetitor('STE ALPHA');
+    const beta = await repo.upsertCompetitor('STE BETA');
+    await repo.insertResult(
+      { reference: 'AO/1', buyerName: 'ORMVAH', bidderName: 'STE ALPHA', isWinner: true, amountMad: 900_000 },
+      alpha.id,
+    );
+    await repo.insertResult(
+      { reference: 'AO/1', buyerName: 'ORMVAH', bidderName: 'STE BETA', isWinner: false },
+      beta.id,
+    );
+    await repo.insertResult(
+      { reference: 'AO/2', buyerName: 'Acheteur non précisé', bidderName: 'STE ALPHA', isWinner: false },
+      alpha.id,
+    );
+
+    // Act
+    const stats = await repo.participationStats();
+
+    // Assert — the placeholder consultation counts globally but forms no buyer row.
+    expect(stats.resultsObserved).toBe(3);
+    expect(stats.tendersWithResults).toBe(2);
+    expect(stats.avgBiddersPerTender).toBe(1.5);
+    expect(stats.byBuyer).toEqual([
+      { buyerName: 'ORMVAH', tendersObserved: 1, avgBidders: 2 },
+    ]);
+    expect(stats.topCompetitors[0]).toEqual({
+      name: 'STE ALPHA',
+      participations: 2,
+      wins: 1,
+      totalWonMad: 900_000,
+    });
+  });
+
+  it('caps byBuyer and topCompetitors at the top-N contract', async () => {
+    // Arrange — more distinct buyers/bidders than the cap allows through.
+    const repo = new InMemoryIntelRepository();
+    for (let i = 0; i < PARTICIPATION_TOP_LIMIT + 5; i += 1) {
+      const competitor = await repo.upsertCompetitor(`ENTREPRISE ${i}`);
+      await repo.insertResult(
+        {
+          reference: `AO/${i}`,
+          buyerName: `ACHETEUR ${i}`,
+          bidderName: `ENTREPRISE ${i}`,
+          isWinner: false,
+        },
+        competitor.id,
+      );
+    }
+
+    // Act
+    const stats = await repo.participationStats();
+
+    // Assert — globals stay uncapped; the lists honor the contract.
+    expect(stats.tendersWithResults).toBe(PARTICIPATION_TOP_LIMIT + 5);
+    expect(stats.byBuyer).toHaveLength(PARTICIPATION_TOP_LIMIT);
+    expect(stats.topCompetitors).toHaveLength(PARTICIPATION_TOP_LIMIT);
+  });
+});
+
+/**
+ * Call-counting stub for the drizzle Db — participationStats must aggregate in
+ * the database: bounded execute() round-trips, never a select() full scan of
+ * competitor_bid (150k-300k rows after the historical backfill).
+ */
+function stubParticipationDb() {
+  const calls = { execute: 0, select: 0 };
+  // pg returns bigint/numeric aggregates as strings — the repo must coerce.
+  const resultsByCall = [
+    { rows: [{ results_observed: '3', tenders_with_results: '2', avg_bidders: '1.5' }] },
+    { rows: [{ buyer_name: 'ORMVAH', tenders_observed: '1', avg_bidders: '2.0' }] },
+    { rows: [{ name: 'STE ALPHA', participations: '2', wins: '1', total_won_mad: '900000' }] },
+  ];
+  const db = {
+    select: () => {
+      calls.select += 1;
+      throw new Error('participationStats must not full-scan via select()');
+    },
+    execute: async () => {
+      const result = resultsByCall[calls.execute];
+      calls.execute += 1;
+      return result;
+    },
+  } as unknown as Db;
+  return { db, calls };
+}
+
+describe('DrizzleIntelRepository.participationStats', () => {
+  it('runs three bounded aggregate queries and coerces pg string numerics', async () => {
+    const stub = stubParticipationDb();
+    const repo = new DrizzleIntelRepository(stub.db);
+
+    const stats = await repo.participationStats();
+
+    expect(stub.calls.execute).toBe(3);
+    expect(stub.calls.select).toBe(0);
+    expect(stats).toEqual({
+      resultsObserved: 3,
+      tendersWithResults: 2,
+      avgBiddersPerTender: 1.5,
+      byBuyer: [{ buyerName: 'ORMVAH', tendersObserved: 1, avgBidders: 2 }],
+      topCompetitors: [
+        { name: 'STE ALPHA', participations: 2, wins: 1, totalWonMad: 900_000 },
+      ],
+    });
   });
 });
 
