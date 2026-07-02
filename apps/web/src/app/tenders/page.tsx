@@ -49,7 +49,11 @@ export default async function TendersPage({
     if (typeof v === 'string' && v.trim()) apiQs.set(k, v);
   }
   const [inventory, preloadedList, preloadedSearch] = await Promise.all([
-    apiGet<TenderInventory>(`/tender/inventory?${apiQs.toString()}`),
+    // A starved core (batch pressure, cold cache) must degrade to a friendly
+    // retry panel — never the naked Next.js "Application error" page.
+    apiGet<TenderInventory>(`/tender/inventory?${apiQs.toString()}`).catch(
+      () => null,
+    ),
     list
       ? apiGet<{ tenderIds: string[] }>(`/tender/lists/${list}/tenders`)
           .then(async (r) => {
@@ -82,6 +86,25 @@ export default async function TendersPage({
           .catch(() => null)
       : null,
   ]);
+  if (!inventory) {
+    return (
+      <div className="mx-auto max-w-xl px-4 py-24 text-center">
+        <h1 className="text-xl font-semibold text-ink">
+          Catalogue momentanément indisponible
+        </h1>
+        <p className="mt-2 text-sm text-muted">
+          Le serveur met plus de temps que prévu à répondre. Les données sont
+          intactes — réessayez dans quelques secondes.
+        </p>
+        <a
+          href="/tenders"
+          className="mt-6 inline-block rounded-md bg-cyan px-4 py-2 text-sm font-semibold text-paper hover:opacity-90"
+        >
+          Réessayer
+        </a>
+      </div>
+    );
+  }
   // Seed the explorer's filter state from URL params (so the search box shows
   // "boudnib" when you land on /tenders?q=boudnib).
   const initialFromUrl: Record<string, string> = {};
