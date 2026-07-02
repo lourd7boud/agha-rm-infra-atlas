@@ -177,6 +177,16 @@ interface CatalogSnapshot {
   bids: CompetitorBidRecord[];
 }
 const catalogSnapshotCache = new TtlCache<CatalogSnapshot>();
+// The ?since= delta poll needs to be fresher than the 10 s catalogue snapshot
+// (see the `since` branch below), but a direct uncached findAll+listAllBids on
+// every request let concurrent/duplicate pollers each trigger a full scan +
+// classification of the whole catalogue on the same event loop — a
+// thundering herd that pegged the core process and took the site down in
+// production. A dedicated, single-flighted, short-TTL cache still beats the
+// 10 s snapshot on freshness (a write is visible within ~2 s, not up to 10 s)
+// while coalescing simultaneous pollers into one compute.
+const FRESH_SINCE_CACHE_TTL_MS = 2_000;
+const freshSinceCache = new TtlCache<CatalogSnapshot>();
 
 function presentOutcome(outcome: OutcomeRecord, estimationMad?: number) {
   return {
@@ -538,17 +548,28 @@ export class TenderController {
     const parsed = inventoryQuerySchema.safeParse(query);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const { limit, offset, ...filters } = parsed.data;
-    // The `since` delta powers live silent refresh, so it MUST read fresh: the
-    // shared snapshot freezes each row's updatedAt for up to its TTL, which would
-    // make a change written after the snapshot invisible to `?since=` until the
-    // snapshot expired (rows whose stale updatedAt <= since get filtered out).
-    // The load is bounded — one operator polling slowly, not the SSR fan-out —
-    // so a direct read here is the right trade for correctness.
+    // The `since` delta powers live silent refresh, so it MUST read fresher
+    // than the 10 s catalogue snapshot: that snapshot freezes each row's
+    // updatedAt for up to its TTL, which would make a change written after the
+    // snapshot invisible to `?since=` until the snapshot expired (rows whose
+    // stale updatedAt <= since get filtered out). It must NOT be a fully
+    // uncached read either — every poller (30 s cadence × every open tab)
+    // hitting a bare findAll+listAllBids+classify concurrently is a thundering
+    // herd that pegged the core event loop and took prod down. This
+    // single-flighted, 2 s-TTL cache is fresh enough for a 30 s poll while
+    // coalescing simultaneous requests into one compute.
     if (filters.since) {
-      const [records, bids] = await Promise.all([
-        this.repository.findAll(),
-        this.intel.listAllBids(),
-      ]);
+      const { records, bids } = await freshSinceCache.getOrCompute(
+        'all',
+        FRESH_SINCE_CACHE_TTL_MS,
+        async () => {
+          const [records, bids] = await Promise.all([
+            this.repository.findAll(),
+            this.intel.listAllBids(),
+          ]);
+          return { records, bids };
+        },
+      );
       return buildInventory(records, filters, new Date(), { limit, offset }, bids);
     }
     const key = JSON.stringify({ ...filters, limit, offset });
