@@ -21,6 +21,8 @@ import { IntelModule } from '../intel/intel.module';
 import { DetailCrawlerService } from './detail.crawler';
 import { ResultCrawlerService } from './result.crawler';
 import { ExtraitPvCrawlerService } from './pv.crawler';
+import { NoticeArchiveService } from './notice-archive';
+import { NoticeInterpretService } from './notice-interpret';
 import {
   DrizzleSnapshotRepository,
   InMemorySnapshotRepository,
@@ -247,6 +249,8 @@ const snapshotRepositoryProvider = {
     DetailCrawlerService,
     ResultCrawlerService,
     ExtraitPvCrawlerService,
+    NoticeArchiveService,
+    NoticeInterpretService,
   ],
   exports: [snapshotRepositoryProvider],
 })

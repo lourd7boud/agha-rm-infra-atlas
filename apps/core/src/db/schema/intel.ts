@@ -20,6 +20,39 @@ export const competitors = intel.table('competitor', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Permanent archive of every published result/PV notice we ever fetched —
+ * the ACQUISITION half of the 129k-notice backfill. Crawl + OCR happen once
+ * (free: network + CPU); the LLM/deterministic INTERPRETATION reads ocr_text
+ * later at whatever pace the daily budget allows, and can re-run forever
+ * without touching the portal again.
+ */
+export const resultNotices = intel.table(
+  'result_notice',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Portal annonce type: '4' résultat définitif, '5' extrait de PV. */
+    annonceType: text('annonce_type').notNull(),
+    /** The portal's idAvis (EntrepriseDownloadAvisJAL&idAvis=N) — dedupe key. */
+    idAvis: text('id_avis').notNull(),
+    sourceUrl: text('source_url'),
+    /** Listing-row context when available (helps interpretation + joins). */
+    reference: text('reference'),
+    buyerName: text('buyer_name'),
+    /** OCR'd notice text (null until acquired; empty text → status 'empty'). */
+    ocrText: text('ocr_text'),
+    bytesSize: numeric('bytes_size', { precision: 12, scale: 0 }),
+    /** acquired → interpreted | empty | error (interpretation verdicts). */
+    status: text('status').notNull().default('acquired'),
+    error: text('error'),
+    acquiredAt: timestamp('acquired_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    interpretedAt: timestamp('interpreted_at', { withTimezone: true }),
+  },
+  (table) => [uniqueIndex('result_notice_id_avis_uniq').on(table.idAvis)],
+);
+
 export const competitorBids = intel.table(
   'competitor_bid',
   {

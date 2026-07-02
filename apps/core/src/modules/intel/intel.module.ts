@@ -25,6 +25,12 @@ import {
   type IntelRepository,
 } from './intel.repository';
 import { IntelService } from './intel.service';
+import {
+  DrizzleNoticeRepository,
+  InMemoryNoticeRepository,
+  NOTICE_REPOSITORY,
+  type NoticeRepository,
+} from './notice.repository';
 
 @Controller('intel')
 export class IntelController {
@@ -107,9 +113,23 @@ const intelRepositoryProvider = {
   },
 };
 
+const noticeRepositoryProvider = {
+  provide: NOTICE_REPOSITORY,
+  useFactory: (): NoticeRepository => {
+    const url = process.env.DATABASE_URL;
+    if (url) return new DrizzleNoticeRepository(getDb(url));
+    return new InMemoryNoticeRepository();
+  },
+};
+
 @Module({
   controllers: [IntelController],
-  providers: [intelSourceProvider, intelRepositoryProvider, IntelService],
-  exports: [intelRepositoryProvider],
+  providers: [
+    intelSourceProvider,
+    intelRepositoryProvider,
+    noticeRepositoryProvider,
+    IntelService,
+  ],
+  exports: [intelRepositoryProvider, noticeRepositoryProvider],
 })
 export class IntelModule {}

@@ -211,6 +211,13 @@
       "when": 1782913926613,
       "tag": "0029_tender_parity_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1782913926700,
+      "tag": "0030_intel_result_notice",
+      "breakpoints": true
     }
   ]
 }
