@@ -13,18 +13,7 @@ import {
   type QuoteRecord,
   type QuoteStatus,
 } from '@/lib/sales';
-
-// next/navigation's redirect() throws a control-flow signal (NEXT_REDIRECT) that
-// must NOT be swallowed by the action's catch — re-throw it untouched.
-function isRedirectError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'digest' in error &&
-    typeof (error as { digest?: unknown }).digest === 'string' &&
-    (error as { digest: string }).digest.startsWith('NEXT_REDIRECT')
-  );
-}
+import { isRedirectError } from '@/lib/next-redirect';
 
 function failToQuote(id: string, action: string, error: unknown): never {
   if (isRedirectError(error)) throw error;

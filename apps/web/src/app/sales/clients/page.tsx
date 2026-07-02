@@ -7,18 +7,7 @@ import {
   fmtDate,
   type ClientRecord,
 } from '@/lib/sales';
-
-// next/navigation's redirect() throws a control-flow signal (NEXT_REDIRECT) that
-// must NOT be swallowed by the action's catch — re-throw it untouched.
-function isRedirectError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'digest' in error &&
-    typeof (error as { digest?: unknown }).digest === 'string' &&
-    (error as { digest: string }).digest.startsWith('NEXT_REDIRECT')
-  );
-}
+import { isRedirectError } from '@/lib/next-redirect';
 
 // Turn an action failure into user-visible feedback: log the real cause
 // server-side, then redirect back with a stable error code the page renders as

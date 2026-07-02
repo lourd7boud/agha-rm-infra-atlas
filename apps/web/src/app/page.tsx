@@ -4,6 +4,7 @@ import { apiGet } from '@/lib/api';
 import { fmtMad, type ProjectSummary } from '@/lib/projects';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { Donut, BarChart, Funnel, Gauge, type DonutSegment } from '@/components/ui/Charts';
+import { isRedirectError } from '@/lib/next-redirect';
 
 interface OrchestratorAction {
   code: string;
@@ -43,15 +44,6 @@ interface Employee {
   id: string;
 }
 
-function isRedirectError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'digest' in error &&
-    typeof (error as { digest: unknown }).digest === 'string' &&
-    (error as { digest: string }).digest.startsWith('NEXT_REDIRECT')
-  );
-}
 async function tryGet<T>(path: string): Promise<T | null> {
   try {
     return await apiGet<T>(path);

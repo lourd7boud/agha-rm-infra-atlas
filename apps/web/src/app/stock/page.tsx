@@ -14,6 +14,7 @@ import {
   type MovementKind,
   type StockMovementRecord,
 } from '@/lib/stock';
+import { isRedirectError } from '@/lib/next-redirect';
 
 /** One enriched balance row: a (depot, material) pair resolved to names + value. */
 interface BalanceRow extends DepotBalance {
@@ -55,18 +56,6 @@ function depotLabel(
 ): string {
   if (!id) return '—';
   return depotById.get(id)?.name ?? id;
-}
-
-// next/navigation's redirect() throws a control-flow signal (NEXT_REDIRECT) that
-// must NOT be swallowed by the action's catch — re-throw it untouched.
-function isRedirectError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'digest' in error &&
-    typeof (error as { digest?: unknown }).digest === 'string' &&
-    (error as { digest: string }).digest.startsWith('NEXT_REDIRECT')
-  );
 }
 
 // One place to turn an action failure into user-visible feedback: log the real

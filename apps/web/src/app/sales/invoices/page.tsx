@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { apiGet, apiPost, AtlasApiError } from '@/lib/api';
+import { isRedirectError } from '@/lib/next-redirect';
 import { LineEditor } from '@/components/sales/LineEditor';
 import {
   fmtDate,
@@ -12,16 +13,6 @@ import {
   type InvoiceRecord,
   type InvoiceStatus,
 } from '@/lib/sales';
-
-function isRedirectError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'digest' in error &&
-    typeof (error as { digest?: unknown }).digest === 'string' &&
-    (error as { digest: string }).digest.startsWith('NEXT_REDIRECT')
-  );
-}
 
 function failToInvoices(action: string, error: unknown): never {
   if (isRedirectError(error)) throw error;
