@@ -7,6 +7,7 @@ import {
 import { decideSnapshot } from './snapshot.domain';
 import { DetailCrawlerService } from './detail.crawler';
 import { ResultCrawlerService } from './result.crawler';
+import { ExtraitPvCrawlerService } from './pv.crawler';
 import {
   SNAPSHOT_REPOSITORY,
   type SnapshotRepository,
@@ -21,6 +22,12 @@ const DEFAULT_ENRICH_LIMIT = 80;
 const DEFAULT_EXTRACT_LIMIT = 40;
 /** Per-run cap on Résultats notices read with the vision LLM (slow + paid). */
 const DEFAULT_RESULT_LIMIT = 25;
+/**
+ * Per-run cap on extraits de PV read per sweep (each = one OCR + LLM call).
+ * Opt-in: 0 keeps the stage dormant until WATCH_PV_LIMIT is set — the PV
+ * harvest shares the same daily LLM budget as enrichment + extraction.
+ */
+const DEFAULT_PV_LIMIT = 0;
 function envLimit(name: string, fallback: number): number {
   const n = Number(process.env[name]);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
@@ -95,6 +102,9 @@ export class WatchService {
     @Optional()
     @Inject(ResultCrawlerService)
     private readonly resultCrawler: ResultCrawlerService | null = null,
+    @Optional()
+    @Inject(ExtraitPvCrawlerService)
+    private readonly pvCrawler: ExtraitPvCrawlerService | null = null,
     @Optional()
     @Inject(EnrichmentService)
     private readonly enrichment: EnrichmentService | null = null,
@@ -305,6 +315,23 @@ export class WatchService {
         }
       } catch (error) {
         this.logger.error(`result harvest failed: ${(error as Error).message}`);
+      }
+    }
+    // Stage-3b: harvest extraits de PV (annonceType=5) — the ONLY source that
+    // publishes the FULL bidder field (winner + écartés) plus the administrative
+    // estimation. This is what teaches the expert agent how many competitors
+    // show up per buyer and what rebates actually win. Opt-in via WATCH_PV_LIMIT;
+    // failures never fail the run.
+    if (this.pvCrawler) {
+      try {
+        const maxPv = envLimit('WATCH_PV_LIMIT', DEFAULT_PV_LIMIT);
+        const maxPages = envLimit('WATCH_PV_MAX_PAGES', 3);
+        if (maxPv > 0) {
+          const pv = await this.pvCrawler.crawlOnce({ maxPv, maxPages });
+          this.logger.log(`pv harvest ${JSON.stringify(pv)}`);
+        }
+      } catch (error) {
+        this.logger.error(`pv harvest failed: ${(error as Error).message}`);
       }
     }
     // Stage-4: AI-enrich a bounded batch of newly-detected (still-unenriched)

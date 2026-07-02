@@ -375,4 +375,63 @@ describe('WatchService snapshot/coverage', () => {
     expect(second.inserted).toBe(0);
     expect(second.duplicates).toBe(2);
   });
+
+  test('runs the PV harvest stage when a crawler is injected and WATCH_PV_LIMIT > 0', async () => {
+    const pvCrawler = { crawlOnce: vi.fn().mockResolvedValue({ pvFound: 2 }) };
+    process.env.WATCH_PV_LIMIT = '7';
+    process.env.WATCH_PV_MAX_PAGES = '2';
+    try {
+      const service = new WatchService(
+        new FixturePortalSource(FIXTURE_PATH),
+        new InMemoryTenderRepository(),
+        null,
+        { maxPages: 1 },
+        null,
+        null,
+        pvCrawler as never,
+      );
+      await service.runOnce();
+      expect(pvCrawler.crawlOnce).toHaveBeenCalledWith({ maxPv: 7, maxPages: 2 });
+    } finally {
+      delete process.env.WATCH_PV_LIMIT;
+      delete process.env.WATCH_PV_MAX_PAGES;
+    }
+  });
+
+  test('skips the PV harvest stage by default (WATCH_PV_LIMIT unset → 0)', async () => {
+    const pvCrawler = { crawlOnce: vi.fn() };
+    const service = new WatchService(
+      new FixturePortalSource(FIXTURE_PATH),
+      new InMemoryTenderRepository(),
+      null,
+      { maxPages: 1 },
+      null,
+      null,
+      pvCrawler as never,
+    );
+    await service.runOnce();
+    expect(pvCrawler.crawlOnce).not.toHaveBeenCalled();
+  });
+
+  test('a PV harvest failure never fails the sweep', async () => {
+    const pvCrawler = {
+      crawlOnce: vi.fn().mockRejectedValue(new Error('portal down')),
+    };
+    process.env.WATCH_PV_LIMIT = '3';
+    try {
+      const service = new WatchService(
+        new FixturePortalSource(FIXTURE_PATH),
+        new InMemoryTenderRepository(),
+        null,
+        { maxPages: 1 },
+        null,
+        null,
+        pvCrawler as never,
+      );
+      const summary = await service.runOnce();
+      expect(summary.inserted).toBeGreaterThan(0); // sweep survived
+    } finally {
+      delete process.env.WATCH_PV_LIMIT;
+    }
+  });
 });
