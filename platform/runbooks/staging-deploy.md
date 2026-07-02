@@ -48,10 +48,18 @@ docker compose -f docker-compose.apps.yml run --rm --entrypoint sh core \
 
 ## Deploying an update
 
+One command — pulls, detects new migrations, rebuilds, recreates, verifies:
+
+```bash
+/opt/atlas/platform/scripts/deploy.sh
+```
+
+The script encodes the manual sequence below (kept for reference/debugging):
+
 ```bash
 cd /opt/atlas && git pull
 cd platform
-docker compose -f docker-compose.apps.yml build --no-cache core web
+docker compose -f docker-compose.apps.yml build --no-cache core worker web
 docker compose -f docker-compose.apps.yml -f apps-ports.yml up -d --force-recreate
 # run db:migrate ONLY if new migrations were added (check apps/core/drizzle)
 ```
