@@ -7,6 +7,7 @@ import { AuthModule, Public } from './modules/auth/auth.module';
 import { BrainModule } from './modules/brain/brain.module';
 import { DigestModule } from './modules/digest/digest.module';
 import { EquipmentModule } from './modules/equipment/equipment.module';
+import { ExpertModule } from './modules/expert/expert.module';
 import { FieldModule } from './modules/field/field.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { IntelModule } from './modules/intel/intel.module';
@@ -49,6 +50,7 @@ export class HealthController {
     BrainModule,
     DigestModule,
     EquipmentModule,
+    ExpertModule,
     FieldModule,
     FinanceModule,
     IntelModule,

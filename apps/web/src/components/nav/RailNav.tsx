@@ -16,6 +16,7 @@ const ITEMS: readonly NavItem[] = [
   { href: '/tenders/lists', label: 'Listes', icon: 'boxes' },
   { href: '/tenders/searches', label: 'Recherches sauvegardées', icon: 'search' },
   { href: '/tenders/ai', label: 'Assistant IA', icon: 'agents' },
+  { href: '/expert', label: 'Agent AGHA', icon: 'intel' },
   { href: '/projects', label: 'Projets & Chantiers', icon: 'chantiers' },
   { href: '/stock', label: 'Stock & Matériaux', icon: 'boxes' },
   { href: '/equipment', label: 'Matériel & Équipements', icon: 'equipment' },
