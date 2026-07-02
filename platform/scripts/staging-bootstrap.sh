@@ -29,7 +29,7 @@ if [ ! -f .env.apps ]; then
   sed -i "s|S3_SECRET_KEY=CHANGE_ME|S3_SECRET_KEY=$(grep MINIO_ROOT_PASSWORD .env | cut -d= -f2)|" .env.apps
   sed -i "s|AUTH_SECRET=CHANGE_ME|AUTH_SECRET=$(openssl rand -hex 32)|" .env.apps
   sed -i "s|AUTH_URL=.*|AUTH_URL=http://localhost:3001|" .env.apps
-  sed -i "s|AUTH_KEYCLOAK_SECRET=CHANGE_ME|AUTH_KEYCLOAK_SECRET=dev-not-confidential|" .env.apps
+  sed -i "s|AUTH_KEYCLOAK_SECRET=CHANGE_ME|AUTH_KEYCLOAK_SECRET=|" .env.apps
 fi
 
 docker compose up -d keycloak
