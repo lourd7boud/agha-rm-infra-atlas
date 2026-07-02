@@ -71,6 +71,14 @@ import {
 
 /** In-memory micro-cache over the persisted snapshot (spares pg on bursts). */
 const KNOWLEDGE_TTL_MS = 60_000;
+
+/**
+ * Optional top-tier engine for the WRITTEN avis only (numbers stay
+ * deterministic). Wired by expert.module from EXPERT_LLM_MODEL; the avis
+ * falls back to the default extraction client when this one errors
+ * (fable-5 on the gateway is frequently at capacity).
+ */
+export const EXPERT_LLM_CLIENT = Symbol('EXPERT_LLM_CLIENT');
 /** Default expected competitors when no participation data exists yet. */
 const DEFAULT_COMPETITOR_ASSUMPTION = 5;
 /** Hard cap on BPU lines sent to the LLM for unit-price suggestions. */
@@ -191,6 +199,9 @@ export class ExpertService {
     @Optional()
     @Inject(KNOWLEDGE_SNAPSHOT_REPOSITORY)
     private readonly snapshots: KnowledgeSnapshotRepository | null = null,
+    @Optional()
+    @Inject(EXPERT_LLM_CLIENT)
+    private readonly expertLlm: LlmClient | null = null,
   ) {}
 
   /**
@@ -529,7 +540,30 @@ export class ExpertService {
     benchmark: SelectedRebate | null;
     scenarios: PricingScenarios | null;
   }): Promise<ExpertAvis | null> {
-    if (!this.llm) return null;
+    // Strongest engine first, default client as fallback — the avis must
+    // survive a 503 on the premium route.
+    const engines = [this.expertLlm, this.llm].filter(
+      (e): e is LlmClient => e !== null,
+    );
+    if (engines.length === 0) return null;
+    let lastError: unknown = null;
+    for (const engine of engines) {
+      try {
+        return await this.completeAvis(engine, input);
+      } catch (error) {
+        lastError = error;
+        this.logger.warn(
+          `avis engine failed, trying next: ${(error as Error).message}`,
+        );
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('avis indisponible');
+  }
+
+  private async completeAvis(
+    llm: LlmClient,
+    input: Parameters<ExpertService['generateAvis']>[0],
+  ): Promise<ExpertAvis> {
     const { tender } = input;
     const dossier = {
       fiche: {
@@ -555,7 +589,7 @@ export class ExpertService {
       calibrageRabais: input.benchmark,
       scenariosPrix: input.scenarios,
     };
-    const completion = await this.llm.complete({
+    const completion = await llm.complete({
       tier: 'T3',
       system:
         "Tu es l'agent AGHA-RM-INFRA, l'expert interne des marchés publics marocains de l'entreprise AGHA RM INFRA (BTP, hydraulique, infrastructures agricoles). " +
