@@ -4,6 +4,20 @@ import {
   lookupIssuerLogo,
   normalizeIssuerName,
 } from './issuer-logos';
+import { NAME_TO_ASSET } from './issuer-logos.data';
+import { NAME_TO_ASSET_PART_1 } from './issuer-logos.data-1';
+import { NAME_TO_ASSET_PART_2 } from './issuer-logos.data-2';
+
+describe('NAME_TO_ASSET dictionary split', () => {
+  it('merges both halves with no key collision (spread would silently drop dupes)', () => {
+    // Guards the mechanical 2-file split: a key landing in both halves would
+    // make PART_2 shadow PART_1 and shrink the merged map below the sum.
+    expect(Object.keys(NAME_TO_ASSET).length).toBe(
+      Object.keys(NAME_TO_ASSET_PART_1).length +
+        Object.keys(NAME_TO_ASSET_PART_2).length,
+    );
+  });
+});
 
 describe('normalizeIssuerName', () => {
   it('lowercases and strips French diacritics', () => {

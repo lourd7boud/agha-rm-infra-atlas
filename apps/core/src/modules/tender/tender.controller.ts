@@ -538,13 +538,17 @@ export class TenderController {
     const parsed = inventoryQuerySchema.safeParse(query);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const { limit, offset, ...filters } = parsed.data;
-    // Cache key includes every filter + limit/offset so distinct queries stay
-    // isolated; the `since` delta is serialised to ISO so identical timestamps
-    // dedupe. The `since` path skips the RESULT cache (each client's cutoff is
-    // unique) but reads from the shared 10 s catalogue snapshot — previously it
-    // ran both full scans on EVERY poll of EVERY client.
+    // The `since` delta powers live silent refresh, so it MUST read fresh: the
+    // shared snapshot freezes each row's updatedAt for up to its TTL, which would
+    // make a change written after the snapshot invisible to `?since=` until the
+    // snapshot expired (rows whose stale updatedAt <= since get filtered out).
+    // The load is bounded — one operator polling slowly, not the SSR fan-out —
+    // so a direct read here is the right trade for correctness.
     if (filters.since) {
-      const { records, bids } = await this.loadCatalogSnapshot();
+      const [records, bids] = await Promise.all([
+        this.repository.findAll(),
+        this.intel.listAllBids(),
+      ]);
       return buildInventory(records, filters, new Date(), { limit, offset }, bids);
     }
     const key = JSON.stringify({ ...filters, limit, offset });
