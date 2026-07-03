@@ -601,16 +601,20 @@ export class TenderController {
   @Roles('marches', 'direction', 'admin-si')
   @Get('buyers')
   async buyers() {
-    const { records } = await this.loadCatalogSnapshot();
-    return buildBuyerProfiles(records);
+    // Light projected rows (NO raw): the observatory only reads base fields
+    // (buyerName/objet/procedure/estimation/deadline/state), so it must not drag
+    // the whole raw catalogue over the wire + block the event loop like the old
+    // loadCatalogSnapshot path did.
+    const { rows } = await this.loadInventoryLight();
+    return buildBuyerProfiles(rows);
   }
 
   /** One buyer's profile (exact name, URL-encoded). */
   @Roles('marches', 'direction', 'admin-si')
   @Get('buyers/:name')
   async buyer(@Param('name') name: string) {
-    const { records } = await this.loadCatalogSnapshot();
-    const profile = buildBuyerProfile(records, name);
+    const { rows } = await this.loadInventoryLight();
+    const profile = buildBuyerProfile(rows, name);
     if (!profile) throw new NotFoundException(`Buyer not found: ${name}`);
     return profile;
   }
