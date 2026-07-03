@@ -15,6 +15,7 @@ import {
   type StockMovementRecord,
 } from '@/lib/stock';
 import { isRedirectError } from '@/lib/next-redirect';
+import { CatalogueGrid, type CatalogueStockState } from './CatalogueGrid';
 
 /** One enriched balance row: a (depot, material) pair resolved to names + value. */
 interface BalanceRow extends DepotBalance {
@@ -81,6 +82,9 @@ const ACTION_ERROR_MESSAGES: Record<string, string> = {
   'recordMovement:invalid':
     'Mouvement refusé : vérifiez le type, la quantité et les dépôts requis (Entrée → Vers, Consommation → De, Transfert → les deux).',
   'recordMovement:failed': 'Échec de l’enregistrement du mouvement. Réessayez.',
+  'addStock:invalid':
+    'Ajout refusé : indiquez une quantité supérieure à 0. Le prix est optionnel.',
+  'addStock:failed': 'Échec de l’ajout au stock. Réessayez.',
 };
 
 function actionErrorMessage(
@@ -118,6 +122,25 @@ export default async function StockPage({
     (sum, row) => sum + row.quantity * (row.unitCostMad ?? 0),
     0,
   );
+
+  // Catalogue grid state: on-hand summed across depots per catalogue code, plus
+  // the material's last known unit cost. Only activated (in-DB) codes appear;
+  // the grid renders the full catalogue and overlays this where present.
+  const onHandByMaterial = new Map<string, number>();
+  for (const balance of balances) {
+    onHandByMaterial.set(
+      balance.materialId,
+      (onHandByMaterial.get(balance.materialId) ?? 0) + balance.quantity,
+    );
+  }
+  const stockByCode: Record<string, CatalogueStockState> = {};
+  for (const material of materials) {
+    stockByCode[material.code] = {
+      onHand: onHandByMaterial.get(material.id) ?? 0,
+      cost: material.unitCostMad ?? null,
+    };
+  }
+  const depotOptions = depots.map((depot) => ({ id: depot.id, name: depot.name }));
 
   async function createMaterial(formData: FormData) {
     'use server';
@@ -190,6 +213,73 @@ export default async function StockPage({
       });
     } catch (error) {
       failToStock('recordMovement', error);
+    }
+    revalidatePath('/stock');
+    revalidatePath('/projects');
+  }
+
+  // Worker quick-add from a catalogue card: activate the material (idempotent),
+  // ensure a depot exists, then record a purchase (entrée). The worker supplies
+  // only quantité + montant; everything else rides in from the catalogue entry.
+  async function addStock(formData: FormData) {
+    'use server';
+    const code = String(formData.get('code') ?? '').trim();
+    const designation = String(formData.get('designation') ?? '').trim();
+    const unit = String(formData.get('unit') ?? '').trim();
+    const category = String(formData.get('category') ?? '').trim() || undefined;
+    const quantity = Number(formData.get('quantity'));
+    if (
+      !code ||
+      designation.length < 2 ||
+      !unit ||
+      !Number.isFinite(quantity) ||
+      quantity <= 0
+    ) {
+      redirect('/stock?error=addStock&code=invalid');
+    }
+    const rawCost = formData.get('unitCostMad');
+    const parsedCost =
+      rawCost && String(rawCost).length > 0 ? Number(rawCost) : undefined;
+    const unitCostMad =
+      parsedCost !== undefined && Number.isFinite(parsedCost) && parsedCost >= 0
+        ? parsedCost
+        : undefined;
+    let depotId = String(formData.get('depotId') ?? '').trim() || undefined;
+    try {
+      // 1. Activate the catalogue material (idempotent on code); the montant
+      //    becomes its standard unit cost so valuation + the card reflect it.
+      await apiPost('/stock/materials', {
+        code,
+        designation,
+        unit,
+        category,
+        unitCostMad,
+      });
+      // 2. Ensure a destination depot — auto-provision "Dépôt principal" once so
+      //    the very first add works with zero setup.
+      if (!depotId) {
+        await apiPost('/stock/depots', { name: 'Dépôt principal' });
+        const allDepots = await apiGet<DepotRecord[]>('/stock/depots');
+        depotId =
+          allDepots.find((depot) => depot.name === 'Dépôt principal')?.id ??
+          allDepots[0]?.id;
+      }
+      if (!depotId) throw new Error('Aucun dépôt disponible');
+      // 3. Resolve the material id (the upsert returns only an outcome).
+      const allMaterials = await apiGet<MaterialRecord[]>('/stock/materials');
+      const materialId = allMaterials.find((m) => m.code === code)?.id;
+      if (!materialId) throw new Error(`Matériau ${code} introuvable`);
+      // 4. Record the purchase (entrée) movement into the depot.
+      await apiPost('/stock/movements', {
+        kind: 'purchase',
+        materialId,
+        quantity,
+        unitCostMad,
+        toDepotId: depotId,
+        reference: 'Ajout catalogue',
+      });
+    } catch (error) {
+      failToStock('addStock', error);
     }
     revalidatePath('/stock');
     revalidatePath('/projects');
@@ -294,49 +384,83 @@ export default async function StockPage({
         )}
       </section>
 
+      <CatalogueGrid
+        stockByCode={stockByCode}
+        depots={depotOptions}
+        addStock={addStock}
+      />
+
       <div className="mb-6 grid gap-6 lg:grid-cols-2">
         <section className="overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
           <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
-            Catalogue matériaux ({materials.length})
+            Dépôts ({depots.length})
           </h2>
           <table className="w-full text-left text-sm">
             <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
               <tr>
-                <th className="px-4 py-3">Code</th>
-                <th className="px-4 py-3">Désignation</th>
-                <th className="px-4 py-3">Unité</th>
-                <th className="px-4 py-3">Catégorie</th>
-                <th className="px-4 py-3 text-right">Coût unit.</th>
+                <th className="px-4 py-3">Nom</th>
+                <th className="px-4 py-3">Emplacement</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {materials.map((material) => (
-                <tr key={material.id}>
-                  <td className="px-4 py-3 font-mono text-xs">{material.code}</td>
-                  <td className="px-4 py-3 font-semibold">
-                    {material.designation}
-                  </td>
-                  <td className="px-4 py-3 text-muted">{material.unit}</td>
+              {depots.map((depot) => (
+                <tr key={depot.id}>
+                  <td className="px-4 py-3 font-semibold">{depot.name}</td>
                   <td className="px-4 py-3 text-muted">
-                    {material.category ?? '—'}
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums">
-                    {material.unitCostMad !== undefined
-                      ? fmtMad(material.unitCostMad)
-                      : '—'}
+                    {depot.location ?? '—'}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {materials.length === 0 && (
+          {depots.length === 0 && (
             <p className="p-8 text-center text-sm text-faint">
-              Aucun matériau — ajoutez-en ci-dessous.
+              Aucun dépôt — le premier ajout crée « Dépôt principal ».
             </p>
           )}
           <form
-            action={createMaterial}
+            action={createDepot}
             className="flex flex-wrap items-end gap-3 border-t border-line px-5 py-4"
+          >
+            <label className="min-w-40 flex-1 text-sm">
+              <span className="mb-1 block text-xs text-muted">Nom</span>
+              <input
+                type="text"
+                name="name"
+                required
+                minLength={2}
+                maxLength={200}
+                className="w-full rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+              />
+            </label>
+            <label className="min-w-40 flex-1 text-sm">
+              <span className="mb-1 block text-xs text-muted">
+                Emplacement (optionnel)
+              </span>
+              <input
+                type="text"
+                name="location"
+                maxLength={300}
+                className="w-full rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+              />
+            </label>
+            <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
+              Créer
+            </button>
+          </form>
+        </section>
+
+        <section className="overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
+          <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
+            Matériau hors catalogue
+          </h2>
+          <p className="px-5 pt-4 text-xs text-faint">
+            Pour un article absent du catalogue ci-dessus. Il rejoint ensuite les
+            mouvements de stock comme les autres.
+          </p>
+          <form
+            action={createMaterial}
+            className="flex flex-wrap items-end gap-3 px-5 py-4"
           >
             <label className="text-sm">
               <span className="mb-1 block text-xs text-muted">Code</span>
@@ -390,65 +514,6 @@ export default async function StockPage({
             </label>
             <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
               Ajouter
-            </button>
-          </form>
-        </section>
-
-        <section className="overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
-          <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
-            Dépôts ({depots.length})
-          </h2>
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
-              <tr>
-                <th className="px-4 py-3">Nom</th>
-                <th className="px-4 py-3">Emplacement</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {depots.map((depot) => (
-                <tr key={depot.id}>
-                  <td className="px-4 py-3 font-semibold">{depot.name}</td>
-                  <td className="px-4 py-3 text-muted">
-                    {depot.location ?? '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {depots.length === 0 && (
-            <p className="p-8 text-center text-sm text-faint">
-              Aucun dépôt — créez un magasin ci-dessous.
-            </p>
-          )}
-          <form
-            action={createDepot}
-            className="flex flex-wrap items-end gap-3 border-t border-line px-5 py-4"
-          >
-            <label className="min-w-40 flex-1 text-sm">
-              <span className="mb-1 block text-xs text-muted">Nom</span>
-              <input
-                type="text"
-                name="name"
-                required
-                minLength={2}
-                maxLength={200}
-                className="w-full rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
-              />
-            </label>
-            <label className="min-w-40 flex-1 text-sm">
-              <span className="mb-1 block text-xs text-muted">
-                Emplacement (optionnel)
-              </span>
-              <input
-                type="text"
-                name="location"
-                maxLength={300}
-                className="w-full rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
-              />
-            </label>
-            <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
-              Créer
             </button>
           </form>
         </section>

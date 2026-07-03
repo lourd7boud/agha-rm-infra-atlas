@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <ellipse cx="32" cy="58" rx="15" ry="3" fill="#000000" opacity="0.08"/>
+  <path d="M20 18 Q20 12 32 12 Q44 12 44 18 L44 48 Q44 52 32 52 Q20 52 20 48 Z" fill="#e8ecef"/>
+  <path d="M20 18 Q20 12 32 12 Q44 12 44 18 L44 22 Q44 25 32 25 Q20 25 20 22 Z" fill="#f4f6f8"/>
+  <path d="M20 18 Q20 13 24 12.4 L24 50 Q22 49 20 48 Z" fill="#fbfcfd" opacity="0.8"/>
+  <path d="M40 13 Q44 15 44 18 L44 48 Q44 51 40 51.4 Z" fill="#d3d9de"/>
+  <ellipse cx="32" cy="18" rx="12" ry="3.2" fill="#dbe0e4"/>
+  <ellipse cx="32" cy="17.6" rx="8" ry="1.9" fill="#eef1f3"/>
+  <circle cx="32" cy="40" r="5" fill="#cbd2d8"/>
+  <circle cx="32" cy="40" r="5" fill="#f0f3f5" opacity="0.5"/>
+  <circle cx="32" cy="40" r="3.2" fill="#dfe4e8"/>
+  <rect x="31.3" y="37.4" width="1.4" height="3" rx="0.7" fill="#8a939c"/>
+  <rect x="27" y="52" width="4" height="6" rx="1" fill="#b3bcc4"/>
+  <rect x="25" y="56" width="8" height="2.6" rx="1" fill="#9aa3ab"/>
+  <circle cx="24" cy="57.3" r="1.8" fill="#c23b2f"/>
+</svg>

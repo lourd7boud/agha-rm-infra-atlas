@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="tl-sheen" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e3e9ef"/>
+      <stop offset="45%" stop-color="#c2cbd4"/>
+      <stop offset="55%" stop-color="#cfd7df"/>
+      <stop offset="100%" stop-color="#aeb8c2"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="32" cy="54" rx="20" ry="3" fill="#000000" opacity="0.08"/>
+  <path d="M10 34 L40 20 L58 28 L28 44 Z" fill="url(#tl-sheen)"/>
+  <path d="M10 34 L28 44 L28 47 L10 37 Z" fill="#93a0ab"/>
+  <path d="M28 44 L58 28 L58 31 L28 47 Z" fill="#a7b2bd"/>
+  <path d="M40 20 L58 28 L50 31.7 L36 24.5 Z" fill="#eef2f6" opacity="0.7"/>
+  <g stroke="#ffffff" stroke-width="0.5" opacity="0.4">
+    <path d="M16 32 L44 25"/><path d="M22 35 L50 27.5"/><path d="M18 37.5 L46 30.5"/>
+  </g>
+  <g fill="#8f9ba6" opacity="0.5">
+    <circle cx="22" cy="31" r="0.5"/><circle cx="30" cy="29" r="0.5"/><circle cx="38" cy="27" r="0.5"/><circle cx="27" cy="34" r="0.5"/><circle cx="35" cy="32" r="0.5"/><circle cx="43" cy="30" r="0.5"/>
+  </g>
+</svg>
