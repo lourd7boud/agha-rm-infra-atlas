@@ -2,10 +2,12 @@ import { describe, expect, test } from 'vitest';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import {
   buildInventory,
+  hydrateInventory,
   inferCategory,
   inferLotCount,
   inferRegion,
   inferVille,
+  selectInventory,
 } from './inventory.domain';
 import type { TenderRecord } from './tender.repository';
 
@@ -302,6 +304,81 @@ describe('buildInventory', () => {
     expect(inv.facets.categories.find((f) => f.key === 'Fournitures')?.count).toBe(1);
     expect(inv.facets.categories.find((f) => f.key === 'Services')?.count).toBe(1);
     expect(inv.facets.secteurs.length).toBeGreaterThan(0);
+  });
+
+  test('parses raw enrichment only for the page: item shows the AI secteur while the facet keeps the canonical deterministic label', () => {
+    const raw = {
+      aiEnrichment: {
+        secteur: 'Génie civil spécialisé',
+        resume: 'Résumé de test',
+        faq: [],
+        lots: [],
+        conditions: {},
+        reserveAuxPme: false,
+        model: 'test-model',
+        enrichedAt: '2026-06-01T00:00:00.000Z',
+      },
+    };
+    const inv = buildInventory(
+      [
+        {
+          ...rec({
+            reference: 'E/1',
+            buyerName: 'Commune de Rabat',
+            objet: 'Travaux de voirie',
+          }),
+          raw,
+        },
+      ],
+      {},
+      NOW,
+    );
+    const item = inv.items[0]!;
+    // The DISPLAYED secteur keeps the AI override (parsed from raw for the page)…
+    expect(item.secteur).toBe('Génie civil spécialisé');
+    expect(item.aiResume).toBe('Résumé de test');
+    // …but the secteur FACET uses the canonical deterministic label (objet=voirie
+    // → routes), so free-text AI values never fragment the navigation buckets.
+    expect(
+      inv.facets.secteurs.find((f) => f.key === 'Génie civil spécialisé'),
+    ).toBeUndefined();
+    expect(inv.facets.secteurs.some((f) => f.key === 'Routes & voirie')).toBe(true);
+  });
+
+  test('two-phase split: selectInventory on light rows + hydrateInventory from a SEPARATE full-record source (the controller path)', () => {
+    const base = rec({
+      reference: 'S/1',
+      buyerName: 'Commune de Rabat',
+      objet: 'Travaux de voirie',
+    });
+    // Phase 1: the projected list read has NO raw (raw-less light rows).
+    const lightRow = { ...base, raw: undefined };
+    const selection = selectInventory([lightRow], {}, NOW);
+    expect(selection.pageIds).toEqual(['S/1']);
+    // Phase 2: hydrate from the FULL record loaded separately (as findByIds
+    // returns), carrying the heavy raw enrichment.
+    const full = {
+      ...base,
+      raw: {
+        aiEnrichment: {
+          secteur: 'Secteur X',
+          resume: 'Résumé',
+          faq: [],
+          lots: [],
+          conditions: {},
+          reserveAuxPme: false,
+          model: 'test-model',
+          enrichedAt: '2026-06-01T00:00:00.000Z',
+        },
+      },
+    };
+    const inv = hydrateInventory(selection, [full], NOW);
+    expect(inv.items[0]!.secteur).toBe('Secteur X');
+    expect(inv.items[0]!.aiResume).toBe('Résumé');
+    // A page row whose full record is MISSING degrades to no enrichment, not a crash.
+    const inv2 = hydrateInventory(selection, [], NOW);
+    expect(inv2.items[0]!.secteur).toBe('Routes & voirie');
+    expect(inv2.items[0]!.aiResume).toBeUndefined();
   });
 });
 

@@ -67,7 +67,12 @@ const chatBodySchema = z.object({
     .max(20)
     .optional(),
 });
-import { buildInventory } from './inventory.domain';
+import {
+  selectInventory,
+  hydrateInventory,
+  type InventoryRow,
+  type InventoryFilters,
+} from './inventory.domain';
 import {
   INTEL_REPOSITORY,
   type CompetitorBidRecord,
@@ -177,6 +182,15 @@ interface CatalogSnapshot {
   bids: CompetitorBidRecord[];
 }
 const catalogSnapshotCache = new TtlCache<CatalogSnapshot>();
+// Light snapshot for the inventory/list path — projected rows (NO raw jsonb) +
+// the bid scan. raw is loaded only for the visible page via findByIds, so the
+// hot list read no longer drags the whole catalogue's raw over the wire. Buyers
+// and competitor-intel keep the full CatalogSnapshot above.
+interface InventoryLightSnapshot {
+  rows: InventoryRow[];
+  bids: CompetitorBidRecord[];
+}
+const inventoryLightSnapshotCache = new TtlCache<InventoryLightSnapshot>();
 // The ?since= delta poll needs to be fresher than the 10 s catalogue snapshot
 // (see the `since` branch below), but a direct uncached findAll+listAllBids on
 // every request let concurrent/duplicate pollers each trigger a full scan +
@@ -186,7 +200,7 @@ const catalogSnapshotCache = new TtlCache<CatalogSnapshot>();
 // 10 s snapshot on freshness (a write is visible within ~2 s, not up to 10 s)
 // while coalescing simultaneous pollers into one compute.
 const FRESH_SINCE_CACHE_TTL_MS = 2_000;
-const freshSinceCache = new TtlCache<CatalogSnapshot>();
+const freshSinceLightCache = new TtlCache<InventoryLightSnapshot>();
 
 function presentOutcome(outcome: OutcomeRecord, estimationMad?: number) {
   return {
@@ -559,26 +573,27 @@ export class TenderController {
     // single-flighted, 2 s-TTL cache is fresh enough for a 30 s poll while
     // coalescing simultaneous requests into one compute.
     if (filters.since) {
-      const { records, bids } = await freshSinceCache.getOrCompute(
+      const { rows, bids } = await freshSinceLightCache.getOrCompute(
         'all',
         FRESH_SINCE_CACHE_TTL_MS,
         async () => {
-          const [records, bids] = await Promise.all([
-            this.repository.findAll(),
+          const [rows, bids] = await Promise.all([
+            this.repository.findAllInventoryRows(),
             this.intel.listAllBids(),
           ]);
-          return { records, bids };
+          return { rows, bids };
         },
       );
-      return buildInventory(records, filters, new Date(), { limit, offset }, bids);
+      return this.assembleInventory(rows, bids, filters, { limit, offset });
     }
     const key = JSON.stringify({ ...filters, limit, offset });
     return inventoryCache.getOrCompute(key, INVENTORY_CACHE_TTL_MS, async () => {
-      // The bid scan joined to every tender by canonical reference powers the
-      // lifecycle status (en_cours / cloture / attribue / infructueux) and the
-      // "Résultat de l'appel d'offre" surface in the drawer.
-      const { records, bids } = await this.loadCatalogSnapshot();
-      return buildInventory(records, filters, new Date(), { limit, offset }, bids);
+      // Projected list rows (no raw) → facets + page selection; raw is loaded
+      // only for the page. The bid scan joined to every tender by canonical
+      // reference powers the lifecycle status (en_cours / cloture / attribue /
+      // infructueux) and the "Résultat de l'appel d'offre" surface in the drawer.
+      const { rows, bids } = await this.loadInventoryLight();
+      return this.assembleInventory(rows, bids, filters, { limit, offset });
     });
   }
 
@@ -792,5 +807,37 @@ export class TenderController {
         return { records, bids };
       },
     );
+  }
+
+  /** Light 10 s snapshot for the list path — projected rows (NO raw) + the bid
+   *  scan. Shared by every inventory cache-miss so concurrent filters trigger at
+   *  most one projected findAll + listAllBids per window. */
+  private loadInventoryLight(): Promise<InventoryLightSnapshot> {
+    return inventoryLightSnapshotCache.getOrCompute(
+      'snapshot',
+      CATALOG_SNAPSHOT_TTL_MS,
+      async () => {
+        const [rows, bids] = await Promise.all([
+          this.repository.findAllInventoryRows(),
+          this.intel.listAllBids(),
+        ]);
+        return { rows, bids };
+      },
+    );
+  }
+
+  /** select (facets + page over light rows) → load raw for the page only →
+   *  hydrate. The heavy `raw` jsonb touches the wire + Zod for the ≤limit shown
+   *  rows, never the whole catalogue. */
+  private async assembleInventory(
+    rows: readonly InventoryRow[],
+    bids: readonly CompetitorBidRecord[],
+    filters: InventoryFilters,
+    paging: { limit?: number; offset?: number },
+  ) {
+    const now = new Date();
+    const selection = selectInventory(rows, filters, now, paging, bids);
+    const full = await this.repository.findByIds(selection.pageIds);
+    return hydrateInventory(selection, full, now);
   }
 }

@@ -77,6 +77,19 @@ export const tenders = tender.table('tender', {
   uniqueIndex('tender_source_url_uniq')
     .on(table.sourceUrl)
     .where(sql`${table.sourceUrl} IS NOT NULL`),
+  // Hot-column btree indexes for the datao-style read path
+  // (docs/architecture/SCALABLE-READ-ARCHITECTURE.md). Before these, ordering,
+  // faceting and the create() dedup probe were full sequential scans of the
+  // whole table incl. the heavy `raw` jsonb. created_at DESC backs the default
+  // publication-desc sort + keyset pagination; deadline_at backs the deadline
+  // wall; procedure/pipeline_state/buyer_name back facet filters; the composite
+  // (reference, buyer_name) backs the create() duplicate probe.
+  index('tender_created_at_idx').on(table.createdAt.desc()),
+  index('tender_deadline_at_idx').on(table.deadlineAt),
+  index('tender_procedure_idx').on(table.procedure),
+  index('tender_pipeline_state_idx').on(table.pipelineState),
+  index('tender_buyer_name_idx').on(table.buyerName),
+  index('tender_reference_buyer_idx').on(table.reference, table.buyerName),
 ]);
 
 // ── Phase 0 — Socle de vérité ────────────────────────────────────────────────

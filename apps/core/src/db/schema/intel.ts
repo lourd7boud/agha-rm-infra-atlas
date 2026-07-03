@@ -2,6 +2,7 @@
 import {
   boolean,
   date,
+  index,
   numeric,
   pgSchema,
   text,
@@ -98,5 +99,9 @@ export const competitorBids = intel.table(
       table.reference,
       table.competitorId,
     ),
+    // Reference-scoped lookup for the bounded inventory bid join — replaces the
+    // full `SELECT * FROM competitor_bid` (listAllBids) in the hot read path
+    // once the bid table grows (heading to 150-300k rows).
+    index('competitor_bid_reference_idx').on(table.reference),
   ],
 );

@@ -225,6 +225,13 @@
       "when": 1782913926800,
       "tag": "0031_intel_knowledge_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1783100000000,
+      "tag": "0032_scalable_read_indexes",
+      "breakpoints": true
     }
   ]
 }

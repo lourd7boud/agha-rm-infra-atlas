@@ -1,11 +1,7 @@
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import { daysUntil } from '../../lib/dates';
-import type { TenderRecord } from './tender.repository';
-import { readAiEnrichment, type AiEnrichment } from './ai-enrichment';
-import {
-  readDossierExtraction,
-  type DossierExtraction,
-} from './dossier-extraction';
+import { readAiEnrichment } from './ai-enrichment';
+import { readDossierExtraction } from './dossier-extraction';
 import {
   canonicalReferenceKey,
   type CompetitorBidRecord,
@@ -569,6 +565,47 @@ export interface InventoryPaging {
   offset?: number;
 }
 
+/**
+ * Light projection of a tender for the LIST path — every column the classify /
+ * facet / filter / sort passes need, WITHOUT the heavy `raw` JSONB. The
+ * repository ships this for the WHOLE catalogue (raw never crosses the wire for
+ * all rows); `raw` is loaded only for the visible page's full records and folded
+ * in during hydration. `TenderRecord` is structurally assignable to it, so
+ * callers holding full records reuse the same path.
+ */
+export interface InventoryRow {
+  id: string;
+  reference: string;
+  buyerName: string;
+  procedure: TenderProcedure;
+  objet: string;
+  location?: string;
+  estimationMad?: number;
+  cautionProvisoireMad?: number;
+  deadlineAt: Date;
+  sourceUrl?: string;
+  pipelineState: PipelineState;
+  createdAt: Date;
+  updatedAt: Date;
+  /** Present only when hydrated from the full record; omitted by the projected
+   *  list query so raw never crosses the wire for the whole catalogue. */
+  raw?: Record<string, unknown> | null;
+}
+
+/**
+ * Result of selectInventory (phase 1): catalogue-wide facets + the LIGHT
+ * classified page, before the heavy `raw` hydration. `pageIds` is the id list to
+ * load full records for (the projected path calls findByIds with it).
+ */
+export interface InventorySelection {
+  total: number;
+  filteredCount: number;
+  facets: InventoryFacets;
+  filters: InventoryFilters;
+  page: Classified[];
+  pageIds: string[];
+}
+
 /** Top N buyers by tender count are surfaced as facets; the rest stay searchable. */
 const BUYER_FACET_LIMIT = 30;
 /** Default and hard ceiling on rows returned per request (payload guard).
@@ -581,14 +618,15 @@ const DEFAULT_ITEM_LIMIT = 300;
 const MAX_ITEM_LIMIT = 5000;
 
 interface Classified {
-  record: TenderRecord;
+  record: InventoryRow;
   region: string;
   ville: string | null;
   location: string | null;
   category: TenderCategory;
+  /** Deterministic ouvrage label — the secteur FACET + the fallback for the
+   *  per-item displayed secteur. The AI free-text secteur (from raw) is applied
+   *  only when the row is hydrated for the visible page (see buildItem). */
   secteur: string;
-  ai: AiEnrichment | null;
-  dossier: DossierExtraction | null;
   lifecycle: LifecycleStatus;
   competitors: TenderCompetitor[];
   resultDate: Date | null;
@@ -628,18 +666,96 @@ function matches(c: Classified, filters: InventoryFilters): boolean {
 }
 
 /**
- * Builds the inventory: classifies every record, computes catalogue-wide
- * facet counts, then returns the filtered, deadline-sorted rows. Facets are
- * computed over the full catalogue so the filter UI never collapses to the
- * current selection.
+ * Hydrates ONE visible row into the rich InventoryItem — the only place the
+ * heavy `raw` JSONB (ai enrichment + dossier extraction) is parsed. Called for
+ * the paginated page only, never the whole catalogue.
  */
-export function buildInventory(
-  records: readonly TenderRecord[],
+function buildItem(c: Classified, now: Date): InventoryItem {
+  const { record } = c;
+  const ai = readAiEnrichment(record.raw);
+  const dossier = readDossierExtraction(record.raw);
+  return {
+    id: record.id,
+    reference: record.reference,
+    buyerName: record.buyerName,
+    procedure: record.procedure,
+    procedureLabel: PROCEDURE_LABELS[record.procedure],
+    objet: record.objet,
+    estimationMad: record.estimationMad,
+    cautionProvisoireMad: record.cautionProvisoireMad,
+    deadlineAt: record.deadlineAt,
+    publishedAt: record.createdAt,
+    pipelineState: record.pipelineState,
+    daysLeft: daysUntil(record.deadlineAt, now),
+    region: c.region,
+    ville: c.ville,
+    location: c.location,
+    category: c.category,
+    // AI secteur wins when enriched, else the deterministic ouvrage label.
+    secteur: ai?.secteur ?? c.secteur,
+    // Real lot count: prefer the dossier BPU breadth, then the AI lots, else parsed.
+    lotCount:
+      dossier && dossier.bpu.length > 0
+        ? dossier.bpu.length
+        : ai && ai.lots.length > 0
+          ? ai.lots.length
+          : inferLotCount(record.objet),
+    sourceUrl: record.sourceUrl,
+    aiResume: ai?.resume,
+    faq: ai?.faq,
+    lotsDetail: ai?.lots,
+    // Conditions: the real DCE figures win per-field, the AI guess fills gaps.
+    conditions: {
+      cautionDefinitivePct:
+        dossier?.cautionDefinitivePct ?? ai?.conditions?.cautionDefinitivePct ?? null,
+      retenueGarantiePct:
+        dossier?.retenueGarantiePct ?? ai?.conditions?.retenueGarantiePct ?? null,
+      delaiGarantieMois:
+        dossier?.delaiGarantieMois ?? ai?.conditions?.delaiGarantieMois ?? null,
+    },
+    reserveAuxPme: ai?.reserveAuxPme,
+    enrichedAt: ai?.enrichedAt,
+    // Real DCE extraction (datao-grade) when present.
+    bpu: dossier?.bpu,
+    qualifications: dossier?.qualifications,
+    chiffreAffairesMinMad: dossier?.chiffreAffairesMinMad ?? null,
+    delaiExecutionMois: dossier?.delaiExecutionMois ?? null,
+    budgetFromDossier: dossier?.estimationMad != null,
+    dossierConditions: dossier
+      ? {
+          cautionDefinitivePct: dossier.cautionDefinitivePct ?? null,
+          retenueGarantiePct: dossier.retenueGarantiePct ?? null,
+          delaiGarantieMois: dossier.delaiGarantieMois ?? null,
+        }
+      : undefined,
+    contact: dossier?.contact ?? undefined,
+    conditionsLegales: dossier?.conditionsLegales,
+    autres: dossier?.autres,
+    dossierExtractedAt: dossier?.extractedAt,
+    lifecycleStatus: c.lifecycle,
+    lifecycleLabel: LIFECYCLE_LABELS[c.lifecycle],
+    winner: c.competitors.find((x) => x.isWinner) ?? null,
+    competitors: c.competitors,
+    resultDate: c.resultDate ? c.resultDate.toISOString() : undefined,
+    updatedAt: record.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * Phase 1 of the list read: classify every row from base columns (NO raw),
+ * compute catalogue-wide facets, filter + sort, and select the visible page —
+ * returning the LIGHT classified page (not yet hydrated). Facets span the whole
+ * catalogue so the filter UI never collapses to the current selection. Split
+ * from hydration so the controller can feed a projected (raw-less) row set here
+ * and load raw only for the page (see hydrateInventory).
+ */
+export function selectInventory(
+  records: readonly InventoryRow[],
   filters: InventoryFilters,
   now: Date,
   paging: InventoryPaging = {},
   bids: readonly CompetitorBidRecord[] = [],
-): Inventory {
+): InventorySelection {
   const limit = Math.min(
     MAX_ITEM_LIMIT,
     Math.max(1, Math.floor(paging.limit ?? DEFAULT_ITEM_LIMIT)),
@@ -651,8 +767,10 @@ export function buildInventory(
   // the back-fill runs at scale).
   const bidsByRef = indexBidsByReference(bids);
 
+  // Classify EVERY row from base columns only — no `raw` JSONB parsing here.
+  // The heavy ai/dossier reads happen once per VISIBLE row in buildItem, so a
+  // 5 000-row catalogue no longer pays ~10 000 Zod parses per request.
   const classified: Classified[] = records.map((record) => {
-    const ai = readAiEnrichment(record.raw);
     // Reference-keyed lookup: competitor_bid.tender_id is sparsely populated
     // in practice, so the canonical reference is the join key that actually
     // links the harvested PV data to the tender row.
@@ -673,10 +791,9 @@ export function buildInventory(
       ville: inferVille(record.buyerName, record.objet, record.location),
       location: record.location ?? null,
       category: inferCategory(record.objet),
-      // AI secteur wins when enriched, else the deterministic ouvrage label.
-      secteur: ai?.secteur ?? segmentLabel(inferSegment(record.objet, record.buyerName)),
-      ai,
-      dossier: readDossierExtraction(record.raw),
+      // Deterministic ouvrage label for the facet; the AI secteur override is
+      // applied per visible row in buildItem.
+      secteur: segmentLabel(inferSegment(record.objet, record.buyerName)),
       lifecycle: lifecycleStatus(record.deadlineAt, competitors, now),
       competitors,
       resultDate: latestResult,
@@ -717,92 +834,69 @@ export function buildInventory(
     lifecycles,
   };
 
-  const matched: InventoryItem[] = classified
+  // Filter + sort on the light classified rows (base columns only). Publication
+  // DESC (newest first) matches datao's UX and ensures freshly detected tenders
+  // appear on page 1 even when their deadlines are weeks away; the previous
+  // deadline-ASC default hid every new posting behind the row cap because new
+  // postings have far-future deadlines. Reference breaks ties so order is stable
+  // regardless of the repository's row order.
+  const matched = classified
     .filter((c) => matches(c, filters))
-    .map(({ record, region, ville, location, category, secteur, ai, dossier, lifecycle, competitors, resultDate }) => ({
-      id: record.id,
-      reference: record.reference,
-      buyerName: record.buyerName,
-      procedure: record.procedure,
-      procedureLabel: PROCEDURE_LABELS[record.procedure],
-      objet: record.objet,
-      estimationMad: record.estimationMad,
-      cautionProvisoireMad: record.cautionProvisoireMad,
-      deadlineAt: record.deadlineAt,
-      publishedAt: record.createdAt,
-      pipelineState: record.pipelineState,
-      daysLeft: daysUntil(record.deadlineAt, now),
-      region,
-      ville,
-      location,
-      category,
-      secteur,
-      // Real lot count: prefer the dossier BPU breadth, then the AI lots, else parsed.
-      lotCount:
-        dossier && dossier.bpu.length > 0
-          ? dossier.bpu.length
-          : ai && ai.lots.length > 0
-            ? ai.lots.length
-            : inferLotCount(record.objet),
-      sourceUrl: record.sourceUrl,
-      aiResume: ai?.resume,
-      faq: ai?.faq,
-      lotsDetail: ai?.lots,
-      // Conditions: the real DCE figures win per-field, the AI guess fills gaps.
-      conditions: {
-        cautionDefinitivePct:
-          dossier?.cautionDefinitivePct ?? ai?.conditions?.cautionDefinitivePct ?? null,
-        retenueGarantiePct:
-          dossier?.retenueGarantiePct ?? ai?.conditions?.retenueGarantiePct ?? null,
-        delaiGarantieMois:
-          dossier?.delaiGarantieMois ?? ai?.conditions?.delaiGarantieMois ?? null,
-      },
-      reserveAuxPme: ai?.reserveAuxPme,
-      enrichedAt: ai?.enrichedAt,
-      // Real DCE extraction (datao-grade) when present.
-      bpu: dossier?.bpu,
-      qualifications: dossier?.qualifications,
-      chiffreAffairesMinMad: dossier?.chiffreAffairesMinMad ?? null,
-      delaiExecutionMois: dossier?.delaiExecutionMois ?? null,
-      budgetFromDossier: dossier?.estimationMad != null,
-      dossierConditions: dossier
-        ? {
-            cautionDefinitivePct: dossier.cautionDefinitivePct ?? null,
-            retenueGarantiePct: dossier.retenueGarantiePct ?? null,
-            delaiGarantieMois: dossier.delaiGarantieMois ?? null,
-          }
-        : undefined,
-      contact: dossier?.contact ?? undefined,
-      conditionsLegales: dossier?.conditionsLegales,
-      autres: dossier?.autres,
-      dossierExtractedAt: dossier?.extractedAt,
-      // ── Lifecycle + competitors (datao "Résultat de l'appel d'offre") ──
-      lifecycleStatus: lifecycle,
-      lifecycleLabel: LIFECYCLE_LABELS[lifecycle],
-      winner: competitors.find((c) => c.isWinner) ?? null,
-      competitors,
-      resultDate: resultDate ? resultDate.toISOString() : undefined,
-      updatedAt: record.updatedAt.toISOString(),
-    }))
-    // Publication DESC (newest first) — matches datao's UX and ensures freshly
-    // detected tenders appear on page 1 even when their deadlines are weeks
-    // away. The previous deadline-ASC default hid every new posting behind the
-    // 1000-row cap because new postings have far-future deadlines. Reference
-    // breaks ties so order is stable regardless of the repository's row order.
     .sort(
       (a, b) =>
-        b.publishedAt.getTime() - a.publishedAt.getTime() ||
-        a.reference.localeCompare(b.reference),
+        b.record.createdAt.getTime() - a.record.createdAt.getTime() ||
+        a.record.reference.localeCompare(b.record.reference),
     );
 
-  const items = matched.slice(offset, offset + limit);
-
+  const page = matched.slice(offset, offset + limit);
   return {
     total: records.length,
     filteredCount: matched.length,
-    returnedCount: items.length,
     facets,
-    items,
     filters,
+    page,
+    pageIds: page.map((c) => c.record.id),
   };
+}
+
+/**
+ * Phase 2 of the list read: hydrate the selected page into rich InventoryItems,
+ * reading the heavy `raw` JSONB ONLY for those rows. `records` supplies the FULL
+ * records (with raw) for the page — the same objects for callers that already
+ * hold them (buildInventory), or a `findByIds` result for the projected path.
+ * Rows missing from `records` degrade to no enrichment (raw treated as absent).
+ */
+export function hydrateInventory(
+  selection: InventorySelection,
+  records: readonly InventoryRow[],
+  now: Date,
+): Inventory {
+  const byId = new Map(records.map((record) => [record.id, record] as const));
+  const items = selection.page.map((c) =>
+    buildItem({ ...c, record: byId.get(c.record.id) ?? c.record }, now),
+  );
+  return {
+    total: selection.total,
+    filteredCount: selection.filteredCount,
+    returnedCount: items.length,
+    facets: selection.facets,
+    items,
+    filters: selection.filters,
+  };
+}
+
+/**
+ * Convenience for callers that already hold the FULL records (with raw): the
+ * spec, the assistant, and the `?since=` delta path. Selects then hydrates from
+ * the same records; the heavy `raw` parse still happens only for the page.
+ */
+export function buildInventory(
+  records: readonly InventoryRow[],
+  filters: InventoryFilters,
+  now: Date,
+  paging: InventoryPaging = {},
+  bids: readonly CompetitorBidRecord[] = [],
+): Inventory {
+  const selection = selectInventory(records, filters, now, paging, bids);
+  return hydrateInventory(selection, records, now);
 }

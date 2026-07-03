@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { unionAll } from 'drizzle-orm/pg-core';
 import type { Db } from '../../db/client';
 import { depots, materials, stockMovements } from '../../db/schema';
 import {
@@ -383,16 +384,60 @@ export class DrizzleStockRepository implements StockRepository {
   }
 
   async balances(): Promise<DepotBalance[]> {
-    // O(n) by design: every (depot, material) balance is folded from the full
-    // append-only movement log rather than a materialized running total, so a
-    // late-arriving back-dated event self-corrects without a rebuild. For this
-    // phase the log stays small (single company, a handful of depots), so the
-    // full scan is acceptable. If the event count grows large, replace this with
-    // an in-database aggregate (GROUP BY depot/material with signed quantity) or
-    // a periodically-compacted balance snapshot — the fold lives in stock.domain
-    // (computeBalances), so the SQL can change without touching the contract.
-    const rows = await this.db.select().from(stockMovements);
-    return computeBalances(rows.map(toMovementRecord).map(toMovementEntry));
+    // In-DB aggregate: SUM the signed movement quantities per (depot, material)
+    // in Postgres instead of shipping the whole append-only log to JS and folding
+    // it there. Only the O(depot×material) aggregate rows cross the wire, not
+    // O(movements), so this scales as the event log grows. Signing mirrors
+    // stock.domain computeBalances (SCHEMA_SPEC): +quantity at to_depot for
+    // initial/purchase/adjustment/transfer, -quantity at from_depot for
+    // consumption/transfer; a transfer contributes to BOTH sides (the two arms of
+    // the UNION). The InMemory repo keeps the computeBalances fold, and its spec
+    // pins the shared contract, so the two paths can't drift.
+    const inflow = this.db
+      .select({
+        depotId: sql<string>`${stockMovements.toDepotId}`.as('depot_id'),
+        materialId: stockMovements.materialId,
+        signed: sql<string>`${stockMovements.quantity}`.as('signed'),
+      })
+      .from(stockMovements)
+      .where(
+        and(
+          isNotNull(stockMovements.toDepotId),
+          inArray(stockMovements.kind, [
+            'initial',
+            'purchase',
+            'adjustment',
+            'transfer',
+          ]),
+        ),
+      );
+    const outflow = this.db
+      .select({
+        depotId: sql<string>`${stockMovements.fromDepotId}`.as('depot_id'),
+        materialId: stockMovements.materialId,
+        signed: sql<string>`-${stockMovements.quantity}`.as('signed'),
+      })
+      .from(stockMovements)
+      .where(
+        and(
+          isNotNull(stockMovements.fromDepotId),
+          inArray(stockMovements.kind, ['consumption', 'transfer']),
+        ),
+      );
+    const moves = unionAll(inflow, outflow).as('moves');
+    const rows = await this.db
+      .select({
+        depotId: moves.depotId,
+        materialId: moves.materialId,
+        quantity: sql<string>`sum(${moves.signed})`,
+      })
+      .from(moves)
+      .groupBy(moves.depotId, moves.materialId);
+    return rows.map((row) => ({
+      depotId: row.depotId,
+      materialId: row.materialId,
+      quantity: Number(row.quantity),
+    }));
   }
 
   async projectConsumption(

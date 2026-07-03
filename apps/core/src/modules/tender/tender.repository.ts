@@ -4,6 +4,7 @@ import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import type { Db } from '../../db/client';
 import { tenders } from '../../db/schema';
 import type { QualificationResult } from './qualifier.domain';
+import type { InventoryRow } from './inventory.domain';
 
 export interface CreateTender {
   reference: string;
@@ -99,6 +100,12 @@ export interface TenderRepository {
    */
   findByIds(ids: string[]): Promise<TenderRecord[]>;
   /**
+   * Projected list read for the inventory/list path — every column the classify/
+   * facet/filter/sort passes need, WITHOUT the heavy `raw` jsonb, so raw never
+   * crosses the wire for the whole catalogue (loaded per-page via findByIds).
+   */
+  findAllInventoryRows(): Promise<InventoryRow[]>;
+  /**
    * Fills sourceUrl on an already-stored tender (matched by reference+buyer)
    * only when it is currently NULL — never overwrites a known value. Returns
    * whether a row was updated. Lets a re-crawl heal the legacy rows that were
@@ -168,6 +175,24 @@ export class InMemoryTenderRepository implements TenderRepository {
 
   async findAll(): Promise<TenderRecord[]> {
     return [...this.records];
+  }
+
+  async findAllInventoryRows(): Promise<InventoryRow[]> {
+    return this.records.map((r) => ({
+      id: r.id,
+      reference: r.reference,
+      buyerName: r.buyerName,
+      procedure: r.procedure,
+      objet: r.objet,
+      location: r.location,
+      estimationMad: r.estimationMad,
+      cautionProvisoireMad: r.cautionProvisoireMad,
+      deadlineAt: r.deadlineAt,
+      sourceUrl: r.sourceUrl,
+      pipelineState: r.pipelineState,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
   }
 
   async findAllForKnowledge(): Promise<KnowledgeTenderRow[]> {
@@ -376,6 +401,45 @@ export class DrizzleTenderRepository implements TenderRepository {
       .from(tenders)
       .orderBy(asc(tenders.deadlineAt));
     return rows.map(toRecord);
+  }
+
+  async findAllInventoryRows(): Promise<InventoryRow[]> {
+    // Projected: NO raw jsonb / tsvectors / qualification — raw never crosses the
+    // wire for the whole catalogue (loaded per-page via findByIds). Unordered:
+    // selectInventory sorts by publication in JS.
+    const rows = await this.db
+      .select({
+        id: tenders.id,
+        reference: tenders.reference,
+        buyerName: tenders.buyerName,
+        procedure: tenders.procedure,
+        objet: tenders.objet,
+        location: tenders.location,
+        estimationMad: tenders.estimationMad,
+        cautionProvisoireMad: tenders.cautionProvisoireMad,
+        deadlineAt: tenders.deadlineAt,
+        sourceUrl: tenders.sourceUrl,
+        pipelineState: tenders.pipelineState,
+        createdAt: tenders.createdAt,
+        updatedAt: tenders.updatedAt,
+      })
+      .from(tenders);
+    return rows.map((row) => ({
+      id: row.id,
+      reference: row.reference,
+      buyerName: row.buyerName,
+      procedure: row.procedure as TenderProcedure,
+      objet: row.objet,
+      location: row.location ?? undefined,
+      estimationMad: row.estimationMad != null ? Number(row.estimationMad) : undefined,
+      cautionProvisoireMad:
+        row.cautionProvisoireMad != null ? Number(row.cautionProvisoireMad) : undefined,
+      deadlineAt: row.deadlineAt,
+      sourceUrl: row.sourceUrl ?? undefined,
+      pipelineState: row.pipelineState as PipelineState,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
   }
 
   async findAllForKnowledge(): Promise<KnowledgeTenderRow[]> {

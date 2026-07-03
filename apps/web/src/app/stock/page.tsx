@@ -105,13 +105,36 @@ export default async function StockPage({
 }) {
   const { error: actionError, code: actionCode } = await searchParams;
   const errorMessage = actionErrorMessage(actionError, actionCode);
-  const [materials, depots, balances, movements, projects] = await Promise.all([
-    apiGet<MaterialRecord[]>('/stock/materials'),
-    apiGet<DepotRecord[]>('/stock/depots'),
-    apiGet<DepotBalance[]>('/stock/balances'),
-    apiGet<StockMovementRecord[]>('/stock/movements'),
-    apiGet<ProjectSummary[]>('/project/projects'),
+  // Each read degrades independently: one slow/failing endpoint on the shared DB
+  // must NEVER white-screen the whole page (it did — the naked Next.js digest).
+  // Redirect errors (missing session → /login) MUST still propagate untouched.
+  const guard = async <T,>(promise: Promise<T>): Promise<T | null> => {
+    try {
+      return await promise;
+    } catch (error) {
+      if (isRedirectError(error)) throw error;
+      console.error('[stock] read failed, degrading section', error);
+      return null;
+    }
+  };
+  const [materialsR, depotsR, balancesR, movementsR, projectsR] = await Promise.all([
+    guard(apiGet<MaterialRecord[]>('/stock/materials')),
+    guard(apiGet<DepotRecord[]>('/stock/depots')),
+    guard(apiGet<DepotBalance[]>('/stock/balances')),
+    guard(apiGet<StockMovementRecord[]>('/stock/movements')),
+    guard(apiGet<ProjectSummary[]>('/project/projects')),
   ]);
+  const stockDegraded =
+    materialsR === null ||
+    depotsR === null ||
+    balancesR === null ||
+    movementsR === null ||
+    projectsR === null;
+  const materials = materialsR ?? [];
+  const depots = depotsR ?? [];
+  const balances = balancesR ?? [];
+  const movements = movementsR ?? [];
+  const projects = projectsR ?? [];
 
   const depotById = new Map(depots.map((depot) => [depot.id, depot]));
   const materialById = new Map(
@@ -303,6 +326,17 @@ export default async function StockPage({
           className="mb-6 rounded-xl border border-clay-soft bg-clay-soft/20 px-5 py-4 text-sm font-medium text-clay"
         >
           {errorMessage}
+        </div>
+      )}
+
+      {stockDegraded && (
+        <div
+          role="alert"
+          className="mb-6 rounded-xl border border-clay-soft bg-clay-soft/20 px-5 py-4 text-sm font-medium text-clay"
+        >
+          Certaines données du stock n’ont pas pu être chargées (serveur
+          momentanément lent). L’affichage est partiel — réessayez dans quelques
+          instants.
         </div>
       )}
 

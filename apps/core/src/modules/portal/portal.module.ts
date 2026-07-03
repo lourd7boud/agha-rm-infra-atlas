@@ -130,6 +130,13 @@ export class PortalModule implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    // Only the dedicated worker container (WATCH_WORKER_ENABLED=true) runs the
+    // BullMQ consumer + scheduler; the interactive API process exits early so
+    // portal harvests never contend with SSR on its event loop / DB pool.
+    if (process.env.WATCH_WORKER_ENABLED !== 'true') {
+      this.logger.log('Portal worker DISABLED — this is an API-only process');
+      return;
+    }
     this.worker = new Worker(QUEUE_NAME, async () => this.harvestBoth(), {
       connection: redisConnection(),
     });

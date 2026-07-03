@@ -25,6 +25,7 @@ import {
   type ProjectRecord,
   type ProjectRepository,
   type ProjectStatus,
+  type SituationRecord,
   type SituationStatus,
 } from './project.repository';
 import {
@@ -129,8 +130,23 @@ export class ProjectController {
   @Roles('travaux', 'direction', 'finance', 'marches', 'admin-si')
   @Get('projects')
   async list() {
-    const records = await this.repository.findAll();
-    return Promise.all(records.map((record) => this.present(record)));
+    // One query for the whole portfolio instead of 1 (findAll) + N
+    // (listSituations per project). The per-project fan-out made this endpoint's
+    // latency grow with project count — it was the /stock Promise.all member most
+    // likely to blow the read deadline on the shared DB and crash that page.
+    const [records, allSituations] = await Promise.all([
+      this.repository.findAll(),
+      this.repository.listAllSituations(),
+    ]);
+    const byProject = new Map<string, SituationRecord[]>();
+    for (const situation of allSituations) {
+      const bucket = byProject.get(situation.projectId);
+      if (bucket) bucket.push(situation);
+      else byProject.set(situation.projectId, [situation]);
+    }
+    return records.map((record) =>
+      this.financialPosition(record, byProject.get(record.id) ?? []),
+    );
   }
 
   /**
@@ -333,9 +349,20 @@ export class ProjectController {
     return record;
   }
 
-  /** Financial position: cumulés, retenue, net payé, avancement. */
+  /** Financial position: cumulés, retenue, net payé, avancement. Fetches the
+   *  project's situations then delegates to the pure rollup (detail path). */
   private async present(record: ProjectRecord) {
     const situations = await this.repository.listSituations(record.id);
+    return this.financialPosition(record, situations);
+  }
+
+  /** Pure financial rollup from a project + its situations (no I/O) — shared by
+   *  the batched portfolio list and the single-project detail view, so the two
+   *  paths can never drift. */
+  private financialPosition(
+    record: ProjectRecord,
+    situations: readonly SituationRecord[],
+  ) {
     const last = situations[situations.length - 1];
     return {
       ...record,

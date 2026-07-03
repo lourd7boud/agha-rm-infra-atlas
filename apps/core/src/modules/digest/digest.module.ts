@@ -121,6 +121,13 @@ export class DigestModule implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    // Only the dedicated worker container (WATCH_WORKER_ENABLED=true) runs the
+    // BullMQ consumer + scheduler; the interactive API process exits early so the
+    // digest never contends with SSR on its event loop / DB pool.
+    if (process.env.WATCH_WORKER_ENABLED !== 'true') {
+      this.logger.log('Digest worker DISABLED — this is an API-only process');
+      return;
+    }
     // The morning brief is an autonomous agent: it fires on DIGEST_CRON
     // with no human trigger, exactly like the Sentinel.
     const cron = process.env.DIGEST_CRON;
