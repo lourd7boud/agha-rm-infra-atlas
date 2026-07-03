@@ -67,12 +67,7 @@ const chatBodySchema = z.object({
     .max(20)
     .optional(),
 });
-import {
-  selectInventory,
-  buildLightItem,
-  type InventoryRow,
-  type InventoryFilters,
-} from './inventory.domain';
+import type { InventoryRow, InventoryFilters } from './inventory.domain';
 import {
   INTEL_REPOSITORY,
   type CompetitorBidRecord,
@@ -619,7 +614,7 @@ export class TenderController {
     // single-flighted, 2 s-TTL cache is fresh enough for a 30 s poll while
     // coalescing simultaneous requests into one compute.
     if (filters.since) {
-      const { rows, bids } = await freshSinceLightCache.getOrCompute(
+      const { bids } = await freshSinceLightCache.getOrCompute(
         'all',
         FRESH_SINCE_CACHE_TTL_MS,
         async () => {
@@ -630,16 +625,16 @@ export class TenderController {
           return { rows, bids };
         },
       );
-      return this.assembleInventory(rows, bids, filters, { limit, offset });
+      return this.assembleInventory(bids, filters, { limit, offset });
     }
     const key = JSON.stringify({ ...filters, limit, offset });
     return inventoryCache.getOrCompute(key, INVENTORY_CACHE_TTL_MS, async () => {
-      // Projected list rows (no raw) → facets + page selection; raw is loaded
-      // only for the page. The bid scan joined to every tender by canonical
-      // reference powers the lifecycle status (en_cours / cloture / attribue /
-      // infructueux) and the "Résultat de l'appel d'offre" surface in the drawer.
-      const { rows, bids } = await this.loadInventoryLight();
-      return this.assembleInventory(rows, bids, filters, { limit, offset });
+      // P2: the page/facets/counts are computed IN Postgres (findInventoryPage);
+      // only the tiny bid scan is loaded here to drive the read-time lifecycle
+      // status (en_cours / cloture / attribue / infructueux) and the "Résultat de
+      // l'appel d'offre" surface — it is joined to the page by canonical reference.
+      const { bids } = await this.loadInventoryLight();
+      return this.assembleInventory(bids, filters, { limit, offset });
     });
   }
 
@@ -876,26 +871,16 @@ export class TenderController {
     );
   }
 
-  /** select (facets + page over light rows) → build LIGHT items directly from the
-   *  projected page. No per-row `raw` load or Zod parse: the light-enrichment
-   *  fields (hasBpu / aiResume / aiSecteur / budgetFromDossier …) are projected
-   *  in SQL, and the heavy dossier arrays are fetched by the detail drawer via
-   *  GET /tender/tenders/:id. Drops the list payload from ~14 MB to ~1-2 MB. */
+  /** P2: the filtering, sort, pagination and column facets run in Postgres
+   *  (findInventoryPage) so per-request cost is O(page), not O(catalogue). The bid
+   *  set (tiny) is passed through for the read-time lifecycle status/facet, which
+   *  is not a stored column. Response shape is byte-for-byte the same as the old
+   *  selectInventory + buildLightItem path. */
   private assembleInventory(
-    rows: readonly InventoryRow[],
     bids: readonly CompetitorBidRecord[],
     filters: InventoryFilters,
     paging: { limit?: number; offset?: number },
   ) {
-    const now = new Date();
-    const selection = selectInventory(rows, filters, now, paging, bids);
-    return {
-      total: selection.total,
-      filteredCount: selection.filteredCount,
-      returnedCount: selection.page.length,
-      facets: selection.facets,
-      items: selection.page.map((c) => buildLightItem(c, now)),
-      filters: selection.filters,
-    };
+    return this.repository.findInventoryPage(filters, paging, new Date(), bids);
   }
 }

@@ -53,6 +53,79 @@ function indexBidsByReference(
   return out;
 }
 
+/** The read-time consultation state a tender derives from its deadline + bids. */
+export interface ResolvedBidState {
+  competitors: TenderCompetitor[];
+  lifecycle: LifecycleStatus;
+  resultDate: Date | null;
+}
+
+/**
+ * Single source of truth for the read-time lifecycle/competitor/result fold,
+ * reused by BOTH the JS pipeline (selectInventory) and the DB-side page
+ * (findInventoryPage) so the lifecycle status/facet can never drift between the
+ * two. Build it once from the tiny bid set, then resolve per reference+deadline.
+ */
+export class BidResolver {
+  private readonly byRef: Map<string, CompetitorBidRecord[]>;
+
+  constructor(bids: readonly CompetitorBidRecord[]) {
+    this.byRef = indexBidsByReference(bids);
+  }
+
+  resolve(reference: string, deadlineAt: Date, now: Date): ResolvedBidState {
+    const matched = this.byRef.get(canonicalReferenceKey(reference)) ?? [];
+    const competitors: TenderCompetitor[] = matched.map((b) => ({
+      bidderName: b.bidderName,
+      amountMad: b.amountMad ?? null,
+      isWinner: b.isWinner,
+    }));
+    const resultDate =
+      matched
+        .map((b) => b.resultDate)
+        .filter((d): d is Date => d instanceof Date)
+        .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+    return {
+      competitors,
+      lifecycle: lifecycleStatus(deadlineAt, competitors, now),
+      resultDate,
+    };
+  }
+}
+
+/** Lifecycle order used for both the facet and the datao spine (En cours →
+ *  Clôturé → Attribué → Infructueux). */
+const LIFECYCLE_FACET_ORDER: LifecycleStatus[] = [
+  'en_cours',
+  'cloture',
+  'attribue',
+  'infructueux',
+];
+
+/**
+ * Lifecycle facet over an arbitrary set of (reference, deadlineAt) rows — the
+ * DB-side page feeds a minimal whole-catalogue projection here so the counts
+ * stay catalogue-wide without recomputing regex/Zod classification. Empty
+ * buckets are dropped, matching the JS facet.
+ */
+export function lifecycleFacetForRows(
+  rows: ReadonlyArray<{ reference: string; deadlineAt: Date }>,
+  bids: readonly CompetitorBidRecord[],
+  now: Date,
+): InventoryFacet[] {
+  const resolver = new BidResolver(bids);
+  const counts = new Map<LifecycleStatus, number>();
+  for (const row of rows) {
+    const { lifecycle } = resolver.resolve(row.reference, row.deadlineAt, now);
+    counts.set(lifecycle, (counts.get(lifecycle) ?? 0) + 1);
+  }
+  return LIFECYCLE_FACET_ORDER.map((key) => ({
+    key,
+    label: LIFECYCLE_LABELS[key],
+    count: counts.get(key) ?? 0,
+  })).filter((facet) => facet.count > 0);
+}
+
 /**
  * Tender Inventory (جرد) — turns the raw detected-tender stream into a
  * navigable catalogue. Classification is deterministic and derived from
@@ -622,8 +695,9 @@ export interface InventoryRow {
   // ── Light enrichment, projected from `raw` INSIDE the SQL (Drizzle) or read
   //    via readAiEnrichment/readDossierExtraction (InMemory). These let the LIST
   //    path build display items WITHOUT parsing the heavy `raw` per row. ──
-  /** Whether the dossier extraction carries at least one BPU line item. */
-  hasBpu?: boolean;
+  /** Whether the dossier extraction carries at least one BPU line item. Null on a
+   *  full record whose has_bpu column is not yet backfilled. */
+  hasBpu?: boolean | null;
   /** Number of BPU line items in the dossier extraction (0 when none). */
   bpuCount?: number;
   /** AI-enrichment résumé line, when the tender was enriched. */
@@ -634,6 +708,19 @@ export interface InventoryRow {
   aiEnrichedAt?: string;
   /** true when the estimation came from the real DCE dossier (not the listing). */
   budgetFromDossier?: boolean;
+  // ── Denormalized classification (migration 0033), projected straight from the
+  //    stored columns. Named to match TenderRecord so a full record stays
+  //    structurally assignable to InventoryRow. NULL/undefined until the write
+  //    path / backfill populates them; the classify pass (classifyRow) falls back
+  //    to on-the-fly inference PER FIELD when a value is null, so the read stays
+  //    correct before the backfill has run. secteur is the French LABEL
+  //    (segmentLabel), category is Travaux/Fournitures/Services, region is the
+  //    region name or UNLOCATED, lotCount is the parsed count (≥1). ──
+  region?: string | null;
+  ville?: string | null;
+  category?: string | null;
+  secteur?: string | null;
+  lotCount?: number | null;
   /** Present only when hydrated from the full record; omitted by the projected
    *  list query so raw never crosses the wire for the whole catalogue. */
   raw?: Record<string, unknown> | null;
@@ -653,16 +740,26 @@ export interface InventorySelection {
   pageIds: string[];
 }
 
-/** Top N buyers by tender count are surfaced as facets; the rest stay searchable. */
-const BUYER_FACET_LIMIT = 30;
+/** Top N buyers by tender count are surfaced as facets; the rest stay searchable.
+ *  Exported so the DB-side page (findInventoryPage) caps the buyers GROUP BY at
+ *  the SAME limit as the JS tallyTop. */
+export const BUYER_FACET_LIMIT = 30;
 /** Default and hard ceiling on rows returned per request (payload guard).
  *  MAX_ITEM_LIMIT must stay in sync with inventoryQuerySchema.limit's .max()
  *  in tender.module.ts — they're two halves of the same guard. Current
  *  catalogue is ~4264 active rows (datao parity), 5000 leaves ~700 head-room.
  *  When live count approaches MAX_ITEM_LIMIT a WARN is logged from the route
- *  handler so we notice before users see a silent truncation. */
-const DEFAULT_ITEM_LIMIT = 300;
-const MAX_ITEM_LIMIT = 5000;
+ *  handler so we notice before users see a silent truncation. Exported so the
+ *  DB-side page clamps its LIMIT/OFFSET identically to the JS slice. */
+export const DEFAULT_ITEM_LIMIT = 300;
+export const MAX_ITEM_LIMIT = 5000;
+
+/** Clamps a requested page size to [1, MAX_ITEM_LIMIT], defaulting to
+ *  DEFAULT_ITEM_LIMIT — the SAME clamp selectInventory applies, so the DB LIMIT
+ *  and the JS slice agree. */
+export function clampInventoryLimit(limit: number | undefined): number {
+  return Math.min(MAX_ITEM_LIMIT, Math.max(1, Math.floor(limit ?? DEFAULT_ITEM_LIMIT)));
+}
 
 interface Classified {
   record: InventoryRow;
@@ -677,6 +774,72 @@ interface Classified {
   lifecycle: LifecycleStatus;
   competitors: TenderCompetitor[];
   resultDate: Date | null;
+}
+
+/**
+ * The deterministic classification of a tender — the values persisted to the
+ * denormalized columns (migration 0033) at WRITE time and read back on the hot
+ * list path. secteur is the French LABEL (segmentLabel), matching the facet /
+ * filter semantics exactly; region is the region name or UNLOCATED; ville is
+ * null when no city matches; category is Travaux/Fournitures/Services; lotCount
+ * is the best-effort parse (≥1). Excludes hasBpu (that depends on the raw
+ * dossier, recomputed on extraction — see classifyHasBpu).
+ */
+export interface StorageClassification {
+  region: string;
+  ville: string | null;
+  category: TenderCategory;
+  secteur: string;
+  lotCount: number;
+}
+
+/**
+ * Computes the deterministic classification from the listing fields, for the
+ * WRITE path (create / heal). Pure + DRY: the single source of truth for what
+ * each classification column holds. Mirrors exactly what selectInventory used to
+ * compute inline, so denormalizing changes no observable value.
+ */
+export function classifyForStorage(input: {
+  buyerName: string;
+  objet: string;
+  location?: string | null;
+}): StorageClassification {
+  const objet = input.objet;
+  const location = input.location ?? '';
+  return {
+    region: inferRegion(input.buyerName, objet, location) ?? UNLOCATED,
+    ville: inferVille(input.buyerName, objet, location),
+    category: inferCategory(objet),
+    secteur: segmentLabel(inferSegment(objet, input.buyerName)),
+    lotCount: inferLotCount(objet),
+  };
+}
+
+/**
+ * Per-row classification for the READ path: prefers the denormalized columns
+ * (populated by the write path / backfill) and falls back to on-the-fly
+ * inference PER FIELD when a column is null — so the list stays correct before
+ * the backfill has run and can never show a wrong bucket for a freshly-migrated
+ * row. Each field falls back independently (a null region does not force a
+ * re-inference of ville, and vice-versa).
+ */
+function classifyRow(record: InventoryRow): StorageClassification {
+  const region =
+    record.region ??
+    (inferRegion(record.buyerName, record.objet, record.location) ?? UNLOCATED);
+  const ville =
+    record.ville != null
+      ? record.ville
+      : inferVille(record.buyerName, record.objet, record.location);
+  const category = (record.category ??
+    inferCategory(record.objet)) as TenderCategory;
+  const secteur =
+    record.secteur ?? segmentLabel(inferSegment(record.objet, record.buyerName));
+  const lotCount =
+    record.lotCount != null && record.lotCount > 0
+      ? record.lotCount
+      : inferLotCount(record.objet);
+  return { region, ville, category, secteur, lotCount };
 }
 
 function tallyTop(
@@ -815,13 +978,16 @@ function buildItem(c: Classified, now: Date): InventoryItem {
     category: c.category,
     // AI secteur wins when enriched, else the deterministic ouvrage label.
     secteur: ai?.secteur ?? c.secteur,
-    // Real lot count: prefer the dossier BPU breadth, then the AI lots, else parsed.
+    // Real lot count: prefer the dossier BPU breadth, then the AI lots, then the
+    // stored (denormalized) lot count, else parse the objet on the fly.
     lotCount:
       dossier && dossier.bpu.length > 0
         ? dossier.bpu.length
         : ai && ai.lots.length > 0
           ? ai.lots.length
-          : inferLotCount(record.objet),
+          : record.lotCount && record.lotCount > 0
+            ? record.lotCount
+            : inferLotCount(record.objet),
     sourceUrl: record.sourceUrl,
     aiResume: ai?.resume,
     faq: ai?.faq,
@@ -893,11 +1059,14 @@ export function buildLightItem(c: Classified, now: Date): InventoryItem {
     category: c.category,
     // AI secteur (projected) wins when enriched, else the deterministic label.
     secteur: record.aiSecteur ?? c.secteur,
-    // Real lot count: prefer the projected dossier BPU breadth, else parsed.
+    // Real lot count: prefer the projected dossier BPU breadth, then the stored
+    // (denormalized) lot count, else parse the objet on the fly.
     lotCount:
       record.bpuCount && record.bpuCount > 0
         ? record.bpuCount
-        : inferLotCount(record.objet),
+        : record.lotCount && record.lotCount > 0
+          ? record.lotCount
+          : inferLotCount(record.objet),
     sourceUrl: record.sourceUrl,
     aiResume: record.aiResume,
     hasBpu: record.hasBpu ?? false,
@@ -931,47 +1100,36 @@ export function selectInventory(
   paging: InventoryPaging = {},
   bids: readonly CompetitorBidRecord[] = [],
 ): InventorySelection {
-  const limit = Math.min(
-    MAX_ITEM_LIMIT,
-    Math.max(1, Math.floor(paging.limit ?? DEFAULT_ITEM_LIMIT)),
-  );
+  const limit = clampInventoryLimit(paging.limit);
   const offset = Math.max(0, Math.floor(paging.offset ?? 0));
 
-  // Index ALL bids once by canonical reference key, then attach to each tender
-  // by tender_id OR reference fallback (tender_id is sparsely populated until
-  // the back-fill runs at scale).
-  const bidsByRef = indexBidsByReference(bids);
+  // Index ALL bids once by canonical reference key (BidResolver), then attach to
+  // each tender by reference fallback (tender_id is sparsely populated until the
+  // back-fill runs at scale). Shared with the DB-side page so lifecycle can't drift.
+  const resolver = new BidResolver(bids);
 
   // Classify EVERY row from base columns only — no `raw` JSONB parsing here.
   // The heavy ai/dossier reads happen once per VISIBLE row in buildItem, so a
   // 5 000-row catalogue no longer pays ~10 000 Zod parses per request.
   const classified: Classified[] = records.map((record) => {
-    // Reference-keyed lookup: competitor_bid.tender_id is sparsely populated
-    // in practice, so the canonical reference is the join key that actually
-    // links the harvested PV data to the tender row.
-    const matchedBids = bidsByRef.get(canonicalReferenceKey(record.reference)) ?? [];
-    const competitors: TenderCompetitor[] = matchedBids.map((b) => ({
-      bidderName: b.bidderName,
-      amountMad: b.amountMad ?? null,
-      isWinner: b.isWinner,
-    }));
-    const latestResult = matchedBids
-      .map((b) => b.resultDate)
-      .filter((d): d is Date => d instanceof Date)
-      .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
-
+    const { competitors, lifecycle, resultDate } = resolver.resolve(
+      record.reference,
+      record.deadlineAt,
+      now,
+    );
+    const classification = classifyRow(record);
     return {
       record,
-      region: inferRegion(record.buyerName, record.objet, record.location) ?? UNLOCATED,
-      ville: inferVille(record.buyerName, record.objet, record.location),
+      region: classification.region,
+      ville: classification.ville,
       location: record.location ?? null,
-      category: inferCategory(record.objet),
+      category: classification.category,
       // Deterministic ouvrage label for the facet; the AI secteur override is
       // applied per visible row in buildItem.
-      secteur: segmentLabel(inferSegment(record.objet, record.buyerName)),
-      lifecycle: lifecycleStatus(record.deadlineAt, competitors, now),
+      secteur: classification.secteur,
+      lifecycle,
       competitors,
-      resultDate: latestResult,
+      resultDate,
     };
   });
 
@@ -986,18 +1144,13 @@ export function selectInventory(
     .filter((facet) => facet.count > 0);
 
   // Lifecycle facet — surfaced in the order datao uses (En cours → Clôturé →
-  // Attribué → Infructueux), with empty buckets dropped.
-  const LIFECYCLE_ORDER: LifecycleStatus[] = [
-    'en_cours',
-    'cloture',
-    'attribue',
-    'infructueux',
-  ];
-  const lifecycles: InventoryFacet[] = LIFECYCLE_ORDER.map((key) => ({
-    key,
-    label: LIFECYCLE_LABELS[key],
-    count: classified.filter((c) => c.lifecycle === key).length,
-  })).filter((facet) => facet.count > 0);
+  // Attribué → Infructueux), with empty buckets dropped. Reuses the shared fold
+  // so the JS and DB-side page counts stay identical.
+  const lifecycles = lifecycleFacetForRows(
+    classified.map((c) => c.record),
+    bids,
+    now,
+  );
 
   const facets: InventoryFacets = {
     procedures,

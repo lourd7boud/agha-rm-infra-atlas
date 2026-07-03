@@ -66,6 +66,21 @@ export const tenders = tender.table('tender', {
   rectified: boolean('rectified').notNull().default(false),
   milestonesCount: integer('milestones_count'),
   attributedAt: timestamp('attributed_at', { withTimezone: true }),
+  // Denormalized classification (migration 0033_tender_classification_columns.sql).
+  // Written at WRITE time by DrizzleTenderRepository.classifyForStorage so the
+  // /tender/inventory read can filter/facet/paginate in the DB (O(page)) instead
+  // of classifying the whole catalogue in JS per request (O(catalogue)). All
+  // NULLABLE: safe to deploy before scripts/backfill-classification.ts runs — the
+  // read path (findInventoryPage / buildLightItem) falls back to on-the-fly
+  // inference for any row still NULL. secteur stores the French LABEL
+  // (segmentLabel(...)), category Travaux/Fournitures/Services, region the region
+  // name or 'Non localisé', has_bpu mirrors dossierExtraction.bpu length > 0.
+  region: text('region'),
+  ville: text('ville'),
+  category: text('category'),
+  secteur: text('secteur'),
+  lotCount: integer('lot_count'),
+  hasBpu: boolean('has_bpu'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -90,6 +105,12 @@ export const tenders = tender.table('tender', {
   index('tender_pipeline_state_idx').on(table.pipelineState),
   index('tender_buyer_name_idx').on(table.buyerName),
   index('tender_reference_buyer_idx').on(table.reference, table.buyerName),
+  // P2 classification-column indexes (migration 0033) — back the DB-side
+  // inventory facet filters (region / category / secteur) and the bpuOnly toggle.
+  index('tender_region_idx').on(table.region),
+  index('tender_category_idx').on(table.category),
+  index('tender_secteur_idx').on(table.secteur),
+  index('tender_has_bpu_idx').on(table.hasBpu),
 ]);
 
 // ── Phase 0 — Socle de vérité ────────────────────────────────────────────────

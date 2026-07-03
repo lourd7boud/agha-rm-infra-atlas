@@ -1,10 +1,41 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import type { Db } from '../../db/client';
 import { tenders } from '../../db/schema';
 import type { QualificationResult } from './qualifier.domain';
-import type { InventoryRow } from './inventory.domain';
+import {
+  BidResolver,
+  buildInventory,
+  buildLightItem,
+  BUYER_FACET_LIMIT,
+  classifyForStorage,
+  clampInventoryLimit,
+  lifecycleFacetForRows,
+  PROCEDURE_LABELS,
+  type Inventory,
+  type InventoryFacet,
+  type InventoryFacets,
+  type InventoryFilters,
+  type InventoryPaging,
+  type InventoryRow,
+  type TenderCategory,
+} from './inventory.domain';
+import type { CompetitorBidRecord } from '../intel/intel.repository';
 import { readAiEnrichment } from './ai-enrichment';
 import { readDossierExtraction } from './dossier-extraction';
 
@@ -36,6 +67,15 @@ export interface TenderRecord extends CreateTender {
   pipelineState: PipelineState;
   qualification: QualificationResult | null;
   raw: Record<string, unknown> | null;
+  // ── Denormalized classification (migration 0033). Written at WRITE time from
+  //    classifyForStorage; NULL on legacy rows until the backfill runs. The read
+  //    path falls back to on-the-fly inference per field when null. ──
+  region?: string | null;
+  ville?: string | null;
+  category?: string | null;
+  secteur?: string | null;
+  lotCount?: number | null;
+  hasBpu?: boolean | null;
   createdAt: Date;
   /** Last write to the row — bumped by every enrichment/extraction/state update.
    *  Powers the /tender/inventory `?since=` delta used for live silent refresh. */
@@ -108,6 +148,22 @@ export interface TenderRepository {
    */
   findAllInventoryRows(): Promise<InventoryRow[]>;
   /**
+   * DB-side inventory read (P2 scalable-read): pushes filtering, sort, pagination
+   * and the column-based facets to Postgres so per-request cost is O(page) instead
+   * of O(catalogue). Returns the SAME `{ total, filteredCount, returnedCount,
+   * facets, items, filters }` shape as the JS path — a transparent optimization.
+   * `bids` is the tiny competitor_bid set (already loaded by the caller): it powers
+   * the read-time lifecycle status + facet, which is NOT a stored column (it depends
+   * on deadline + harvested results). When a lifecycle filter is active the impl
+   * degrades to the exact JS semantics for correctness (documented hybrid).
+   */
+  findInventoryPage(
+    filters: InventoryFilters,
+    paging: InventoryPaging,
+    now: Date,
+    bids: readonly CompetitorBidRecord[],
+  ): Promise<Inventory>;
+  /**
    * Fills sourceUrl on an already-stored tender (matched by reference+buyer)
    * only when it is currently NULL — never overwrites a known value. Returns
    * whether a row was updated. Lets a re-crawl heal the legacy rows that were
@@ -153,6 +209,27 @@ export interface TenderRepository {
   ): Promise<Array<{ id: string; hitBdp: boolean; rank: number }>>;
 }
 
+/**
+ * Denormalized classification the WRITE path stores in the tender columns
+ * (migration 0033). Shared by both repositories so the values never drift from
+ * what the read path (classifyForStorage/classifyRow) expects. hasBpu is NOT
+ * derived here — it depends on the raw dossier and is (re)computed on
+ * enrichment; create/heal leave it untouched.
+ */
+type ClassificationColumns = ReturnType<typeof classifyForStorage>;
+
+function classificationFor(input: {
+  buyerName: string;
+  objet: string;
+  location?: string | null;
+}): ClassificationColumns {
+  return classifyForStorage({
+    buyerName: input.buyerName,
+    objet: input.objet,
+    location: input.location ?? null,
+  });
+}
+
 /** Dev/test fallback used when DATABASE_URL is not configured. */
 export class InMemoryTenderRepository implements TenderRepository {
   private records: readonly TenderRecord[] = [];
@@ -162,12 +239,19 @@ export class InMemoryTenderRepository implements TenderRepository {
       (r) => r.reference === input.reference && r.buyerName === input.buyerName,
     );
     if (duplicate) throw new DuplicateTenderError(input.reference, input.buyerName);
+    const classified = classificationFor(input);
     const record: TenderRecord = {
       ...input,
       id: randomUUID(),
       pipelineState: 'detected',
       qualification: null,
       raw: null,
+      region: classified.region,
+      ville: classified.ville,
+      category: classified.category,
+      secteur: classified.secteur,
+      lotCount: classified.lotCount,
+      hasBpu: false,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -206,8 +290,27 @@ export class InMemoryTenderRepository implements TenderRepository {
         aiSecteur: ai?.secteur,
         aiEnrichedAt: ai?.enrichedAt,
         budgetFromDossier: dossier?.estimationMad != null,
+        // Denormalized classification columns (migration 0033) carried straight
+        // through so the read path prefers them over on-the-fly inference.
+        region: r.region ?? null,
+        ville: r.ville ?? null,
+        category: r.category ?? null,
+        secteur: r.secteur ?? null,
+        lotCount: r.lotCount ?? null,
       };
     });
+  }
+
+  async findInventoryPage(
+    filters: InventoryFilters,
+    paging: InventoryPaging,
+    now: Date,
+    bids: readonly CompetitorBidRecord[],
+  ): Promise<Inventory> {
+    // Dev/test only: delegate to the pure JS pipeline over the FULL records so the
+    // in-memory path is behaviourally identical to selectInventory + build. The
+    // Drizzle impl pushes the same semantics into Postgres.
+    return buildInventory([...this.records], filters, now, paging, bids);
   }
 
   async findAllForKnowledge(): Promise<KnowledgeTenderRow[]> {
@@ -310,6 +413,14 @@ export class InMemoryTenderRepository implements TenderRepository {
               ),
             )
           : r.raw;
+      // Re-classify from the healed listing so the denormalized columns never
+      // drift from the (corrected) buyerName/objet/location. location falls back
+      // to the row's current value when this heal did not capture one.
+      const classified = classificationFor({
+        buyerName: fields.buyerName,
+        objet: fields.objet,
+        location: fields.location ?? r.location ?? null,
+      });
       return {
         ...r,
         reference: fields.reference,
@@ -318,6 +429,11 @@ export class InMemoryTenderRepository implements TenderRepository {
         objet: fields.objet,
         deadlineAt: fields.deadlineAt,
         ...(fields.location !== undefined ? { location: fields.location } : {}),
+        region: classified.region,
+        ville: classified.ville,
+        category: classified.category,
+        secteur: classified.secteur,
+        lotCount: classified.lotCount,
         raw: scrubbedRaw,
       };
     });
@@ -351,6 +467,10 @@ export class InMemoryTenderRepository implements TenderRepository {
   ): Promise<TenderRecord | null> {
     const existing = await this.findById(id);
     if (!existing) return null;
+    const mergedRaw = { ...(existing.raw ?? {}), ...rawMerge };
+    // Recompute has_bpu from the merged dossier so the bpuOnly filter/facet stays
+    // correct after an extraction lands (mirrors the SQL jsonb test).
+    const dossier = readDossierExtraction(mergedRaw);
     const updated: TenderRecord = {
       ...existing,
       ...(amounts.estimationMad !== undefined
@@ -359,7 +479,8 @@ export class InMemoryTenderRepository implements TenderRepository {
       ...(amounts.cautionProvisoireMad !== undefined
         ? { cautionProvisoireMad: amounts.cautionProvisoireMad }
         : {}),
-      raw: { ...(existing.raw ?? {}), ...rawMerge },
+      hasBpu: dossier ? dossier.bpu.length > 0 : (existing.hasBpu ?? false),
+      raw: mergedRaw,
     };
     this.records = this.records.map((r) => (r.id === id ? updated : r));
     return updated;
@@ -392,6 +513,11 @@ export class DrizzleTenderRepository implements TenderRepository {
       throw new DuplicateTenderError(input.reference, input.buyerName);
     }
 
+    // Classify at WRITE time (P2): store region/ville/category/secteur/lot_count so
+    // the list read filters/facets/paginates in the DB instead of classifying the
+    // whole catalogue in JS per request. has_bpu starts false (no dossier yet) and
+    // is (re)computed in updateEnrichment when an extraction lands.
+    const classified = classificationFor(input);
     const [row] = await this.db
       .insert(tenders)
       .values({
@@ -404,6 +530,12 @@ export class DrizzleTenderRepository implements TenderRepository {
         cautionProvisoireMad: input.cautionProvisoireMad?.toString(),
         deadlineAt: input.deadlineAt,
         sourceUrl: input.sourceUrl,
+        region: classified.region,
+        ville: classified.ville,
+        category: classified.category,
+        secteur: classified.secteur,
+        lotCount: classified.lotCount,
+        hasBpu: false,
       })
       .returning();
     if (!row) throw new Error('Tender insert returned no row');
@@ -446,6 +578,13 @@ export class DrizzleTenderRepository implements TenderRepository {
         aiSecteur: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'secteur'`,
         aiEnrichedAt: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'enrichedAt'`,
         budgetFromDossier: sql<boolean>`case when ${tenders.raw}->'dossierExtraction'->>'estimationMad' is not null then true else false end`,
+        // Denormalized classification columns (migration 0033) — cheap plain-column
+        // reads; the classify pass prefers them and falls back per-field when null.
+        region: tenders.region,
+        ville: tenders.ville,
+        category: tenders.category,
+        secteur: tenders.secteur,
+        lotCount: tenders.lotCount,
       })
       .from(tenders);
     return rows.map((row) => ({
@@ -469,7 +608,150 @@ export class DrizzleTenderRepository implements TenderRepository {
       aiSecteur: row.aiSecteur ?? undefined,
       aiEnrichedAt: row.aiEnrichedAt ?? undefined,
       budgetFromDossier: row.budgetFromDossier,
+      region: row.region,
+      ville: row.ville,
+      category: row.category,
+      secteur: row.secteur,
+      lotCount: row.lotCount,
     }));
+  }
+
+  async findInventoryPage(
+    filters: InventoryFilters,
+    paging: InventoryPaging,
+    now: Date,
+    bids: readonly CompetitorBidRecord[],
+  ): Promise<Inventory> {
+    // HYBRID (documented): lifecycle (en_cours/cloture/attribue/infructueux) is NOT
+    // a stored column — it depends on the deadline + harvested bids joined by
+    // canonical reference (a JS fold). When a lifecycle filter is active it must
+    // change the page + filteredCount, which no column WHERE can express, so we
+    // fall back to the exact JS pipeline for that (rare) path. Everything else runs
+    // in the DB (O(page)).
+    const lifecycleFilterActive =
+      filters.lifecycle !== undefined ||
+      (filters.lifecycles !== undefined && filters.lifecycles.length > 0);
+    if (lifecycleFilterActive) {
+      const rows = await this.findAllInventoryRows();
+      return buildInventory(rows, filters, now, paging, bids);
+    }
+
+    const where = buildInventoryWhere(filters);
+    const orderBy = inventoryOrderBy(filters);
+    const limit = clampInventoryLimit(paging.limit);
+    const offset = Math.max(0, Math.floor(paging.offset ?? 0));
+
+    const [pageRows, filteredCountRow, totalRow, columnFacets, lifecycleRows] =
+      await Promise.all([
+        this.db
+          .select(INVENTORY_PAGE_COLUMNS)
+          .from(tenders)
+          .where(where)
+          .orderBy(...orderBy)
+          .limit(limit)
+          .offset(offset),
+        this.db.select({ n: sql<number>`count(*)::int` }).from(tenders).where(where),
+        this.db.select({ n: sql<number>`count(*)::int` }).from(tenders),
+        this.inventoryColumnFacets(),
+        // Minimal whole-catalogue (reference, deadline_at) projection for the
+        // lifecycle facet — no raw/regex/Zod, so it stays cheap.
+        this.db
+          .select({ reference: tenders.reference, deadlineAt: tenders.deadlineAt })
+          .from(tenders),
+      ]);
+
+    // Attach lifecycle / winner / competitors to the PAGE rows only, from the tiny
+    // bid set — the SAME BidResolver fold selectInventory uses (no drift).
+    const resolver = new BidResolver(bids);
+    const items = pageRows.map((row) => {
+      const record = mapInventoryPageRow(row);
+      const { competitors, lifecycle, resultDate } = resolver.resolve(
+        record.reference,
+        record.deadlineAt,
+        now,
+      );
+      const classification = {
+        region: record.region ?? UNLOCATED_REGION,
+        ville: record.ville ?? null,
+        category: (record.category ?? 'Travaux') as TenderCategory,
+        secteur: record.secteur ?? DEFAULT_SECTEUR_LABEL,
+      };
+      return buildLightItem(
+        {
+          record,
+          region: classification.region,
+          ville: classification.ville,
+          location: record.location ?? null,
+          category: classification.category,
+          secteur: classification.secteur,
+          lifecycle,
+          competitors,
+          resultDate,
+        },
+        now,
+      );
+    });
+
+    return {
+      total: Number(totalRow[0]?.n ?? 0),
+      filteredCount: Number(filteredCountRow[0]?.n ?? 0),
+      returnedCount: items.length,
+      facets: {
+        ...columnFacets,
+        lifecycles: lifecycleFacetForRows(lifecycleRows, bids, now),
+      },
+      items,
+      filters,
+    };
+  }
+
+  /** The 6 column facets (procedures/categories/secteurs/regions/buyers/states)
+   *  as indexed GROUP BY aggregates over the WHOLE catalogue — stable navigation
+   *  independent of the active filters, matching the JS tallyTop semantics. */
+  private async inventoryColumnFacets(): Promise<Omit<InventoryFacets, 'lifecycles'>> {
+    const [procedures, categories, secteurs, regions, buyers, states] =
+      await Promise.all([
+        this.groupCount(tenders.procedure),
+        this.groupCount(tenders.category),
+        this.groupCount(tenders.secteur),
+        this.groupCount(tenders.region),
+        this.groupCount(tenders.buyerName, BUYER_FACET_LIMIT),
+        this.groupCount(tenders.pipelineState),
+      ]);
+    const procedureCounts = new Map(procedures.map((p) => [p.value, p.count]));
+    return {
+      // Procedures keep the PROCEDURE_LABELS declaration order + French labels,
+      // dropping empty buckets — exactly like the JS path.
+      procedures: (Object.keys(PROCEDURE_LABELS) as TenderProcedure[])
+        .map((proc) => ({
+          key: proc,
+          label: PROCEDURE_LABELS[proc],
+          count: procedureCounts.get(proc) ?? 0,
+        }))
+        .filter((f) => f.count > 0),
+      categories: facetsFromCounts(categories),
+      secteurs: facetsFromCounts(secteurs),
+      regions: facetsFromCounts(regions),
+      buyers: facetsFromCounts(buyers),
+      states: facetsFromCounts(states),
+    };
+  }
+
+  /** One GROUP BY count over a text column → ordered [value, count] list (count
+   *  DESC, value ASC — the tallyTop order), NULLs skipped (a not-yet-backfilled
+   *  row simply doesn't contribute to a bucket). */
+  private async groupCount(
+    column: AnyPgColumn,
+    limit?: number,
+  ): Promise<Array<{ value: string; count: number }>> {
+    const base = this.db
+      .select({ value: column, n: sql<number>`count(*)::int` })
+      .from(tenders)
+      .where(isNotNull(column))
+      .groupBy(column)
+      .orderBy(desc(sql`count(*)`), asc(column));
+    const rows = await (limit ? base.limit(limit) : base);
+    return rows.map((r) => ({ value: String(r.value), count: Number(r.n) }));
   }
 
   async findAllForKnowledge(): Promise<KnowledgeTenderRow[]> {
@@ -605,6 +887,19 @@ export class DrizzleTenderRepository implements TenderRepository {
     const rawAfterScrub = sql`CASE WHEN ${objetOrBuyerChanged} THEN
       COALESCE(${tenders.raw}, '{}'::jsonb) - 'aiEnrichment' - 'dossierExtraction'
     ELSE ${tenders.raw} END`;
+    // Re-classify from the CORRECTED listing (P2): the heal exists precisely
+    // because buyerName/objet were wrong, so the denormalized columns computed on
+    // the old text are stale and must be rewritten. Computed in JS (the classifiers
+    // are regex, not SQL) from the incoming fields — identical to what a fresh
+    // create() with the corrected listing would store. location uses the captured
+    // value when present, else the empty signal (region/ville still fall back to
+    // buyer+objet text). has_bpu is left untouched — it tracks the dossier, not the
+    // listing.
+    const classified = classificationFor({
+      buyerName: fields.buyerName,
+      objet: fields.objet,
+      location: fields.location ?? null,
+    });
     const rows = await this.db
       .update(tenders)
       .set({
@@ -616,6 +911,11 @@ export class DrizzleTenderRepository implements TenderRepository {
         // Only overwrite location when this crawl actually captured one, so a
         // transient parse miss never blanks a previously stored value.
         ...(fields.location !== undefined ? { location: fields.location } : {}),
+        region: classified.region,
+        ville: classified.ville,
+        category: classified.category,
+        secteur: classified.secteur,
+        lotCount: classified.lotCount,
         raw: rawAfterScrub,
         updatedAt: new Date(),
       })
@@ -654,6 +954,10 @@ export class DrizzleTenderRepository implements TenderRepository {
     // Single atomic statement: the JSONB merge runs server-side, so two
     // concurrent writers (auto-extract + manual trigger on the same tender)
     // can never clobber each other's keys through a stale read.
+    // The merged jsonb is reused for both the raw column and the has_bpu recompute
+    // so has_bpu stays consistent with the dossier that just landed — all in the
+    // SAME statement (no read-then-write window; the spec pins zero selects).
+    const mergedRaw = sql`COALESCE(${tenders.raw}, '{}'::jsonb) || ${JSON.stringify(rawMerge)}::jsonb`;
     const [row] = await this.db
       .update(tenders)
       .set({
@@ -663,7 +967,10 @@ export class DrizzleTenderRepository implements TenderRepository {
         ...(amounts.cautionProvisoireMad !== undefined
           ? { cautionProvisoireMad: amounts.cautionProvisoireMad.toString() }
           : {}),
-        raw: sql`COALESCE(${tenders.raw}, '{}'::jsonb) || ${JSON.stringify(rawMerge)}::jsonb`,
+        raw: mergedRaw,
+        // Denormalized has_bpu (P2): true iff the merged dossierExtraction.bpu is a
+        // non-empty array — the same jsonb test the projected read computes.
+        hasBpu: sql<boolean>`case when jsonb_typeof((${mergedRaw})->'dossierExtraction'->'bpu') = 'array' then jsonb_array_length((${mergedRaw})->'dossierExtraction'->'bpu') > 0 else false end`,
         updatedAt: new Date(),
       })
       .where(eq(tenders.id, id))
@@ -726,7 +1033,214 @@ function toRecord(row: TenderRow): TenderRecord {
     pipelineState: row.pipelineState as PipelineState,
     qualification: (row.qualification as QualificationResult | null) ?? null,
     raw: (row.raw as Record<string, unknown> | null) ?? null,
+    // Denormalized classification (migration 0033) — null on legacy rows until
+    // the backfill runs; the read path falls back to inference per field.
+    region: row.region ?? null,
+    ville: row.ville ?? null,
+    category: row.category ?? null,
+    secteur: row.secteur ?? null,
+    lotCount: row.lotCount ?? null,
+    hasBpu: row.hasBpu ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+// ── DB-side inventory page (P2) helpers ─────────────────────────────────────
+
+/** Region bucket for unmatched rows — mirrors UNLOCATED in inventory.domain. */
+const UNLOCATED_REGION = 'Non localisé';
+/** Secteur label for the 'autre' segment — mirrors segmentLabel('autre'). */
+const DEFAULT_SECTEUR_LABEL = 'Autres';
+
+/**
+ * The projected columns the inventory page ships — every field buildLightItem
+ * reads, WITHOUT the heavy `raw` jsonb (loaded per-page in the detail drawer).
+ * The light enrichment flags come from the same jsonb tests as findAllInventoryRows.
+ */
+const INVENTORY_PAGE_COLUMNS = {
+  id: tenders.id,
+  reference: tenders.reference,
+  buyerName: tenders.buyerName,
+  procedure: tenders.procedure,
+  objet: tenders.objet,
+  location: tenders.location,
+  estimationMad: tenders.estimationMad,
+  cautionProvisoireMad: tenders.cautionProvisoireMad,
+  deadlineAt: tenders.deadlineAt,
+  sourceUrl: tenders.sourceUrl,
+  pipelineState: tenders.pipelineState,
+  createdAt: tenders.createdAt,
+  updatedAt: tenders.updatedAt,
+  region: tenders.region,
+  ville: tenders.ville,
+  category: tenders.category,
+  secteur: tenders.secteur,
+  lotCount: tenders.lotCount,
+  hasBpu: sql<boolean>`case when jsonb_typeof(${tenders.raw}->'dossierExtraction'->'bpu') = 'array' then jsonb_array_length(${tenders.raw}->'dossierExtraction'->'bpu') > 0 else false end`,
+  bpuCount: sql<number>`case when jsonb_typeof(${tenders.raw}->'dossierExtraction'->'bpu') = 'array' then jsonb_array_length(${tenders.raw}->'dossierExtraction'->'bpu') else 0 end`,
+  aiResume: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'resume'`,
+  aiSecteur: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'secteur'`,
+  aiEnrichedAt: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'enrichedAt'`,
+  budgetFromDossier: sql<boolean>`case when ${tenders.raw}->'dossierExtraction'->>'estimationMad' is not null then true else false end`,
+} as const;
+
+/** Maps a projected inventory-page row to the InventoryRow the build path reads. */
+function mapInventoryPageRow(row: {
+  id: string;
+  reference: string;
+  buyerName: string;
+  procedure: string;
+  objet: string;
+  location: string | null;
+  estimationMad: string | null;
+  cautionProvisoireMad: string | null;
+  deadlineAt: Date;
+  sourceUrl: string | null;
+  pipelineState: string;
+  createdAt: Date;
+  updatedAt: Date;
+  region: string | null;
+  ville: string | null;
+  category: string | null;
+  secteur: string | null;
+  lotCount: number | null;
+  hasBpu: boolean;
+  bpuCount: number;
+  aiResume: string | null;
+  aiSecteur: string | null;
+  aiEnrichedAt: string | null;
+  budgetFromDossier: boolean;
+}): InventoryRow {
+  return {
+    id: row.id,
+    reference: row.reference,
+    buyerName: row.buyerName,
+    procedure: row.procedure as TenderProcedure,
+    objet: row.objet,
+    location: row.location ?? undefined,
+    estimationMad: row.estimationMad != null ? Number(row.estimationMad) : undefined,
+    cautionProvisoireMad:
+      row.cautionProvisoireMad != null ? Number(row.cautionProvisoireMad) : undefined,
+    deadlineAt: row.deadlineAt,
+    sourceUrl: row.sourceUrl ?? undefined,
+    pipelineState: row.pipelineState as PipelineState,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    hasBpu: row.hasBpu,
+    bpuCount: Number(row.bpuCount),
+    aiResume: row.aiResume ?? undefined,
+    aiSecteur: row.aiSecteur ?? undefined,
+    aiEnrichedAt: row.aiEnrichedAt ?? undefined,
+    budgetFromDossier: row.budgetFromDossier,
+    region: row.region,
+    ville: row.ville,
+    category: row.category,
+    secteur: row.secteur,
+    lotCount: row.lotCount,
+  };
+}
+
+/** Ordered [value,count] pairs → InventoryFacet[] (key === label === value). The
+ *  SQL already ordered by count DESC, value ASC, so the order is preserved. */
+function facetsFromCounts(
+  counts: ReadonlyArray<{ value: string; count: number }>,
+): InventoryFacet[] {
+  return counts.map(({ value, count }) => ({ key: value, label: value, count }));
+}
+
+/** Effective value set for a dimension: single param unioned with the multi-select
+ *  array. Empty → undefined ("no constraint"), matching effectiveSet in the domain. */
+function effectiveValues(
+  single: string | undefined,
+  multi: readonly string[] | undefined,
+): string[] | undefined {
+  const values: string[] = [];
+  if (single) values.push(single);
+  if (multi) values.push(...multi);
+  return values.length > 0 ? values : undefined;
+}
+
+/**
+ * Builds the SQL WHERE for the inventory page from the same filter semantics as
+ * the JS `matches`: multi-select dimensions unioned with their single param via
+ * IN, the boolean toggles, the `since` cutoff, and a `q` that combines the datao
+ * dual-lane FTS with an ILIKE fallback on reference/buyer/objet so a literal
+ * reference ("62/2025") still matches (FTS stems words, not codes). Lifecycle is
+ * handled by the caller (not a column). Undefined dimensions add no constraint.
+ */
+function buildInventoryWhere(filters: InventoryFilters): SQL | undefined {
+  const clauses: SQL[] = [];
+
+  const procedures = effectiveValues(filters.procedure, filters.procedures);
+  if (procedures) clauses.push(inArray(tenders.procedure, procedures));
+
+  const buyers = effectiveValues(filters.buyer, filters.buyers);
+  if (buyers) clauses.push(inArray(tenders.buyerName, buyers));
+
+  const regions = effectiveValues(filters.region, filters.regions);
+  if (regions) clauses.push(inArray(tenders.region, regions));
+
+  const states = effectiveValues(filters.state, filters.states);
+  if (states) clauses.push(inArray(tenders.pipelineState, states));
+
+  const categories = effectiveValues(undefined, filters.categories);
+  if (categories) clauses.push(inArray(tenders.category, categories));
+
+  const secteurs = effectiveValues(undefined, filters.secteurs);
+  if (secteurs) clauses.push(inArray(tenders.secteur, secteurs));
+
+  if (filters.bpuOnly) clauses.push(eq(tenders.hasBpu, true));
+  if (filters.budgetOnly) clauses.push(isNotNull(tenders.estimationMad));
+  if (filters.cautionOnly) clauses.push(isNotNull(tenders.cautionProvisoireMad));
+
+  if (filters.since) {
+    clauses.push(sql`${tenders.updatedAt} > ${filters.since}`);
+  }
+
+  if (filters.q) {
+    const like = `%${filters.q}%`;
+    // FTS (accent-folded, stemmed) OR literal substring on the headline fields.
+    const q = or(
+      sql`${tenders.ftsSearch} @@ websearch_to_tsquery('french', ${filters.q})`,
+      sql`${tenders.ftsBdpSearch} @@ websearch_to_tsquery('french', ${filters.q})`,
+      ilike(tenders.reference, like),
+      ilike(tenders.buyerName, like),
+      ilike(tenders.objet, like),
+    );
+    if (q) clauses.push(q);
+  }
+
+  return clauses.length > 0 ? and(...clauses) : undefined;
+}
+
+/**
+ * ORDER BY for the inventory page, mirroring compareBySort: publication→created_at,
+ * deadline/daysLeft→deadline_at, estimation→estimation_mad (NULLs last regardless
+ * of direction), buyer→buyer_name. reference always breaks ties ASC so the order is
+ * stable — identical to the JS comparator.
+ */
+function inventoryOrderBy(filters: InventoryFilters): SQL[] {
+  const sort = filters.sort ?? 'publication';
+  const dir = filters.dir ?? 'desc';
+  const asc_ = dir === 'asc';
+  const tie = asc(tenders.reference);
+  switch (sort) {
+    case 'deadline':
+    case 'daysLeft':
+      return [asc_ ? asc(tenders.deadlineAt) : desc(tenders.deadlineAt), tie];
+    case 'estimation':
+      // NULLS LAST in BOTH directions matches the JS ±Infinity-through-dir trick.
+      return [
+        asc_
+          ? sql`${tenders.estimationMad} asc nulls last`
+          : sql`${tenders.estimationMad} desc nulls last`,
+        tie,
+      ];
+    case 'buyer':
+      return [asc_ ? asc(tenders.buyerName) : desc(tenders.buyerName), tie];
+    case 'publication':
+    default:
+      return [asc_ ? asc(tenders.createdAt) : desc(tenders.createdAt), tie];
+  }
 }
