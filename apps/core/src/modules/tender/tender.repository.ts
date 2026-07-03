@@ -5,6 +5,8 @@ import type { Db } from '../../db/client';
 import { tenders } from '../../db/schema';
 import type { QualificationResult } from './qualifier.domain';
 import type { InventoryRow } from './inventory.domain';
+import { readAiEnrichment } from './ai-enrichment';
+import { readDossierExtraction } from './dossier-extraction';
 
 export interface CreateTender {
   reference: string;
@@ -178,21 +180,34 @@ export class InMemoryTenderRepository implements TenderRepository {
   }
 
   async findAllInventoryRows(): Promise<InventoryRow[]> {
-    return this.records.map((r) => ({
-      id: r.id,
-      reference: r.reference,
-      buyerName: r.buyerName,
-      procedure: r.procedure,
-      objet: r.objet,
-      location: r.location,
-      estimationMad: r.estimationMad,
-      cautionProvisoireMad: r.cautionProvisoireMad,
-      deadlineAt: r.deadlineAt,
-      sourceUrl: r.sourceUrl,
-      pipelineState: r.pipelineState,
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-    }));
+    return this.records.map((r) => {
+      // Dev/test only: parsing raw here is fine (the Drizzle path computes these
+      // in SQL so raw never crosses the wire for the whole catalogue).
+      const ai = readAiEnrichment(r.raw);
+      const dossier = readDossierExtraction(r.raw);
+      const bpuCount = dossier?.bpu.length ?? 0;
+      return {
+        id: r.id,
+        reference: r.reference,
+        buyerName: r.buyerName,
+        procedure: r.procedure,
+        objet: r.objet,
+        location: r.location,
+        estimationMad: r.estimationMad,
+        cautionProvisoireMad: r.cautionProvisoireMad,
+        deadlineAt: r.deadlineAt,
+        sourceUrl: r.sourceUrl,
+        pipelineState: r.pipelineState,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        hasBpu: bpuCount > 0,
+        bpuCount,
+        aiResume: ai?.resume,
+        aiSecteur: ai?.secteur,
+        aiEnrichedAt: ai?.enrichedAt,
+        budgetFromDossier: dossier?.estimationMad != null,
+      };
+    });
   }
 
   async findAllForKnowledge(): Promise<KnowledgeTenderRow[]> {
@@ -405,8 +420,11 @@ export class DrizzleTenderRepository implements TenderRepository {
 
   async findAllInventoryRows(): Promise<InventoryRow[]> {
     // Projected: NO raw jsonb / tsvectors / qualification — raw never crosses the
-    // wire for the whole catalogue (loaded per-page via findByIds). Unordered:
-    // selectInventory sorts by publication in JS.
+    // wire for the whole catalogue (loaded per-page via findByIds). The light
+    // enrichment flags/strings the LIST rows show are computed INSIDE the SQL
+    // (jsonb array-length / ->> extraction), so the heavy dossier/ai objects are
+    // never shipped just to test one array's length or read one résumé line.
+    // Unordered: selectInventory sorts by publication in JS.
     const rows = await this.db
       .select({
         id: tenders.id,
@@ -422,6 +440,12 @@ export class DrizzleTenderRepository implements TenderRepository {
         pipelineState: tenders.pipelineState,
         createdAt: tenders.createdAt,
         updatedAt: tenders.updatedAt,
+        hasBpu: sql<boolean>`case when jsonb_typeof(${tenders.raw}->'dossierExtraction'->'bpu') = 'array' then jsonb_array_length(${tenders.raw}->'dossierExtraction'->'bpu') > 0 else false end`,
+        bpuCount: sql<number>`case when jsonb_typeof(${tenders.raw}->'dossierExtraction'->'bpu') = 'array' then jsonb_array_length(${tenders.raw}->'dossierExtraction'->'bpu') else 0 end`,
+        aiResume: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'resume'`,
+        aiSecteur: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'secteur'`,
+        aiEnrichedAt: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'enrichedAt'`,
+        budgetFromDossier: sql<boolean>`case when ${tenders.raw}->'dossierExtraction'->>'estimationMad' is not null then true else false end`,
       })
       .from(tenders);
     return rows.map((row) => ({
@@ -439,6 +463,12 @@ export class DrizzleTenderRepository implements TenderRepository {
       pipelineState: row.pipelineState as PipelineState,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+      hasBpu: row.hasBpu,
+      bpuCount: Number(row.bpuCount),
+      aiResume: row.aiResume ?? undefined,
+      aiSecteur: row.aiSecteur ?? undefined,
+      aiEnrichedAt: row.aiEnrichedAt ?? undefined,
+      budgetFromDossier: row.budgetFromDossier,
     }));
   }
 

@@ -495,6 +495,9 @@ export interface InventoryItem {
   }>;
   chiffreAffairesMinMad?: number | null;
   delaiExecutionMois?: number | null;
+  /** Whether the dossier extraction carries at least one BPU line item — a light
+   *  flag the LIST rows show without shipping the heavy `bpu` array. */
+  hasBpu?: boolean;
   /** true when estimationMad came from the real DCE (not the listing). */
   budgetFromDossier?: boolean;
   /**
@@ -587,6 +590,21 @@ export interface InventoryRow {
   pipelineState: PipelineState;
   createdAt: Date;
   updatedAt: Date;
+  // ── Light enrichment, projected from `raw` INSIDE the SQL (Drizzle) or read
+  //    via readAiEnrichment/readDossierExtraction (InMemory). These let the LIST
+  //    path build display items WITHOUT parsing the heavy `raw` per row. ──
+  /** Whether the dossier extraction carries at least one BPU line item. */
+  hasBpu?: boolean;
+  /** Number of BPU line items in the dossier extraction (0 when none). */
+  bpuCount?: number;
+  /** AI-enrichment résumé line, when the tender was enriched. */
+  aiResume?: string;
+  /** AI-enrichment fine secteur label, when enriched. */
+  aiSecteur?: string;
+  /** ISO timestamp the AI enrichment was written, when enriched. */
+  aiEnrichedAt?: string;
+  /** true when the estimation came from the real DCE dossier (not the listing). */
+  budgetFromDossier?: boolean;
   /** Present only when hydrated from the full record; omitted by the projected
    *  list query so raw never crosses the wire for the whole catalogue. */
   raw?: Record<string, unknown> | null;
@@ -738,6 +756,59 @@ function buildItem(c: Classified, now: Date): InventoryItem {
     competitors: c.competitors,
     resultDate: c.resultDate ? c.resultDate.toISOString() : undefined,
     updatedAt: record.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * Builds a LIGHT InventoryItem for the LIST path — from the row's PROJECTED
+ * light-enrichment fields (hasBpu / bpuCount / aiResume / aiSecteur /
+ * aiEnrichedAt / budgetFromDossier), WITHOUT parsing the heavy `raw` JSONB. The
+ * heavy dossier arrays (bpu / faq / lotsDetail / qualifications / conditions /
+ * contact …) are the detail drawer's job (GET /tender/tenders/:id) and are left
+ * undefined here — so a 5 000-row catalogue ships ~1-2 MB with zero per-row Zod
+ * parse instead of ~14 MB and two safeParses per row.
+ */
+export function buildLightItem(c: Classified, now: Date): InventoryItem {
+  const { record } = c;
+  return {
+    id: record.id,
+    reference: record.reference,
+    buyerName: record.buyerName,
+    procedure: record.procedure,
+    procedureLabel: PROCEDURE_LABELS[record.procedure],
+    objet: record.objet,
+    estimationMad: record.estimationMad,
+    cautionProvisoireMad: record.cautionProvisoireMad,
+    deadlineAt: record.deadlineAt,
+    publishedAt: record.createdAt,
+    pipelineState: record.pipelineState,
+    daysLeft: daysUntil(record.deadlineAt, now),
+    region: c.region,
+    ville: c.ville,
+    location: c.location,
+    category: c.category,
+    // AI secteur (projected) wins when enriched, else the deterministic label.
+    secteur: record.aiSecteur ?? c.secteur,
+    // Real lot count: prefer the projected dossier BPU breadth, else parsed.
+    lotCount:
+      record.bpuCount && record.bpuCount > 0
+        ? record.bpuCount
+        : inferLotCount(record.objet),
+    sourceUrl: record.sourceUrl,
+    aiResume: record.aiResume,
+    hasBpu: record.hasBpu ?? false,
+    enrichedAt: record.aiEnrichedAt,
+    budgetFromDossier: record.budgetFromDossier ?? false,
+    lifecycleStatus: c.lifecycle,
+    lifecycleLabel: LIFECYCLE_LABELS[c.lifecycle],
+    winner: c.competitors.find((x) => x.isWinner) ?? null,
+    competitors: c.competitors,
+    resultDate: c.resultDate ? c.resultDate.toISOString() : undefined,
+    updatedAt: record.updatedAt.toISOString(),
+    // Heavy fields (bpu / faq / lotsDetail / qualifications / conditions /
+    // conditionsLegales / autres / contact / dossierConditions /
+    // chiffreAffairesMinMad / delaiExecutionMois / reserveAuxPme) are OMITTED —
+    // the detail drawer loads them via GET /tender/tenders/:id.
   };
 }
 

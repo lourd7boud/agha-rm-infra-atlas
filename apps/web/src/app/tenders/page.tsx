@@ -1,4 +1,5 @@
 import { apiGet } from '@/lib/api';
+import { isRedirectError } from '@/lib/next-redirect';
 import type { TenderInventory } from '@/lib/tenders';
 import { TendersExplorer } from './TendersExplorer';
 
@@ -52,7 +53,12 @@ export default async function TendersPage({
     // A starved core (batch pressure, cold cache) must degrade to a friendly
     // retry panel — never the naked Next.js "Application error" page.
     apiGet<TenderInventory>(`/tender/inventory?${apiQs.toString()}`).catch(
-      () => null,
+      // An expired session must redirect to /login (re-auth), NOT be swallowed
+      // into the degrade panel — only a genuine fetch failure returns null.
+      (error) => {
+        if (isRedirectError(error)) throw error;
+        return null;
+      },
     ),
     list
       ? apiGet<{ tenderIds: string[] }>(`/tender/lists/${list}/tenders`)

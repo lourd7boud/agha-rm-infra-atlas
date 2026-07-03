@@ -40,6 +40,9 @@ export interface TenderItem {
   };
   reserveAuxPme?: boolean;
   enrichedAt?: string;
+  /** Light-list flag: true when the tender has an extracted BPU, without
+   *  shipping the heavy `bpu` array in the inventory list response. */
+  hasBpu?: boolean;
   // ── Real DCE dossier extraction (datao-grade) — present once the DCE was read ──
   bpu?: Array<{
     section?: string | null;

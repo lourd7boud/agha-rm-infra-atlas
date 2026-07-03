@@ -78,7 +78,7 @@ function matchesFilters(item: TenderItem, f: FilterState): boolean {
   if (f.states.length && !f.states.includes(item.pipelineState)) return false;
   if (f.budgetOnly && item.estimationMad == null) return false;
   if (f.cautionOnly && item.cautionProvisoireMad == null) return false;
-  if (f.bpuOnly && !(item.bpu && item.bpu.length > 0)) return false;
+  if (f.bpuOnly && !item.hasBpu) return false;
   // Date range filters (operate on the ISO timestamps; empty string = unset).
   if (f.publishedFrom && item.publishedAt < f.publishedFrom) return false;
   if (f.publishedTo && item.publishedAt > f.publishedTo + 'T23:59:59') return false;

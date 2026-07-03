@@ -69,7 +69,7 @@ const chatBodySchema = z.object({
 });
 import {
   selectInventory,
-  hydrateInventory,
+  buildLightItem,
   type InventoryRow,
   type InventoryFilters,
 } from './inventory.domain';
@@ -826,10 +826,12 @@ export class TenderController {
     );
   }
 
-  /** select (facets + page over light rows) → load raw for the page only →
-   *  hydrate. The heavy `raw` jsonb touches the wire + Zod for the ≤limit shown
-   *  rows, never the whole catalogue. */
-  private async assembleInventory(
+  /** select (facets + page over light rows) → build LIGHT items directly from the
+   *  projected page. No per-row `raw` load or Zod parse: the light-enrichment
+   *  fields (hasBpu / aiResume / aiSecteur / budgetFromDossier …) are projected
+   *  in SQL, and the heavy dossier arrays are fetched by the detail drawer via
+   *  GET /tender/tenders/:id. Drops the list payload from ~14 MB to ~1-2 MB. */
+  private assembleInventory(
     rows: readonly InventoryRow[],
     bids: readonly CompetitorBidRecord[],
     filters: InventoryFilters,
@@ -837,7 +839,13 @@ export class TenderController {
   ) {
     const now = new Date();
     const selection = selectInventory(rows, filters, now, paging, bids);
-    const full = await this.repository.findByIds(selection.pageIds);
-    return hydrateInventory(selection, full, now);
+    return {
+      total: selection.total,
+      filteredCount: selection.filteredCount,
+      returnedCount: selection.page.length,
+      facets: selection.facets,
+      items: selection.page.map((c) => buildLightItem(c, now)),
+      filters: selection.filters,
+    };
   }
 }

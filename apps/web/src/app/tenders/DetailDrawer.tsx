@@ -39,12 +39,38 @@ export function DetailDrawer({
   // button), 'bordereau' = datao-style side panel showing only the BPU source
   // (BPU-tab button). See SourceFileViewer for the two render modes.
   const [showFiles, setShowFiles] = useState<'none' | 'all' | 'bordereau'>('none');
+  // Full enrichment for the selected tender. The /inventory list ships only the
+  // light item (no bpu/faq/lotsDetail/… heavy arrays); we hydrate them here from
+  // GET /api/tender/tenders/:id when the drawer opens. null while loading/absent.
+  const [detail, setDetail] = useState<TenderItem | null>(null);
   const panelRef = useRef<HTMLElement>(null);
 
   // Reset to the first tab whenever a different tender is opened.
   useEffect(() => {
     setTab('resume');
     setShowFiles('none');
+  }, [item?.id]);
+
+  // Fetch the FULL detail (heavy dossier arrays) whenever a tender is opened.
+  // Reset first so a stale detail never bleeds across selections; ignore errors
+  // (drawer degrades to the light item's base/live fields).
+  useEffect(() => {
+    if (!item) return;
+    setDetail(null);
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/tender/tenders/${item.id}`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data: TenderItem = await res.json();
+        if (!cancelled) setDetail(data);
+      } catch {
+        // Leave detail null — the light item still renders base + live fields.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [item?.id]);
 
   // Move focus into the panel when it opens (keyboard + screen-reader).
@@ -63,6 +89,15 @@ export function DetailDrawer({
 
   if (!item) return null;
 
+  // Merged view: the full detail (heavy enrichment arrays) overrides the light
+  // item's undefined fields; base/live fields fall back to `item`. When detail
+  // hasn't loaded yet, `view` is just the light item.
+  const view: TenderItem = detail ? { ...item, ...detail } : item;
+  // Enrichment tabs (bpu/faq/lots/qualifications) depend on the heavy arrays,
+  // which only arrive with `detail`. While it's null, show a load placeholder
+  // instead of an empty state so the drawer doesn't look broken.
+  const detailLoading = detail === null;
+
   const state =
     PIPELINE_LABELS[item.pipelineState] ?? {
       label: item.pipelineState,
@@ -71,10 +106,10 @@ export function DetailDrawer({
   const overdue = item.daysLeft < 0;
   const sourceUrl = safeHttpUrl(item.sourceUrl);
   const hasSource = Boolean(sourceUrl);
-  const enriched = Boolean(item.enrichedAt);
-  const lots = item.lotsDetail ?? [];
-  const faq = item.faq ?? [];
-  const bpu = item.bpu ?? [];
+  const enriched = Boolean(view.enrichedAt);
+  const lots = view.lotsDetail ?? [];
+  const faq = view.faq ?? [];
+  const bpu = view.bpu ?? [];
   // Group BPU rows under their section header (datao groups by corps d'état /
   // série / lot). Consecutive same-section rows form one group; order preserved.
   const bpuGroups: Array<{ section: string | null; rows: typeof bpu }> = [];
@@ -84,9 +119,9 @@ export function DetailDrawer({
     if (last && last.section === section) last.rows.push(row);
     else bpuGroups.push({ section, rows: [row] });
   }
-  const quals = item.qualifications ?? [];
-  const competitors = item.competitors ?? [];
-  const winner = item.winner;
+  const quals = view.qualifications ?? [];
+  const competitors = view.competitors ?? [];
+  const winner = view.winner;
   const isAttribue = item.lifecycleStatus === 'attribue';
   const isInfructueux = item.lifecycleStatus === 'infructueux';
   const isCloture = item.lifecycleStatus === 'cloture';
@@ -95,8 +130,8 @@ export function DetailDrawer({
   // Per-field DCE provenance — a value is "verified" only when the dossier
   // actually supplied THAT field (not when an extraction merely ran). Avoids
   // labelling AI-fallback figures as officially DCE-confirmed.
-  const dc = item.dossierConditions;
-  const budgetVerified = Boolean(item.budgetFromDossier);
+  const dc = view.dossierConditions;
+  const budgetVerified = Boolean(view.budgetFromDossier);
   const verifiedCautionDef = dc?.cautionDefinitivePct != null;
   const verifiedRetenue = dc?.retenueGarantiePct != null;
   const verifiedDelaiGar = dc?.delaiGarantieMois != null;
@@ -218,10 +253,10 @@ export function DetailDrawer({
                         {winner.amountMad != null ? fmtMad(winner.amountMad) : '—'}
                       </dd>
                     </div>
-                    {item.resultDate && (
+                    {view.resultDate && (
                       <div className="col-span-2">
                         <dt className="text-xs text-faint">Date du résultat</dt>
-                        <dd className="text-ink">{fmtDateTime(item.resultDate)}</dd>
+                        <dd className="text-ink">{fmtDateTime(view.resultDate)}</dd>
                       </div>
                     )}
                   </dl>
@@ -339,13 +374,13 @@ export function DetailDrawer({
             {tab === 'resume' && (
               <div className="space-y-4">
                 <AiBanner enriched={enriched} />
-                {item.reserveAuxPme && (
+                {view.reserveAuxPme && (
                   <span className="inline-block rounded-full bg-emerald-soft px-2.5 py-0.5 text-xs font-medium text-emerald">
                     Réservé aux PME / TPE / coopératives
                   </span>
                 )}
                 <p className="text-sm leading-relaxed text-ink-2">
-                  {item.aiResume ?? buildResume(item)}
+                  {view.aiResume ?? buildResume(view)}
                 </p>
                 <div>
                   <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
@@ -370,29 +405,29 @@ export function DetailDrawer({
                   />
                   <ConditionRow
                     label="Caution définitive"
-                    value={fmtPctOrDash(item.conditions?.cautionDefinitivePct)}
+                    value={fmtPctOrDash(view.conditions?.cautionDefinitivePct)}
                     aiEstimated={!verifiedCautionDef}
                   />
                   <ConditionRow
                     label="Retenue de garantie"
-                    value={fmtPctOrDash(item.conditions?.retenueGarantiePct)}
+                    value={fmtPctOrDash(view.conditions?.retenueGarantiePct)}
                     aiEstimated={!verifiedRetenue}
                   />
                   <ConditionRow
                     label="Délai de garantie"
-                    value={fmtMoisOrDash(item.conditions?.delaiGarantieMois)}
+                    value={fmtMoisOrDash(view.conditions?.delaiGarantieMois)}
                     aiEstimated={!verifiedDelaiGar}
                   />
-                  {item.delaiExecutionMois != null && (
+                  {view.delaiExecutionMois != null && (
                     <ConditionRow
                       label="Délai d’exécution"
-                      value={fmtMoisOrDash(item.delaiExecutionMois)}
+                      value={fmtMoisOrDash(view.delaiExecutionMois)}
                     />
                   )}
-                  {item.chiffreAffairesMinMad != null && (
+                  {view.chiffreAffairesMinMad != null && (
                     <ConditionRow
                       label="Chiffre d’affaires min. exigé"
-                      value={fmtMad(item.chiffreAffairesMinMad)}
+                      value={fmtMad(view.chiffreAffairesMinMad)}
                     />
                   )}
                 </div>
@@ -427,7 +462,7 @@ export function DetailDrawer({
                 )}
 
                 {/* Conditions légales — datao "Conditions légales :" */}
-                {item.conditionsLegales && item.conditionsLegales.length > 0 && (
+                {view.conditionsLegales && view.conditionsLegales.length > 0 && (
                   <div>
                     <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
                       Conditions légales
@@ -436,7 +471,7 @@ export function DetailDrawer({
                       </span>
                     </h3>
                     <ul className="list-disc space-y-1 pl-4 text-sm text-ink-2 marker:text-faint">
-                      {item.conditionsLegales.map((c, i) => (
+                      {view.conditionsLegales.map((c, i) => (
                         <li key={i}>{c}</li>
                       ))}
                     </ul>
@@ -444,10 +479,10 @@ export function DetailDrawer({
                 )}
 
                 {/* Contact — datao "Contact :" */}
-                {item.contact &&
-                  (item.contact.nom ||
-                    item.contact.email ||
-                    item.contact.telephone) && (
+                {view.contact &&
+                  (view.contact.nom ||
+                    view.contact.email ||
+                    view.contact.telephone) && (
                     <div>
                       <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
                         Contact
@@ -456,23 +491,23 @@ export function DetailDrawer({
                         </span>
                       </h3>
                       <div className="space-y-0.5 text-sm text-ink-2">
-                        {item.contact.nom && (
-                          <p className="font-medium text-ink">{item.contact.nom}</p>
+                        {view.contact.nom && (
+                          <p className="font-medium text-ink">{view.contact.nom}</p>
                         )}
-                        {item.contact.email && (
+                        {view.contact.email && (
                           <a
-                            href={`mailto:${item.contact.email}`}
+                            href={`mailto:${view.contact.email}`}
                             className="block text-cyan hover:underline"
                           >
-                            {item.contact.email}
+                            {view.contact.email}
                           </a>
                         )}
-                        {item.contact.telephone && (
+                        {view.contact.telephone && (
                           <a
-                            href={`tel:${item.contact.telephone.replace(/\s+/g, '')}`}
+                            href={`tel:${view.contact.telephone.replace(/\s+/g, '')}`}
                             className="block font-mono text-muted hover:text-ink"
                           >
-                            {item.contact.telephone}
+                            {view.contact.telephone}
                           </a>
                         )}
                       </div>
@@ -480,7 +515,7 @@ export function DetailDrawer({
                   )}
 
                 {/* Autres — datao "Autres :" */}
-                {item.autres && item.autres.length > 0 && (
+                {view.autres && view.autres.length > 0 && (
                   <div>
                     <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
                       Autres
@@ -489,7 +524,7 @@ export function DetailDrawer({
                       </span>
                     </h3>
                     <ul className="list-disc space-y-1 pl-4 text-sm text-ink-2 marker:text-faint">
-                      {item.autres.map((a, i) => (
+                      {view.autres.map((a, i) => (
                         <li key={i}>{a}</li>
                       ))}
                     </ul>
@@ -526,6 +561,8 @@ export function DetailDrawer({
                       </li>
                     ))}
                   </ul>
+                ) : detailLoading ? (
+                  <p className="text-sm text-muted">Chargement du détail…</p>
                 ) : (
                   <p className="text-sm text-muted">
                     Aucune question / réponse disponible. Lancez l&apos;enrichissement
@@ -559,6 +596,8 @@ export function DetailDrawer({
                       ))}
                     </ul>
                   </>
+                ) : detailLoading ? (
+                  <p className="text-sm text-muted">Chargement du détail…</p>
                 ) : item.lotCount > 1 ? (
                   <p className="text-sm text-muted">
                     Ce marché comporte{' '}
@@ -638,6 +677,8 @@ export function DetailDrawer({
                       ))}
                     </div>
                   </>
+                ) : detailLoading ? (
+                  <p className="text-sm text-muted">Chargement du détail…</p>
                 ) : (
                   <>
                     <p className="text-sm text-muted">
