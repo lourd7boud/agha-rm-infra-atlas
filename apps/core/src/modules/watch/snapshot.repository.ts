@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { portalSnapshots } from '../../db/schema';
 
@@ -99,25 +99,36 @@ export class DrizzleSnapshotRepository implements SnapshotRepository {
   }
 
   async coverage(): Promise<SourceCoverage[]> {
-    const rows = await this.db.select().from(portalSnapshots);
-    const bySource = new Map<string, SnapshotRecord[]>();
-    for (const row of rows) {
-      const record: SnapshotRecord = {
-        id: row.id,
-        source: row.source,
-        url: row.url,
-        sha256: row.sha256,
-        bytes: row.bytes,
-        changed: row.changed,
-        parsedOk: row.parsedOk,
-        items: row.items,
-        fetchedAt: row.fetchedAt,
-      };
-      bySource.set(row.source, [...(bySource.get(row.source) ?? []), record]);
-    }
-    return [...bySource.entries()].map(([source, records]) =>
-      buildCoverage(source, records),
-    );
+    // In-DB aggregate per source instead of `SELECT *` over the whole append-only
+    // portal_snapshot log. That log grows fast under the continuous crawler, so
+    // the full scan + JS fold hit the 30s statement_timeout and spiked core CPU,
+    // timing out /agents (and, being single-threaded, other pages with it). Now
+    // Postgres aggregates and only ONE row per source (a handful) crosses the wire.
+    const rows = await this.db
+      .select({
+        source: portalSnapshots.source,
+        fetches: sql<number>`count(*)::int`,
+        changes: sql<number>`count(*) filter (where ${portalSnapshots.changed})::int`,
+        itemsExtracted: sql<number>`coalesce(sum(${portalSnapshots.items}), 0)::int`,
+        lastFetchAt: sql<string>`max(${portalSnapshots.fetchedAt})`,
+        lastChangeAt: sql<
+          string | null
+        >`max(${portalSnapshots.fetchedAt}) filter (where ${portalSnapshots.changed})`,
+        lastParseOk: sql<
+          boolean | null
+        >`(array_agg(${portalSnapshots.parsedOk} order by ${portalSnapshots.fetchedAt} desc))[1]`,
+      })
+      .from(portalSnapshots)
+      .groupBy(portalSnapshots.source);
+    return rows.map((row) => ({
+      source: row.source,
+      fetches: row.fetches,
+      changes: row.changes,
+      itemsExtracted: row.itemsExtracted,
+      lastFetchAt: row.lastFetchAt ? new Date(row.lastFetchAt) : null,
+      lastChangeAt: row.lastChangeAt ? new Date(row.lastChangeAt) : null,
+      lastParseOk: row.lastParseOk,
+    }));
   }
 }
 
