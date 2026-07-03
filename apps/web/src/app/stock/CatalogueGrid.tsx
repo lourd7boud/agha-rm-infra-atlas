@@ -4,8 +4,7 @@ import { useMemo, useState } from 'react';
 import {
   MATERIALS_CATALOG,
   MATERIAL_CATEGORIES,
-  materialImageSrc,
-  categoryEmblemSrc,
+  materialImageCandidates,
   type CatalogueMaterial,
   type MaterialCategoryKey,
 } from '@/lib/materials-catalog';
@@ -194,7 +193,10 @@ interface MaterialCardProps {
 }
 
 function MaterialCard({ material, stock, depots, addStock }: MaterialCardProps) {
-  const [imgSrc, setImgSrc] = useState(materialImageSrc(material));
+  const candidates = useMemo(() => materialImageCandidates(material), [material]);
+  const [srcIndex, setSrcIndex] = useState(0);
+  const src = candidates[srcIndex] ?? candidates[candidates.length - 1];
+  const isPhoto = src.includes('/materials/photos/');
   const [qty, setQty] = useState('');
   const [price, setPrice] = useState('');
 
@@ -208,17 +210,21 @@ function MaterialCard({ material, stock, depots, addStock }: MaterialCardProps) 
   return (
     <div className="group flex flex-col rounded-xl border border-line bg-paper p-3 transition hover:-translate-y-0.5 hover:border-line-2 hover:shadow-lg">
       <div
-        className="mb-3 flex aspect-square items-center justify-center overflow-hidden rounded-lg p-3"
-        style={{ background: 'linear-gradient(160deg, #fbfcfd, #e9edf1)' }}
+        className="mb-3 aspect-square overflow-hidden rounded-lg"
+        style={{
+          background: isPhoto ? '#eef1f4' : 'linear-gradient(160deg, #fbfcfd, #e9edf1)',
+        }}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={imgSrc}
+          src={src}
           alt={material.designation}
           draggable={false}
           loading="lazy"
-          onError={() => setImgSrc(categoryEmblemSrc(material.category))}
-          className="h-full w-full object-contain transition group-hover:scale-105"
+          onError={() => setSrcIndex((i) => Math.min(i + 1, candidates.length - 1))}
+          className={`h-full w-full transition group-hover:scale-105 ${
+            isPhoto ? 'object-cover' : 'object-contain p-3'
+          }`}
         />
       </div>
 

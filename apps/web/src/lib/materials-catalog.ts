@@ -286,6 +286,54 @@ export function categoryEmblemSrc(category: MaterialCategoryKey): string {
   return `/materials/cat/${category}.svg`;
 }
 
+/**
+ * Image families that have a bundled real photo under /materials/photos/<img>.jpg.
+ * Sourced from Openverse under commercial-use licenses (see photos/CREDITS.md).
+ * Photos are the primary visual; a family without one degrades to the SVG
+ * illustration, then the category emblem.
+ */
+export const MATERIAL_PHOTO_SLUGS: ReadonlySet<string> = new Set([
+  'ampoule-led', 'bidon-bitume', 'bidon-diluant', 'boite-encastrement',
+  'bordure-trottoir', 'boulon-ecrou', 'brique-creuse', 'brique-pleine',
+  'brouette', 'buse-beton', 'camion-toupie', 'carrelage', 'cartouche-mastic',
+  'casque-chantier', 'chauffe-eau', 'clou', 'contreplaque', 'cuvette-wc',
+  'disjoncteur', 'faience', 'fenetre-alu', 'fer-beton', 'fil-attache',
+  'film-polyane', 'gaine-icta', 'hourdis', 'interrupteur', 'laine-verre',
+  'lavabo', 'madrier', 'marbre', 'panneau-polystyrene', 'parpaing', 'parquet',
+  'pave-autobloquant', 'planche-bois', 'porte-bois', 'pot-peinture', 'prise',
+  'profile-alu', 'profile-ipn', 'raccord-pvc', 'robinet', 'rouleau-cable',
+  'rouleau-membrane', 'rouleau-pinceau', 'sac-chaux', 'sac-ciment', 'sac-mortier',
+  'sac-platre', 'seau-colle-carrelage', 'seau-enduit', 'serrure',
+  'tableau-electrique', 'tampon-fonte', 'tas-gravette', 'tas-sable',
+  'tas-tout-venant', 'tole', 'treillis-soude', 'truelle', 'tube-cuivre',
+  'tube-ppr', 'tube-pvc', 'tuyau-pehd', 'vis', 'vitre-verre',
+]);
+
+/** Real bundled photo for a material, or null when its family has none. */
+export function materialPhotoSrc(
+  material: Pick<CatalogueMaterial, 'img'>,
+): string | null {
+  return MATERIAL_PHOTO_SLUGS.has(material.img)
+    ? `/materials/photos/${material.img}.jpg`
+    : null;
+}
+
+/**
+ * Ordered image candidates for a material: real photo (when available) →
+ * SVG illustration → category emblem. The card renders the first and advances
+ * to the next on load error, so a missing/broken asset never leaves a blank.
+ */
+export function materialImageCandidates(
+  material: Pick<CatalogueMaterial, 'img' | 'category'>,
+): string[] {
+  const photo = materialPhotoSrc(material);
+  return [
+    ...(photo ? [photo] : []),
+    materialImageSrc(material),
+    categoryEmblemSrc(material.category),
+  ];
+}
+
 /** The catalogue split into its categories, in MATERIAL_CATEGORIES order. */
 export function groupCatalogByCategory(): {
   category: MaterialCategory;
