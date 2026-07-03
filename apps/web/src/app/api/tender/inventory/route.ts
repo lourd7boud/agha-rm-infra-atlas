@@ -16,7 +16,33 @@ async function bearer(): Promise<string | null> {
  * catalogue-wide), which the client merges in place without a full page reload.
  * Only the inventory query params are forwarded — never arbitrary keys.
  */
-const FORWARDED = ['since', 'limit', 'offset', 'q', 'region', 'procedure', 'buyer', 'lifecycle', 'state'];
+const FORWARDED = [
+  // Paging + sort + search + delta cursor.
+  'limit',
+  'offset',
+  'sort',
+  'dir',
+  'q',
+  'since',
+  // Multi-select filters (comma-separated) — the server-side pagination path.
+  'procedures',
+  'categories',
+  'secteurs',
+  'regions',
+  'buyers',
+  'states',
+  'lifecycles',
+  // Legacy single-value filters (SSR/preload deep-links still use these).
+  'procedure',
+  'region',
+  'buyer',
+  'state',
+  'lifecycle',
+  // Boolean toggles.
+  'bpuOnly',
+  'budgetOnly',
+  'cautionOnly',
+];
 
 export async function GET(req: NextRequest): Promise<Response> {
   const token = await bearer();

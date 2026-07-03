@@ -2,6 +2,9 @@ import { apiGet } from '@/lib/api';
 import { isRedirectError } from '@/lib/next-redirect';
 import type { TenderInventory } from '@/lib/tenders';
 import { TendersExplorer } from './TendersExplorer';
+import { TendersQueryProvider } from './Providers';
+import type { SortKey, SortState } from './DataTable';
+import { PAGE_SIZE } from './tenders-query';
 
 interface PreloadedList {
   id: string;
@@ -15,13 +18,12 @@ interface PreloadedSearch {
 }
 
 /**
- * Marchés Publics — datao-style catalogue. The whole active inventory is
- * fetched server-side (auth happens here) and handed to a client explorer that
- * does instant search / multi-facet filtering / sorting / resizable columns and
- * a click-to-open detail drawer. When `?list=<id>` or `?savedSearch=<id>` is in
- * the URL, the corresponding scope/filter is preloaded server-side and applied
- * on mount — this is what makes the dedicated /tenders/lists and
- * /tenders/searches pages "openable" with one click.
+ * Marchés Publics — datao-style catalogue with SERVER-SIDE pagination. The FIRST
+ * page (24 rows) is fetched server-side (auth happens here) with the URL's active
+ * filters/sort, then handed to a React-Query-driven client explorer that pages,
+ * filters, sorts and searches entirely against the server — the browser only ever
+ * holds one ~24-row page. When `?list=<id>` or `?savedSearch=<id>` is present the
+ * corresponding scope/filter is preloaded server-side and applied on mount.
  */
 /** Server-side filter URL params honored by /tender/inventory — listed
  *  explicitly so we never forward unknown keys (avoids accidental injection
@@ -29,26 +31,74 @@ interface PreloadedSearch {
 const FORWARDED_PARAMS = ['q', 'region', 'procedure', 'buyer', 'lifecycle', 'state'] as const;
 type ForwardedKey = (typeof FORWARDED_PARAMS)[number];
 
+const SORTABLE_KEYS: readonly SortKey[] = ['publication', 'deadline', 'budget', 'buyer'];
+
+/** Parse the URL sort/dir/page params into the same SortState + page the client
+ *  seeds with, so the SSR fetch's params line up with React Query's first key. */
+function parsePaging(sp: Record<string, string | undefined>): {
+  sort: SortState;
+  page: number;
+} {
+  const rawKey = sp.sort;
+  const key =
+    rawKey && SORTABLE_KEYS.includes(rawKey as SortKey)
+      ? (rawKey as SortKey)
+      : 'publication';
+  const dir = sp.dir === 'asc' ? 'asc' : 'desc';
+  const pageNum = Number.parseInt(sp.page ?? '0', 10);
+  const page = Number.isFinite(pageNum) && pageNum > 0 ? pageNum : 0;
+  return { sort: { key, dir }, page };
+}
+
+/** Maps the client lifecycle tab value carried in `?lifecycle=` onto the server
+ *  `lifecycles` multi-select (attribue+infructueux both mean "Résultats"). */
+function serverLifecycles(lifecycle: string | undefined): string | undefined {
+  switch (lifecycle) {
+    case 'en_cours':
+      return 'en_cours';
+    case 'cloture':
+    case 'clotures':
+      return 'cloture';
+    case 'resultats':
+    case 'attribue':
+    case 'infructueux':
+      return 'attribue,infructueux';
+    default:
+      return undefined;
+  }
+}
+
 export default async function TendersPage({
   searchParams,
 }: {
   searchParams: Promise<
-    { list?: string; savedSearch?: string } & Partial<Record<ForwardedKey, string>>
+    { list?: string; savedSearch?: string; sort?: string; dir?: string; page?: string } & Partial<
+      Record<ForwardedKey, string>
+    >
   >;
 }) {
   const sp = await searchParams;
   const { list, savedSearch } = sp;
-  // Build /tender/inventory query string from whitelisted URL params so the
-  // server applies any filter at the source. Limit 5000 covers the current
-  // ~4260-row catalogue (datao parity). If the catalogue grows past 5000 the
-  // backend will silently truncate again — raise the cap in
-  // apps/core/src/modules/tender/tender.module.ts (inventoryQuerySchema) and
-  // here together.
-  const apiQs = new URLSearchParams({ limit: '5000' });
-  for (const k of FORWARDED_PARAMS) {
-    const v = sp[k];
-    if (typeof v === 'string' && v.trim()) apiQs.set(k, v);
-  }
+  const paging = parsePaging(sp);
+
+  // Build the /tender/inventory query for the FIRST page only (server-side
+  // pagination — 24 rows). Single-value URL filters map onto the multi-select
+  // params the client also uses so the SSR payload matches the first client key.
+  const apiQs = new URLSearchParams({
+    limit: String(PAGE_SIZE),
+    offset: String(paging.page * PAGE_SIZE),
+    sort: paging.sort.key === 'budget' ? 'estimation' : paging.sort.key,
+    dir: paging.sort.dir,
+  });
+  if (typeof sp.q === 'string' && sp.q.trim()) apiQs.set('q', sp.q.trim());
+  if (typeof sp.region === 'string' && sp.region.trim()) apiQs.set('regions', sp.region.trim());
+  if (typeof sp.procedure === 'string' && sp.procedure.trim())
+    apiQs.set('procedures', sp.procedure.trim());
+  if (typeof sp.buyer === 'string' && sp.buyer.trim()) apiQs.set('buyers', sp.buyer.trim());
+  if (typeof sp.state === 'string' && sp.state.trim()) apiQs.set('states', sp.state.trim());
+  const lifecycles = serverLifecycles(sp.lifecycle);
+  if (lifecycles) apiQs.set('lifecycles', lifecycles);
+
   const [inventory, preloadedList, preloadedSearch] = await Promise.all([
     // A starved core (batch pressure, cold cache) must degrade to a friendly
     // retry panel — never the naked Next.js "Application error" page.
@@ -119,11 +169,14 @@ export default async function TendersPage({
     if (typeof v === 'string' && v.trim()) initialFromUrl[k] = v;
   }
   return (
-    <TendersExplorer
-      inventory={inventory}
-      preloadedList={preloadedList}
-      preloadedSearch={preloadedSearch}
-      initialFromUrl={initialFromUrl}
-    />
+    <TendersQueryProvider>
+      <TendersExplorer
+        initialInventory={inventory}
+        initialParams={paging}
+        preloadedList={preloadedList}
+        preloadedSearch={preloadedSearch}
+        initialFromUrl={initialFromUrl}
+      />
+    </TendersQueryProvider>
   );
 }

@@ -420,6 +420,15 @@ export function inferLotCount(objet: string): number {
   return 1;
 }
 
+/** Sortable columns for the inventory list (datao-parity server-side sort). */
+export type InventorySortKey =
+  | 'publication'
+  | 'deadline'
+  | 'estimation'
+  | 'buyer'
+  | 'daysLeft';
+export type InventorySortDir = 'asc' | 'desc';
+
 export interface InventoryFilters {
   procedure?: TenderProcedure;
   buyer?: string;
@@ -436,6 +445,26 @@ export interface InventoryFilters {
    *  (facets/total still reflect the full catalogue). Powers live silent refresh
    *  — the client polls `?since=<lastSeen>` and merges just the changed rows. */
   since?: Date;
+  // ── Multi-select (datao-style) — a row passes a dimension when the set is
+  //    empty OR contains the row's value. Merged with the single-value param of
+  //    the same dimension so the SSR/preload single params keep working. ──
+  procedures?: string[];
+  categories?: string[];
+  secteurs?: string[];
+  regions?: string[];
+  buyers?: string[];
+  states?: string[];
+  lifecycles?: string[];
+  // ── Boolean toggles — narrow to rows that carry the given signal. ──
+  /** Only rows whose dossier extraction carries at least one BPU line item. */
+  bpuOnly?: boolean;
+  /** Only rows with a known estimation (budget). */
+  budgetOnly?: boolean;
+  /** Only rows with a known caution provisoire. */
+  cautionOnly?: boolean;
+  // ── Sort (server-side) — defaults to publication DESC (newest first). ──
+  sort?: InventorySortKey;
+  dir?: InventorySortDir;
 }
 
 export interface InventoryFacet {
@@ -666,13 +695,50 @@ function tallyTop(
   return limit ? facets.slice(0, limit) : facets;
 }
 
+/**
+ * Effective set for a dimension: the single-value param (when present) unioned
+ * with the multi-select array. Returns null when neither is set — the caller
+ * reads null as "no constraint on this dimension" (every row passes). Keeps the
+ * SSR/preload single params working alongside the new comma-separated multi params.
+ */
+function effectiveSet(
+  single: string | undefined,
+  multi: readonly string[] | undefined,
+): ReadonlySet<string> | null {
+  const values: string[] = [];
+  if (single) values.push(single);
+  if (multi) values.push(...multi);
+  return values.length > 0 ? new Set(values) : null;
+}
+
 function matches(c: Classified, filters: InventoryFilters): boolean {
   if (filters.since && c.record.updatedAt.getTime() <= filters.since.getTime()) return false;
-  if (filters.procedure && c.record.procedure !== filters.procedure) return false;
-  if (filters.buyer && c.record.buyerName !== filters.buyer) return false;
-  if (filters.region && c.region !== filters.region) return false;
-  if (filters.state && c.record.pipelineState !== filters.state) return false;
-  if (filters.lifecycle && c.lifecycle !== filters.lifecycle) return false;
+
+  const procedures = effectiveSet(filters.procedure, filters.procedures);
+  if (procedures && !procedures.has(c.record.procedure)) return false;
+
+  const buyers = effectiveSet(filters.buyer, filters.buyers);
+  if (buyers && !buyers.has(c.record.buyerName)) return false;
+
+  const regions = effectiveSet(filters.region, filters.regions);
+  if (regions && !regions.has(c.region)) return false;
+
+  const states = effectiveSet(filters.state, filters.states);
+  if (states && !states.has(c.record.pipelineState)) return false;
+
+  const lifecycles = effectiveSet(filters.lifecycle, filters.lifecycles);
+  if (lifecycles && !lifecycles.has(c.lifecycle)) return false;
+
+  const categories = effectiveSet(undefined, filters.categories);
+  if (categories && !categories.has(c.category)) return false;
+
+  const secteurs = effectiveSet(undefined, filters.secteurs);
+  if (secteurs && !secteurs.has(c.secteur)) return false;
+
+  if (filters.bpuOnly && c.record.hasBpu !== true) return false;
+  if (filters.budgetOnly && c.record.estimationMad == null) return false;
+  if (filters.cautionOnly && c.record.cautionProvisoireMad == null) return false;
+
   if (filters.q) {
     const needle = normalize(filters.q);
     const haystack = normalize(
@@ -681,6 +747,44 @@ function matches(c: Classified, filters: InventoryFilters): boolean {
     if (!haystack.includes(needle)) return false;
   }
   return true;
+}
+
+/**
+ * Comparator for the requested sort key over classified rows. Publication maps
+ * to `createdAt`, deadline/daysLeft both to `deadlineAt` (daysLeft is a monotone
+ * function of the deadline), estimation to `estimationMad` (missing sorts last in
+ * either direction via ±Infinity fed through the dir flip), and buyer to a locale
+ * compare of the buyer name. Reference always breaks ties so the order is stable
+ * regardless of the repository's row order. `dir` flips the primary comparison
+ * only; the reference tiebreak stays ascending for determinism.
+ */
+function compareBySort(
+  a: Classified,
+  b: Classified,
+  sort: InventorySortKey,
+  dir: InventorySortDir,
+): number {
+  const sign = dir === 'asc' ? 1 : -1;
+  let primary: number;
+  switch (sort) {
+    case 'deadline':
+    case 'daysLeft':
+      primary = a.record.deadlineAt.getTime() - b.record.deadlineAt.getTime();
+      break;
+    case 'estimation':
+      primary =
+        (a.record.estimationMad ?? -Infinity) - (b.record.estimationMad ?? -Infinity);
+      break;
+    case 'buyer':
+      primary = a.record.buyerName.localeCompare(b.record.buyerName);
+      break;
+    case 'publication':
+    default:
+      primary = a.record.createdAt.getTime() - b.record.createdAt.getTime();
+      break;
+  }
+  if (primary !== 0) return sign * primary;
+  return a.record.reference.localeCompare(b.record.reference);
 }
 
 /**
@@ -905,19 +1009,18 @@ export function selectInventory(
     lifecycles,
   };
 
-  // Filter + sort on the light classified rows (base columns only). Publication
-  // DESC (newest first) matches datao's UX and ensures freshly detected tenders
-  // appear on page 1 even when their deadlines are weeks away; the previous
-  // deadline-ASC default hid every new posting behind the row cap because new
-  // postings have far-future deadlines. Reference breaks ties so order is stable
+  // Filter + sort on the light classified rows (base columns only). The default
+  // (publication DESC — newest first) matches datao's UX and ensures freshly
+  // detected tenders appear on page 1 even when their deadlines are weeks away;
+  // the previous deadline-ASC default hid every new posting behind the row cap
+  // because new postings have far-future deadlines. Callers can override via
+  // filters.sort / filters.dir. Reference breaks ties so order is stable
   // regardless of the repository's row order.
+  const sort = filters.sort ?? 'publication';
+  const dir = filters.dir ?? 'desc';
   const matched = classified
     .filter((c) => matches(c, filters))
-    .sort(
-      (a, b) =>
-        b.record.createdAt.getTime() - a.record.createdAt.getTime() ||
-        a.record.reference.localeCompare(b.record.reference),
-    );
+    .sort((a, b) => compareBySort(a, b, sort, dir));
 
   const page = matched.slice(offset, offset + limit);
   return {

@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Icon } from '@/components/ui/Icon';
 import { PIPELINE_LABELS, PROCEDURE_LABELS } from '@/lib/labels';
 import type { PipelineState, TenderProcedure } from '@atlas/contracts';
@@ -12,106 +14,31 @@ import {
   FilterSidebar,
   type FilterState,
 } from './FilterSidebar';
-
-const norm = (s: string) =>
-  s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-
-function cmpNum(a: number | undefined, b: number | undefined): number {
-  if (a === b) return 0;
-  if (a === undefined) return -1; // missing values sort first (asc); last (desc)
-  if (b === undefined) return 1;
-  return a - b;
-}
-
-function primaryCompare(a: TenderItem, b: TenderItem, key: SortKey): number {
-  switch (key) {
-    case 'deadline':
-      return new Date(a.deadlineAt).getTime() - new Date(b.deadlineAt).getTime();
-    case 'publication':
-      return new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime();
-    case 'budget':
-      return cmpNum(a.estimationMad, b.estimationMad);
-    case 'caution':
-      return cmpNum(a.cautionProvisoireMad, b.cautionProvisoireMad);
-    case 'lots':
-      return a.lotCount - b.lotCount;
-    case 'buyer':
-      return a.buyerName.localeCompare(b.buyerName, 'fr');
-    case 'objet':
-      return a.objet.localeCompare(b.objet, 'fr');
-    case 'category':
-      return a.category.localeCompare(b.category, 'fr');
-    case 'secteur':
-      return a.secteur.localeCompare(b.secteur, 'fr');
-    case 'region':
-      return a.region.localeCompare(b.region, 'fr');
-    case 'ville':
-      // The "Lieu d'exécution" column prefers the precise portal location.
-      return (a.location ?? a.ville ?? '').localeCompare(
-        b.location ?? b.ville ?? '',
-        'fr',
-      );
-    default:
-      return 0;
-  }
-}
-
-function matchesFilters(item: TenderItem, f: FilterState): boolean {
-  // Lifecycle tabs (datao spine) drive off the server-computed lifecycleStatus,
-  // NOT the client's daysLeft alone — that way "Clôturés" includes past-deadline
-  // rows still in our DB even if the portal dropped them, and "Résultats" only
-  // matches consultations whose winner/no-bid verdict was actually harvested.
-  if (f.statut === 'en_cours' && item.lifecycleStatus !== 'en_cours') return false;
-  if (f.statut === 'clotures' && item.lifecycleStatus !== 'cloture') return false;
-  if (
-    f.statut === 'resultats' &&
-    item.lifecycleStatus !== 'attribue' &&
-    item.lifecycleStatus !== 'infructueux'
-  ) {
-    return false;
-  }
-  if (f.procedures.length && !f.procedures.includes(item.procedure)) return false;
-  if (f.categories.length && !f.categories.includes(item.category)) return false;
-  if (f.secteurs.length && !f.secteurs.includes(item.secteur)) return false;
-  if (f.regions.length && !f.regions.includes(item.region)) return false;
-  if (f.buyers.length && !f.buyers.includes(item.buyerName)) return false;
-  if (f.states.length && !f.states.includes(item.pipelineState)) return false;
-  if (f.budgetOnly && item.estimationMad == null) return false;
-  if (f.cautionOnly && item.cautionProvisoireMad == null) return false;
-  if (f.bpuOnly && !item.hasBpu) return false;
-  // Date range filters (operate on the ISO timestamps; empty string = unset).
-  if (f.publishedFrom && item.publishedAt < f.publishedFrom) return false;
-  if (f.publishedTo && item.publishedAt > f.publishedTo + 'T23:59:59') return false;
-  if (f.deadlineFrom && item.deadlineAt < f.deadlineFrom) return false;
-  if (f.deadlineTo && item.deadlineAt > f.deadlineTo + 'T23:59:59') return false;
-  if (f.search.trim()) {
-    const needle = norm(f.search);
-    const hay = norm(
-      `${item.reference} ${item.objet} ${item.buyerName} ${item.region} ${
-        item.ville ?? ''
-      } ${item.location ?? ''} ${item.secteur}`,
-    );
-    if (!hay.includes(needle)) return false;
-  }
-  return true;
-}
-
-interface ActiveChip {
-  group: keyof FilterState;
-  key: string;
-  label: string;
-}
+import {
+  PAGE_SIZE,
+  buildInventoryQuery,
+  inventoryKey,
+  type InventoryParams,
+} from './tenders-query';
 
 const SEEN_KEY = 'atlas.tenders.seen.v1';
 
+/** Poll cadence for the live silent refresh (ms). React Query re-runs the CURRENT
+ *  page query on this cadence — correct with pagination and far simpler than the
+ *  old `?since=` delta merge. 60 s keeps the table fresh without hammering. */
+const LIVE_POLL_MS = 60_000;
+
+/** Export ceiling. The list is now paginated (24 rows/page) so "the current set"
+ *  can't be exported from the loaded page alone; CSV re-fetches up to this many
+ *  rows of the ACTIVE filtered set (server cap is 100/page — see note below). */
+const EXPORT_LIMIT = 100;
+
 /** Read-tracking via localStorage — Nouveaux vs Déjà vu without server round-trip. */
 function useSeenIds(): {
-  seen: Set<string>;
   markSeen: (id: string) => void;
   isSeen: (id: string) => boolean;
 } {
   const [seen, setSeen] = useState<Set<string>>(() => new Set());
-  // Hydrate after mount (localStorage is client-only).
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(SEEN_KEY);
@@ -134,7 +61,17 @@ function useSeenIds(): {
     });
   }, []);
   const isSeen = useCallback((id: string) => seen.has(id), [seen]);
-  return { seen, markSeen, isSeen };
+  return { markSeen, isSeen };
+}
+
+/** Debounce a value (search text) so we don't refetch on every keystroke. */
+function useDebounced<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(id);
+  }, [value, delay]);
+  return debounced;
 }
 
 /** Convert a row to a single CSV cell, escaping commas/quotes/newlines. */
@@ -177,6 +114,12 @@ function downloadCsv(items: readonly TenderItem[], filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+interface ActiveChip {
+  group: keyof FilterState;
+  key: string;
+  label: string;
+}
+
 interface PreloadedList {
   id: string;
   name: string;
@@ -196,184 +139,231 @@ function hydrateFilters(input: unknown): FilterState {
   return { ...EMPTY_FILTERS, ...f };
 }
 
-/** Poll cadence for live silent refresh (ms). 30s keeps the table fresh as the
- *  Sentinel publishes/updates tenders, without hammering the API. */
-const LIVE_POLL_MS = 30_000;
-
-/** Highest updatedAt across a set — the `since` cursor for the next delta poll. */
-function maxUpdatedAt(items: readonly TenderItem[]): string {
-  let max = '';
-  for (const i of items) if (i.updatedAt && i.updatedAt > max) max = i.updatedAt;
-  return max;
+/** Seed FilterState from `?q=…&region=…&procedure=…&buyer=…&lifecycle=…` URL params. */
+function filtersFromUrl(url: Record<string, string>): FilterState {
+  const next: FilterState = { ...EMPTY_FILTERS };
+  if (url.q) next.search = url.q;
+  if (url.region) next.regions = [url.region];
+  if (url.procedure) next.procedures = [url.procedure];
+  if (url.buyer) next.buyers = [url.buyer];
+  if (
+    url.lifecycle === 'en_cours' ||
+    url.lifecycle === 'cloture' ||
+    url.lifecycle === 'attribue' ||
+    url.lifecycle === 'infructueux'
+  ) {
+    next.statut =
+      url.lifecycle === 'en_cours'
+        ? 'en_cours'
+        : url.lifecycle === 'cloture'
+          ? 'clotures'
+          : 'resultats';
+  }
+  return next;
 }
 
-/**
- * Live silent refresh: keeps the inventory in state and, every LIVE_POLL_MS while
- * the tab is visible, polls /api/tender/inventory?since=<max updatedAt> for just
- * the rows the Sentinel wrote since last time, then upserts them by id — no full
- * page reload, no scroll jump, the user's filters/sort/selection untouched.
- * total + facets are refreshed from the (catalogue-wide) delta response so new
- * tenders bump the count too.
- */
-function useLiveInventory(
-  initial: TenderInventory,
-  urlParams: Record<string, string> | null,
-): TenderInventory {
-  const [inv, setInv] = useState(initial);
-  const sinceRef = useRef(maxUpdatedAt(initial.items));
-  const itemsRef = useRef(initial.items);
-  itemsRef.current = inv.items;
+const SORT_PARAM = 'sort';
+const DIR_PARAM = 'dir';
+const PAGE_PARAM = 'page';
 
-  useEffect(() => {
-    let cancelled = false;
-    async function poll(): Promise<void> {
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-      const qs = new URLSearchParams({ limit: '5000' });
-      if (sinceRef.current) qs.set('since', sinceRef.current);
-      if (urlParams) for (const [k, v] of Object.entries(urlParams)) if (v) qs.set(k, v);
-      try {
-        const res = await fetch(`/api/tender/inventory?${qs.toString()}`, {
-          cache: 'no-store',
-        });
-        if (!res.ok || cancelled) return;
-        const delta = (await res.json()) as Partial<TenderInventory>;
-        if (cancelled || !Array.isArray(delta.items)) return;
-        const changed = delta.items;
-        setInv((prev) => {
-          const next =
-            changed.length > 0
-              ? (() => {
-                  const byId = new Map(prev.items.map((i) => [i.id, i]));
-                  for (const it of changed) byId.set(it.id, it);
-                  return [...byId.values()];
-                })()
-              : prev.items;
-          sinceRef.current = maxUpdatedAt(next) || sinceRef.current;
-          return {
-            ...prev,
-            items: next,
-            total: delta.total ?? prev.total,
-            facets: delta.facets ?? prev.facets,
-          };
-        });
-      } catch {
-        /* transient poll failure — retry next tick */
-      }
-    }
-    const id = window.setInterval(poll, LIVE_POLL_MS);
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') void poll();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-    // urlParams is a stable seed from the server render; re-subscribe only if it changes.
-  }, [urlParams]);
-
-  return inv;
+/** Fetch one inventory page from the Next proxy. Throws on non-2xx so React
+ *  Query surfaces the error state (the caller degrades to the previous page). */
+async function fetchInventory(qs: string): Promise<TenderInventory> {
+  const res = await fetch(`/api/tender/inventory?${qs}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`inventory HTTP ${res.status}`);
+  return (await res.json()) as TenderInventory;
 }
 
 export function TendersExplorer({
-  inventory,
+  initialInventory,
+  initialParams,
   preloadedList,
   preloadedSearch,
   initialFromUrl,
 }: {
-  inventory: TenderInventory;
+  /** SSR-fetched first page — hydrates React Query so the table paints instantly. */
+  initialInventory: TenderInventory;
+  /** The exact params the SSR page fetched with — its cache key must match ours. */
+  initialParams: { sort: SortState; page: number };
   preloadedList?: PreloadedList | null;
   preloadedSearch?: PreloadedSearch | null;
   /** Filter seeds from URL query params (`?q=…&region=…`). Wins over EMPTY_FILTERS
    *  but loses to preloadedSearch which represents a richer saved filter set. */
   initialFromUrl?: Record<string, string>;
 }) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [filters, setFilters] = useState<FilterState>(() => {
     if (preloadedSearch) return hydrateFilters(preloadedSearch.filters);
     if (initialFromUrl && Object.keys(initialFromUrl).length > 0) {
-      const next: FilterState = { ...EMPTY_FILTERS };
-      if (initialFromUrl.q) next.search = initialFromUrl.q;
-      if (initialFromUrl.region) next.regions = [initialFromUrl.region];
-      if (initialFromUrl.procedure) next.procedures = [initialFromUrl.procedure];
-      if (initialFromUrl.buyer) next.buyers = [initialFromUrl.buyer];
-      if (
-        initialFromUrl.lifecycle === 'en_cours' ||
-        initialFromUrl.lifecycle === 'cloture' ||
-        initialFromUrl.lifecycle === 'attribue' ||
-        initialFromUrl.lifecycle === 'infructueux'
-      ) {
-        next.statut =
-          initialFromUrl.lifecycle === 'en_cours'
-            ? 'en_cours'
-            : initialFromUrl.lifecycle === 'cloture'
-              ? 'clotures'
-              : 'resultats';
-      }
-      return next;
+      return filtersFromUrl(initialFromUrl);
     }
     return EMPTY_FILTERS;
   });
-  // Publication DESC default — newest postings on top, matching datao. Users
-  // who want most-urgent-first click the Date limite column header.
-  const [sort, setSort] = useState<SortState>({ key: 'publication', dir: 'desc' });
+  // Publication DESC default — newest postings on top (datao parity). Seeded from
+  // the same value the SSR page fetched with so the initial cache key matches.
+  const [sort, setSort] = useState<SortState>(initialParams.sort);
+  const [page, setPage] = useState(initialParams.page);
+  // Raw search drives the input; the debounced value drives the query so we
+  // don't refetch on every keystroke.
+  const [searchInput, setSearchInput] = useState(filters.search);
+  const debouncedSearch = useDebounced(searchInput, 300);
+
   const [selected, setSelected] = useState<TenderItem | null>(null);
   const [showFilters, setShowFilters] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const { markSeen, isSeen } = useSeenIds();
-  // Live silent refresh — the table tracks Sentinel writes (new budgets, BPU,
-  // freshly-detected tenders) without a manual reload. Filters/sort/selection
-  // are independent state, so they survive each silent merge.
-  const liveInventory = useLiveInventory(inventory, initialFromUrl ?? null);
 
-  // NOTE: search is now PURE client-side. We load the entire catalogue once
-  // (no 1000-row cap anymore), so filtering happens instantly over the in-memory
-  // array. The old debounced router.replace(?q=) that re-fetched the whole
-  // ~6 MB payload on every keystroke is gone — that round-trip was the main
-  // source of search lag. Deep-links still work: page.tsx reads ?q= server-side
-  // and seeds filters.search via initialFromUrl on mount.
+  const offset = page * PAGE_SIZE;
+  const queryParams = useMemo<InventoryParams>(
+    () => ({ filters, sort, offset, search: debouncedSearch }),
+    [filters, sort, offset, debouncedSearch],
+  );
+  const qs = useMemo(() => buildInventoryQuery(queryParams).toString(), [queryParams]);
 
-  // Scope to a saved list — fast Set lookup, applied BEFORE the filter chain.
+  // Does this query match exactly what the SSR page pre-fetched? Only then may
+  // we hand React Query the SSR payload as initialData (otherwise stale rows).
+  const initialQs = useMemo(
+    () =>
+      buildInventoryQuery({
+        filters:
+          preloadedSearch
+            ? hydrateFilters(preloadedSearch.filters)
+            : initialFromUrl && Object.keys(initialFromUrl).length > 0
+              ? filtersFromUrl(initialFromUrl)
+              : EMPTY_FILTERS,
+        sort: initialParams.sort,
+        offset: initialParams.page * PAGE_SIZE,
+        search: initialFromUrl?.q ?? '',
+      }).toString(),
+    [preloadedSearch, initialFromUrl, initialParams.sort, initialParams.page],
+  );
+
+  const { data, isFetching, isError, isPlaceholderData } = useQuery({
+    queryKey: inventoryKey(queryParams),
+    queryFn: () => fetchInventory(qs),
+    placeholderData: keepPreviousData,
+    // Silent live refresh on the current page (replaces the old ?since= merge).
+    refetchInterval: LIVE_POLL_MS,
+    refetchIntervalInBackground: false,
+    initialData: qs === initialQs ? initialInventory : undefined,
+  });
+
+  // Fall back to the SSR payload for the very first paint / hard errors so the
+  // table never renders empty while a background fetch is in flight.
+  const inventory = data ?? initialInventory;
+
+  // ── URL-as-state ─────────────────────────────────────────────────────────
+  // Reflect filters/sort/page in the URL (router.replace, no history spam) so a
+  // refresh or shared link restores the same view. `?list=`/`?savedSearch=` are
+  // preserved untouched. `unseenOnly` stays out of the URL (client-only).
+  useEffect(() => {
+    const next = new URLSearchParams();
+    const keep = searchParams.get('list');
+    const keepSearch = searchParams.get('savedSearch');
+    if (keep) next.set('list', keep);
+    if (keepSearch) next.set('savedSearch', keepSearch);
+    if (debouncedSearch.trim()) next.set('q', debouncedSearch.trim());
+    if (filters.regions.length === 1) next.set('region', filters.regions[0]);
+    if (filters.procedures.length === 1) next.set('procedure', filters.procedures[0]);
+    if (filters.buyers.length === 1) next.set('buyer', filters.buyers[0]);
+    if (filters.statut !== 'tous') next.set('lifecycle', filters.statut);
+    if (sort.key !== 'publication' || sort.dir !== 'desc') {
+      next.set(SORT_PARAM, sort.key);
+      next.set(DIR_PARAM, sort.dir);
+    }
+    if (page > 0) next.set(PAGE_PARAM, String(page));
+    const qsNext = next.toString();
+    const current = searchParams.toString();
+    if (qsNext !== current) {
+      router.replace(qsNext ? `/tenders?${qsNext}` : '/tenders', { scroll: false });
+    }
+    // Intentionally excludes searchParams/router from deps — we only react to our
+    // own state; reading searchParams inside is fine (it's stable per render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters, sort, page, debouncedSearch]);
+
+  // Any filter/sort/search change resets to page 0 (datao behaviour).
+  const resetPage = useCallback(() => setPage(0), []);
+
+  const patch = useCallback(
+    (p: Partial<FilterState>) => {
+      setFilters((prev) => ({ ...prev, ...p }));
+      // Keep the search input in sync when a filter patch touches `search`
+      // (e.g. sidebar search box) so the debounce still governs the query.
+      if (typeof p.search === 'string') setSearchInput(p.search);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const reset = useCallback(() => {
+    setFilters(EMPTY_FILTERS);
+    setSearchInput('');
+    resetPage();
+  }, [resetPage]);
+
+  const closeDrawer = useCallback(() => setSelected(null), []);
+
+  const onSortChange = useCallback(
+    (key: SortKey) => {
+      setSort((prev) =>
+        prev.key === key
+          ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+          : { key, dir: 'asc' },
+      );
+      resetPage();
+    },
+    [resetPage],
+  );
+
+  // Saved-list scope — the inventory endpoint has no `ids` filter, so a `?list=`
+  // deep-link is applied client-side over the current page (fast Set lookup). It
+  // can hide rows within a page; that's the accepted trade-off for preserving the
+  // feature without inventing a new API param.
   const listScope = useMemo(
     () => (preloadedList ? new Set(preloadedList.tenderIds) : null),
     [preloadedList],
   );
 
-  const visible = useMemo(() => {
-    const filtered = liveInventory.items.filter((i) => {
-      if (listScope && !listScope.has(i.id)) return false;
-      if (filters.unseenOnly && isSeen(i.id)) return false;
-      return matchesFilters(i, filters);
-    });
-    return [...filtered].sort((a, b) => {
-      const primary = primaryCompare(a, b, sort.key) * (sort.dir === 'asc' ? 1 : -1);
-      return primary || a.reference.localeCompare(b.reference);
-    });
-  }, [liveInventory.items, filters, sort, isSeen, listScope]);
+  // Client-only filters applied over the CURRENT page only, never sent to the
+  // server: `unseenOnly` (localStorage read-tracking is per-browser) and the
+  // saved-list scope above. Both can hide rows within a page — the accepted
+  // trade-off for keeping these purely client-side under server pagination.
+  const pageItems = useMemo(() => {
+    let items = inventory.items;
+    if (listScope) items = items.filter((i) => listScope.has(i.id));
+    if (filters.unseenOnly) items = items.filter((i) => !isSeen(i.id));
+    return items;
+  }, [inventory.items, listScope, filters.unseenOnly, isSeen]);
 
-  // Keep the open drawer in sync with live merges (e.g. a budget/BPU lands while
-  // the user is reading the dossier) without reopening it.
+  // Keep the open drawer's base item in sync with live refetches (e.g. a budget
+  // lands while the user reads the dossier) without reopening it.
   const liveSelected = useMemo(
     () =>
       selected
-        ? liveInventory.items.find((i) => i.id === selected.id) ?? selected
+        ? inventory.items.find((i) => i.id === selected.id) ?? selected
         : null,
-    [selected, liveInventory.items],
+    [selected, inventory.items],
   );
 
-  const patch = (p: Partial<FilterState>) => setFilters((prev) => ({ ...prev, ...p }));
-  const reset = () => setFilters(EMPTY_FILTERS);
-  const closeDrawer = useCallback(() => setSelected(null), []);
+  // ── Pager maths ────────────────────────────────────────────────────────────
+  const filteredCount = inventory.filteredCount;
+  const pageCount = Math.max(1, Math.ceil(filteredCount / PAGE_SIZE));
+  const rangeStart = filteredCount === 0 ? 0 : offset + 1;
+  const rangeEnd = Math.min(offset + inventory.items.length, filteredCount);
+  const canPrev = page > 0;
+  const canNext = offset + inventory.items.length < filteredCount;
 
-  // The API caps the catalogue payload; warn when not everything is loaded.
-  const capped = liveInventory.items.length < liveInventory.total;
+  const goPage = useCallback(
+    (p: number) => {
+      setPage(Math.max(0, Math.min(p, pageCount - 1)));
+      if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
+    },
+    [pageCount],
+  );
 
-  const onSortChange = (key: SortKey) =>
-    setSort((prev) =>
-      prev.key === key
-        ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
-        : { key, dir: 'asc' },
-    );
-
+  // ── Active-filter chips ─────────────────────────────────────────────────────
   const chips = useMemo<ActiveChip[]>(() => {
     const out: ActiveChip[] = [];
     const push = (group: keyof FilterState, keys: string[], label: (k: string) => string) => {
@@ -397,6 +387,42 @@ export function TendersExplorer({
 
   const hasChips = chips.length > 0 || filters.budgetOnly || filters.cautionOnly;
 
+  const onExport = useCallback(async () => {
+    setExporting(true);
+    try {
+      const exportQs = buildInventoryQuery({
+        ...queryParams,
+        offset: 0,
+        limit: EXPORT_LIMIT,
+      }).toString();
+      const inv = await fetchInventory(exportQs);
+      const rows = filters.unseenOnly
+        ? inv.items.filter((i) => !isSeen(i.id))
+        : inv.items;
+      downloadCsv(rows, `atlas-marches-${new Date().toISOString().slice(0, 10)}.csv`);
+    } catch {
+      window.alert("L'export a échoué — réessayez dans un instant.");
+    } finally {
+      setExporting(false);
+    }
+  }, [queryParams, filters.unseenOnly, isSeen]);
+
+  const onSave = useCallback(async () => {
+    const name = window.prompt('Nom de la recherche :');
+    if (!name?.trim()) return;
+    const res = await fetch('/api/tender/saved-searches', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim(), filters: { ...filters, search: searchInput } }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      window.alert(`Erreur : HTTP ${res.status}${detail ? ' — ' + detail.slice(0, 200) : ''}`);
+    } else {
+      window.alert(`Recherche « ${name.trim()} » sauvegardée.`);
+    }
+  }, [filters, searchInput]);
+
   return (
     <div>
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
@@ -411,9 +437,12 @@ export function TendersExplorer({
           <p className="mt-1 text-sm text-muted">
             {preloadedList
               ? `${preloadedList.tenderIds.length} appel(s) dans la liste`
-              : `${liveInventory.total} appel(s) d'offres au catalogue`}{' '}
-            · <span className="font-semibold text-ink">{visible.length}</span>{' '}
-            affiché(s)
+              : `${inventory.total} appel(s) d'offres au catalogue`}{' '}
+            · <span className="font-semibold text-ink">{filteredCount}</span>{' '}
+            correspondant(s)
+            {isFetching && !isPlaceholderData && (
+              <span className="ml-2 text-xs text-faint">actualisation…</span>
+            )}
             {(preloadedList || preloadedSearch) && (
               <>
                 {' '}
@@ -428,21 +457,7 @@ export function TendersExplorer({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={async () => {
-              const name = window.prompt('Nom de la recherche :');
-              if (!name?.trim()) return;
-              const res = await fetch('/api/tender/saved-searches', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name.trim(), filters }),
-              });
-              if (!res.ok) {
-                const detail = await res.text().catch(() => '');
-                window.alert(`Erreur : HTTP ${res.status}${detail ? ' — ' + detail.slice(0, 200) : ''}`);
-              } else {
-                window.alert(`Recherche « ${name.trim()} » sauvegardée.`);
-              }
-            }}
+            onClick={onSave}
             className="flex items-center gap-1.5 rounded-lg border border-line bg-paper-2 px-3 py-2 text-sm font-medium text-muted transition hover:bg-sand hover:text-ink"
             title="Sauvegarder le jeu de filtres courant"
           >
@@ -451,18 +466,13 @@ export function TendersExplorer({
           </button>
           <button
             type="button"
-            onClick={() =>
-              downloadCsv(
-                visible,
-                `atlas-marches-${new Date().toISOString().slice(0, 10)}.csv`,
-              )
-            }
-            disabled={visible.length === 0}
+            onClick={onExport}
+            disabled={exporting || filteredCount === 0}
             className="flex items-center gap-1.5 rounded-lg border border-line bg-paper-2 px-3 py-2 text-sm font-medium text-muted transition hover:bg-sand hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-            title={`Exporter ${visible.length} ligne(s) en CSV`}
+            title={`Exporter jusqu'à ${EXPORT_LIMIT} ligne(s) du jeu filtré en CSV`}
           >
             <Icon name="download" size={15} />
-            Exporter CSV
+            {exporting ? 'Export…' : 'Exporter CSV'}
           </button>
           <button
             type="button"
@@ -526,30 +536,78 @@ export function TendersExplorer({
         {showFilters && (
           <aside className="lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:self-start lg:overflow-y-auto lg:pr-1">
             <FilterSidebar
-              facets={liveInventory.facets}
-              value={filters}
+              facets={inventory.facets}
+              value={{ ...filters, search: searchInput }}
               onChange={patch}
               onReset={reset}
             />
           </aside>
         )}
 
-        <div className="min-w-0 rounded-xl border border-line bg-paper-2 shadow-card">
-          <DataTable
-            items={visible}
-            sort={sort}
-            onSortChange={onSortChange}
-            selectedId={selected?.id ?? null}
-            onSelect={(item) => {
-              markSeen(item.id);
-              setSelected(item);
-            }}
-            isSeen={isSeen}
-          />
-          {visible.length === 0 && (
-            <p className="p-10 text-center text-muted">
-              Aucun marché ne correspond à ces filtres.
-            </p>
+        <div className="min-w-0">
+          <div className="rounded-xl border border-line bg-paper-2 shadow-card">
+            <DataTable
+              items={pageItems}
+              sort={sort}
+              onSortChange={onSortChange}
+              selectedId={selected?.id ?? null}
+              onSelect={(item) => {
+                markSeen(item.id);
+                setSelected(item);
+              }}
+              isSeen={isSeen}
+            />
+            {pageItems.length === 0 && (
+              <p className="p-10 text-center text-muted">
+                {isError
+                  ? 'Erreur de chargement — réessayez.'
+                  : 'Aucun marché ne correspond à ces filtres.'}
+              </p>
+            )}
+          </div>
+
+          {/* Pager — Précédent / Suivant + range + page numbers. */}
+          {filteredCount > 0 && (
+            <nav
+              className="mt-4 flex flex-wrap items-center justify-between gap-3"
+              aria-label="Pagination"
+            >
+              <p className="text-sm text-muted">
+                <span className="font-semibold text-ink">
+                  {rangeStart}–{rangeEnd}
+                </span>{' '}
+                sur {filteredCount}
+                {(filters.unseenOnly || listScope) && (
+                  <span className="ml-1 text-xs text-faint">
+                    ({listScope ? 'liste' : 'non vus'} — filtré sur cette page)
+                  </span>
+                )}
+              </p>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => goPage(page - 1)}
+                  disabled={!canPrev}
+                  className="flex items-center gap-1 rounded-lg border border-line bg-paper-2 px-3 py-1.5 text-sm font-medium text-muted transition hover:bg-sand hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Icon name="chevronRight" size={14} className="rotate-180" />
+                  Précédent
+                </button>
+                <span className="px-2 text-sm tabular-nums text-muted">
+                  Page <span className="font-semibold text-ink">{page + 1}</span>{' '}
+                  / {pageCount}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => goPage(page + 1)}
+                  disabled={!canNext}
+                  className="flex items-center gap-1 rounded-lg border border-line bg-paper-2 px-3 py-1.5 text-sm font-medium text-muted transition hover:bg-sand hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Suivant
+                  <Icon name="chevronRight" size={14} />
+                </button>
+              </div>
+            </nav>
           )}
         </div>
       </div>

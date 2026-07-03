@@ -269,6 +269,116 @@ describe('buildInventory', () => {
     expect(inv.items.map((i) => i.reference)).toEqual(['P/2', 'P/3']);
   });
 
+  test('multi-select categories: a row passes when the set contains its category', () => {
+    // records = Travaux (A/1 voirie), Fournitures (A/2), Travaux (B/1 irrigation),
+    // Services (C/1 étude). A ['Travaux','Services'] set keeps A/1, B/1 and C/1.
+    const inv = buildInventory(
+      records,
+      { categories: ['Travaux', 'Services'] },
+      NOW,
+    );
+    expect(inv.filteredCount).toBe(3);
+    expect(inv.items.every((i) => i.category !== 'Fournitures')).toBe(true);
+    // Facets still describe the full catalogue.
+    expect(inv.facets.categories.find((f) => f.key === 'Fournitures')?.count).toBe(1);
+  });
+
+  test('multi-select procedures unions with the single-value procedure param', () => {
+    // The single `procedure` merges with the `procedures` array (union), so both
+    // AOO (A/1, B/1) and concours (C/1) rows pass.
+    const inv = buildInventory(
+      records,
+      { procedure: 'AOO', procedures: ['concours'] },
+      NOW,
+    );
+    expect(inv.filteredCount).toBe(3);
+    expect(
+      inv.items.every((i) => i.procedure === 'AOO' || i.procedure === 'concours'),
+    ).toBe(true);
+  });
+
+  test('budgetOnly keeps only rows with a known estimation', () => {
+    const withBudget = rec({ reference: 'BUD/1', estimationMad: 1_000_000 });
+    const noBudget = rec({ reference: 'BUD/2' });
+    const inv = buildInventory([withBudget, noBudget], { budgetOnly: true }, NOW);
+    expect(inv.items.map((i) => i.reference)).toEqual(['BUD/1']);
+    // total/facets still span the whole catalogue.
+    expect(inv.total).toBe(2);
+  });
+
+  test('bpuOnly keeps only rows whose projected hasBpu flag is true', () => {
+    const withBpu = { ...rec({ reference: 'BPU/1' }), hasBpu: true } as const;
+    const withoutBpu = { ...rec({ reference: 'BPU/2' }), hasBpu: false } as const;
+    const inv = buildInventory([withBpu, withoutBpu], { bpuOnly: true }, NOW);
+    expect(inv.items.map((i) => i.reference)).toEqual(['BPU/1']);
+  });
+
+  test('cautionOnly keeps only rows with a known caution provisoire', () => {
+    const withCaution = rec({ reference: 'CAU/1', cautionProvisoireMad: 5000 });
+    const noCaution = rec({ reference: 'CAU/2' });
+    const inv = buildInventory([withCaution, noCaution], { cautionOnly: true }, NOW);
+    expect(inv.items.map((i) => i.reference)).toEqual(['CAU/1']);
+  });
+
+  test('sort by deadline asc orders soonest-deadline first', () => {
+    const late = rec({
+      reference: 'LATE',
+      deadlineAt: new Date('2026-09-01T09:00:00Z'),
+      createdAt: new Date('2026-06-01T00:00:00Z'),
+    });
+    const soon = rec({
+      reference: 'SOON',
+      deadlineAt: new Date('2026-07-01T09:00:00Z'),
+      // Older publication — proves the sort key is deadline, not publication.
+      createdAt: new Date('2026-05-01T00:00:00Z'),
+    });
+    const inv = buildInventory([late, soon], { sort: 'deadline', dir: 'asc' }, NOW);
+    expect(inv.items.map((i) => i.reference)).toEqual(['SOON', 'LATE']);
+  });
+
+  test('sort by estimation desc puts the highest budget first, missing budgets last', () => {
+    const high = rec({ reference: 'HIGH', estimationMad: 9_000_000 });
+    const low = rec({ reference: 'LOW', estimationMad: 1_000_000 });
+    const none = rec({ reference: 'NONE' });
+    const inv = buildInventory(
+      [low, none, high],
+      { sort: 'estimation', dir: 'desc' },
+      NOW,
+    );
+    expect(inv.items.map((i) => i.reference)).toEqual(['HIGH', 'LOW', 'NONE']);
+  });
+
+  test('sort by buyer asc orders by buyer name (locale), reference breaks ties', () => {
+    const inv = buildInventory(
+      [
+        rec({ reference: 'Z', buyerName: 'Beta' }),
+        rec({ reference: 'A', buyerName: 'Alpha' }),
+        rec({ reference: 'B', buyerName: 'Alpha' }),
+      ],
+      { sort: 'buyer', dir: 'asc' },
+      NOW,
+    );
+    // Alpha rows first (ref A before B), then Beta.
+    expect(inv.items.map((i) => i.reference)).toEqual(['A', 'B', 'Z']);
+  });
+
+  test('pagination with an explicit sort pages the SORTED result set', () => {
+    const many = Array.from({ length: 5 }, (_, i) =>
+      rec({
+        reference: `P/${i}`,
+        deadlineAt: new Date(`2026-08-0${i + 1}T09:00:00Z`),
+      }),
+    );
+    // Deadline asc → P/0..P/4; limit 2 offset 2 → the 3rd and 4th rows.
+    const inv = buildInventory(many, { sort: 'deadline', dir: 'asc' }, NOW, {
+      limit: 2,
+      offset: 2,
+    });
+    expect(inv.filteredCount).toBe(5);
+    expect(inv.returnedCount).toBe(2);
+    expect(inv.items.map((i) => i.reference)).toEqual(['P/2', 'P/3']);
+  });
+
   test('enriches items with category, secteur, ville, lots, caution and publishedAt', () => {
     const created = new Date('2026-06-10T08:00:00Z');
     const inv = buildInventory(

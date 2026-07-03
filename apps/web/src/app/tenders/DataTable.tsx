@@ -33,18 +33,22 @@ interface Column {
   align?: 'right';
 }
 
+// Only the four dimensions the server can sort on (mirrors tenders-query
+// ServerSort: publication|deadline|estimation→budget|buyer) are clickable.
+// The rest render un-sorted — client-sorting a single 24-row page would be
+// misleading now that pagination is server-side.
 const COLUMNS: readonly Column[] = [
   { key: 'buyer', label: 'Acheteur', sortKey: 'buyer', width: 230 },
-  { key: 'objet', label: 'Titre', sortKey: 'objet', width: 340 },
+  { key: 'objet', label: 'Titre', sortKey: null, width: 340 },
   { key: 'publication', label: 'Date de publication', sortKey: 'publication', width: 150 },
   { key: 'deadline', label: 'Date limite', sortKey: 'deadline', width: 140 },
-  { key: 'category', label: 'Catégorie', sortKey: 'category', width: 120 },
-  { key: 'secteur', label: 'Secteur', sortKey: 'secteur', width: 180 },
-  { key: 'region', label: 'Région', sortKey: 'region', width: 170 },
-  { key: 'ville', label: "Lieu d'exécution", sortKey: 'ville', width: 160 },
-  { key: 'lots', label: 'Lots', sortKey: 'lots', width: 80, align: 'right' },
+  { key: 'category', label: 'Catégorie', sortKey: null, width: 120 },
+  { key: 'secteur', label: 'Secteur', sortKey: null, width: 180 },
+  { key: 'region', label: 'Région', sortKey: null, width: 170 },
+  { key: 'ville', label: "Lieu d'exécution", sortKey: null, width: 160 },
+  { key: 'lots', label: 'Lots', sortKey: null, width: 80, align: 'right' },
   { key: 'budget', label: 'Budget', sortKey: 'budget', width: 140, align: 'right' },
-  { key: 'caution', label: 'Caution prov.', sortKey: 'caution', width: 140, align: 'right' },
+  { key: 'caution', label: 'Caution prov.', sortKey: null, width: 140, align: 'right' },
   { key: 'procedure', label: 'Procédure', sortKey: null, width: 160 },
   { key: 'state', label: 'État', sortKey: null, width: 130 },
 ];

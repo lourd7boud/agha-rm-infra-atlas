@@ -113,7 +113,37 @@ import {
 } from './buyer-observatory.domain';
 
 const transitionBodySchema = z.object({ to: pipelineStateSchema });
+
+/** Parses a comma-separated multi-select param into a trimmed, non-empty
+ *  string[]. Accepts a single value or repeated values (which zod coerces to an
+ *  array); commas split each entry so `?procedures=AOO,concours` and
+ *  `?procedures=AOO&procedures=concours` both yield ['AOO','concours']. Returns
+ *  undefined when nothing usable remains (treated as "no constraint"). */
+const csvParam = z
+  .union([z.string(), z.array(z.string())])
+  .optional()
+  .transform((value): string[] | undefined => {
+    if (value === undefined) return undefined;
+    const parts = (Array.isArray(value) ? value : [value])
+      .flatMap((entry) => entry.split(','))
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    return parts.length > 0 ? parts : undefined;
+  });
+
+/** Parses a boolean flag from the 'true'/'false' string a query string carries. */
+const boolParam = z
+  .enum(['true', 'false'])
+  .optional()
+  .transform((value) => (value === undefined ? undefined : value === 'true'));
+
+const inventorySortSchema = z
+  .enum(['publication', 'deadline', 'estimation', 'buyer', 'daysLeft'])
+  .default('publication');
+const inventoryDirSchema = z.enum(['asc', 'desc']).default('desc');
+
 const inventoryQuerySchema = z.object({
+  // ── Existing single-value params (SSR/preload + ?since= delta rely on them). ──
   procedure: tenderProcedureSchema.optional(),
   buyer: z.string().max(200).optional(),
   region: z.string().max(100).optional(),
@@ -123,8 +153,24 @@ const inventoryQuerySchema = z.object({
   /** Delta cutoff for live silent refresh — only rows updated after this instant
    *  are returned (facets/total stay catalogue-wide). Accepts an ISO timestamp. */
   since: z.coerce.date().optional(),
-  limit: z.coerce.number().int().positive().max(5000).optional(),
-  offset: z.coerce.number().int().nonnegative().optional(),
+  // ── New multi-select params (comma-separated), merged with the single ones. ──
+  procedures: csvParam,
+  categories: csvParam,
+  secteurs: csvParam,
+  regions: csvParam,
+  buyers: csvParam,
+  states: csvParam,
+  lifecycles: csvParam,
+  // ── New boolean toggles ('true'/'false'). ──
+  bpuOnly: boolParam,
+  budgetOnly: boolParam,
+  cautionOnly: boolParam,
+  // ── Server-side sort. ──
+  sort: inventorySortSchema,
+  dir: inventoryDirSchema,
+  // Page defaults to 24 rows (one datao-style page); 100 hard ceiling.
+  limit: z.coerce.number().int().positive().max(100).default(24),
+  offset: z.coerce.number().int().nonnegative().default(0),
 });
 const enrichBodySchema = z.object({
   text: z
