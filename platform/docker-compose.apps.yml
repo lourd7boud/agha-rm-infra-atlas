@@ -56,6 +56,11 @@ services:
       NODE_ENV: production
       PORT: "3000"
       WATCH_WORKER_ENABLED: "true"
+      # Drain the portal-detail backlog aggressively per sweep (default 40 is too
+      # slow for the ~5 k version-stale rows). Newest-first, zero LLM, idempotent
+      # via the raw.detail.v version predicate — safe to run large. Lower back to
+      # ~40 once the corpus is fully at DETAIL_VERSION if sweep latency matters.
+      WATCH_DETAIL_BACKFILL: "300"
     # The extraction pipeline (PDF vision + LLM) is the known CPU/RAM hog:
     # cap it at one core so the API always keeps a core for HTTP.
     cpus: 1.0
