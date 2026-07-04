@@ -123,26 +123,34 @@ export function DetailDrawer({
   // Portal-first "fiche du portail": the published detail block (zero LLM). The
   // portal prints "-" for empty fields — treat those as absent.
   const pd = view.portalDetail;
+  // Some buyers type placeholders ("-", "champsvide", "néant") into optional
+  // portal fields — treat those as absent so we never render "Fax : champsvide".
+  const PORTAL_PLACEHOLDERS = new Set(['-', 'champsvide', 'champ vide', 'neant', 'néant', 'n/a']);
   const meaningful = (s?: string | null): s is string =>
-    Boolean(s && s.trim() && s.trim() !== '-');
+    Boolean(s && s.trim() && !PORTAL_PLACEHOLDERS.has(s.trim().toLowerCase()));
   // Contact: prefer the portal source (it also publishes a télécopieur), fall
   // back to the DCE-extracted contact. Normalized to one concrete shape.
   const portalContact = pd?.contact;
+  const telecopieur = (portalContact as { telecopieur?: string | null } | null | undefined)
+    ?.telecopieur;
   const contactFromPortal = Boolean(
     portalContact &&
-      (portalContact.nom ||
-        portalContact.email ||
-        portalContact.telephone ||
-        portalContact.telecopieur),
+      (meaningful(portalContact.nom) ||
+        meaningful(portalContact.email) ||
+        meaningful(portalContact.telephone) ||
+        meaningful(telecopieur)),
   );
   const contactSource = contactFromPortal ? portalContact : view.contact;
   const contact = contactSource
     ? {
-        nom: contactSource.nom ?? null,
-        email: contactSource.email ?? null,
-        telephone: contactSource.telephone ?? null,
-        telecopieur:
-          (contactSource as { telecopieur?: string | null }).telecopieur ?? null,
+        nom: meaningful(contactSource.nom) ? contactSource.nom : null,
+        email: meaningful(contactSource.email) ? contactSource.email : null,
+        telephone: meaningful(contactSource.telephone) ? contactSource.telephone : null,
+        telecopieur: meaningful(
+          (contactSource as { telecopieur?: string | null }).telecopieur,
+        )
+          ? (contactSource as { telecopieur?: string | null }).telecopieur ?? null
+          : null,
       }
     : null;
   const reserveAuxPme = pd?.reserveAuxPme ?? view.reserveAuxPme;
