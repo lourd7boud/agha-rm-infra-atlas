@@ -53,6 +53,9 @@ export const payments = finance.table(
   (table) => [
     // Cashflow per chantier reads payments by project — keep it off a seq scan.
     index('payment_project_id_idx').on(table.projectId),
+    // The recettes ledger is listed newest-first — keep that ordered read off a
+    // seq scan as the cashflow log grows.
+    index('payment_created_at_idx').on(table.createdAt),
   ],
 );
 
@@ -81,5 +84,8 @@ export const expenses = finance.table(
     // Supplier-scoped expense reports (all dépenses for fournisseur X) + joins
     // to supply.supplier must not seq-scan finance.expense as it grows.
     index('expense_supplier_id_idx').on(table.supplierId),
+    // The dépenses ledger is listed newest-first — keep that ordered read off a
+    // seq scan as the cashflow log grows.
+    index('expense_created_at_idx').on(table.createdAt),
   ],
 );

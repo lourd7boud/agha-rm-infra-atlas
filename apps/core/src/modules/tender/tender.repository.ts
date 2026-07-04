@@ -9,6 +9,7 @@ import {
   isNotNull,
   isNull,
   ne,
+  notInArray,
   or,
   sql,
   type SQL,
@@ -100,6 +101,62 @@ export interface KnowledgeTenderRow {
   hasBpu: boolean;
 }
 
+/**
+ * Terminal states the orchestrator never has an action for — nextActions()
+ * returns [] for these (orchestrator.domain), so excluding them in SQL is
+ * output-preserving and lets the projected read + composite index scan only the
+ * active tail instead of the whole catalogue. Must mirror the domain list.
+ */
+const ORCHESTRATOR_TERMINAL_STATES: readonly PipelineState[] = [
+  'won',
+  'lost',
+  'no_go',
+  'rejected',
+];
+
+/**
+ * Projected orchestrator row — ONLY what buildComplianceChecklist + nextActions
+ * read. The heavy `raw` jsonb (dossier extractions, BPU tables, G1/G2 bodies)
+ * never ships: just the small `extraction` sub-object and three artifact-presence
+ * booleans are extracted IN Postgres. Replaces the full findAll() that shipped
+ * ~100 KB/row for the whole catalogue on every dashboard load.
+ */
+export interface OrchestratorRow {
+  id: string;
+  reference: string;
+  pipelineState: PipelineState;
+  estimationMad?: number;
+  cautionProvisoireMad?: number;
+  deadlineAt: Date;
+  hasG1Brief: boolean;
+  hasG2Scenarios: boolean;
+  hasBidDraft: boolean;
+  extraction: Record<string, unknown> | null;
+}
+
+/** One artifact's activity: how many tenders carry it + its newest timestamp. */
+export interface ActivityStat {
+  count: number;
+  last: string | null;
+}
+
+/**
+ * Aggregated agents-room activity — computed IN Postgres (FILTER aggregates over
+ * the raw jsonb key-presence + a GROUP BY pipeline_state) so the full raw
+ * catalogue is never shipped to JS and walked per request. Replaces the old
+ * findAll() + eight O(n) JS loops with a single-row aggregate + a tiny histogram.
+ */
+export interface AgentsActivity {
+  g1Brief: ActivityStat;
+  g2Scenarios: ActivityStat;
+  riskAssessment: ActivityStat;
+  bidDraft: ActivityStat;
+  estimateSkeleton: ActivityStat;
+  extraction: ActivityStat;
+  qualifier: ActivityStat;
+  stateCounts: Array<{ state: PipelineState; count: number }>;
+}
+
 /** Work item for the DB-driven detail backfill (fill-only-empty semantics). */
 export interface DetailBackfillTarget {
   id: string;
@@ -128,6 +185,20 @@ export interface TenderRepository {
   findAll(): Promise<TenderRecord[]>;
   /** Slim full-catalogue read for knowledge aggregation — never ships raw. */
   findAllForKnowledge(): Promise<KnowledgeTenderRow[]>;
+  /**
+   * Projected, terminal-filtered read for the Chef d'Orchestre dashboard: only
+   * the fields the compliance checklist + next-action dispatcher need, with the
+   * `raw` jsonb reduced to a presence-probe + the small `extraction` sub-object.
+   * Excludes terminal tenders in SQL (they carry no action) so the read is
+   * O(active), not O(catalogue).
+   */
+  findForOrchestrator(): Promise<OrchestratorRow[]>;
+  /**
+   * Single aggregate read for the agents room: per-artifact counts + newest
+   * timestamps and a pipeline-state histogram, all computed in Postgres so the
+   * full raw catalogue is never shipped to JS just to be counted.
+   */
+  agentsActivity(): Promise<AgentsActivity>;
   /**
    * Newest-first tenders still missing their caution whose detail page was
    * never fetched (no raw.detail marker) — the work list for the DB-driven
@@ -331,6 +402,71 @@ export class InMemoryTenderRepository implements TenderRepository {
         hasBpu: Array.isArray(extraction?.bpu) && extraction.bpu.length > 0,
       };
     });
+  }
+
+  async findForOrchestrator(): Promise<OrchestratorRow[]> {
+    return this.records
+      .filter((r) => !ORCHESTRATOR_TERMINAL_STATES.includes(r.pipelineState))
+      .map((r) => {
+        const raw = (r.raw ?? {}) as Record<string, unknown>;
+        return {
+          id: r.id,
+          reference: r.reference,
+          pipelineState: r.pipelineState,
+          ...(r.estimationMad !== undefined ? { estimationMad: r.estimationMad } : {}),
+          ...(r.cautionProvisoireMad !== undefined
+            ? { cautionProvisoireMad: r.cautionProvisoireMad }
+            : {}),
+          deadlineAt: r.deadlineAt,
+          hasG1Brief: raw['g1Brief'] !== undefined,
+          hasG2Scenarios: raw['g2Scenarios'] !== undefined,
+          hasBidDraft: raw['bidDraft'] !== undefined,
+          extraction: (raw['extraction'] ?? null) as Record<string, unknown> | null,
+        };
+      })
+      .sort((a, b) => a.deadlineAt.getTime() - b.deadlineAt.getTime());
+  }
+
+  async agentsActivity(): Promise<AgentsActivity> {
+    const stat = (rawKey: string, tsKey = 'generatedAt'): ActivityStat => {
+      let count = 0;
+      let last: string | null = null;
+      for (const r of this.records) {
+        const node = (r.raw as Record<string, unknown> | null)?.[rawKey];
+        if (node && typeof node === 'object') {
+          count += 1;
+          const g = (node as Record<string, unknown>)[tsKey];
+          if (typeof g === 'string' && (!last || g > last)) last = g;
+        }
+      }
+      return { count, last };
+    };
+    let qualCount = 0;
+    let qualLast: string | null = null;
+    for (const r of this.records) {
+      if (r.qualification) {
+        qualCount += 1;
+        const c = (r.qualification as { checkedAt?: unknown }).checkedAt;
+        if (typeof c === 'string' && (!qualLast || c > qualLast)) qualLast = c;
+      }
+    }
+    const stateMap = new Map<PipelineState, number>();
+    for (const r of this.records) {
+      stateMap.set(r.pipelineState, (stateMap.get(r.pipelineState) ?? 0) + 1);
+    }
+    return {
+      g1Brief: stat('g1Brief'),
+      g2Scenarios: stat('g2Scenarios'),
+      riskAssessment: stat('riskAssessment'),
+      bidDraft: stat('bidDraft'),
+      estimateSkeleton: stat('estimateSkeleton'),
+      extraction: stat('extraction', 'extractedAt'),
+      qualifier: { count: qualCount, last: qualLast },
+      stateCounts: [...stateMap.entries()].map(([state, count]) => ({
+        state,
+        count,
+      })),
+    };
   }
 
   async findDetailBackfillTargets(limit: number): Promise<DetailBackfillTarget[]> {
@@ -548,6 +684,95 @@ export class DrizzleTenderRepository implements TenderRepository {
       .from(tenders)
       .orderBy(asc(tenders.deadlineAt));
     return rows.map(toRecord);
+  }
+
+  async findForOrchestrator(): Promise<OrchestratorRow[]> {
+    // Projected + terminal-filtered: the heavy `raw` never ships — only a
+    // presence-probe for the three artifacts nextActions() tests and the small
+    // `extraction` sub-object buildComplianceChecklist() reads. The WHERE prunes
+    // terminal tenders (no action) so Postgres scans the active tail via the
+    // (pipeline_state, deadline_at) index instead of the whole catalogue.
+    const rows = await this.db
+      .select({
+        id: tenders.id,
+        reference: tenders.reference,
+        pipelineState: tenders.pipelineState,
+        estimationMad: tenders.estimationMad,
+        cautionProvisoireMad: tenders.cautionProvisoireMad,
+        deadlineAt: tenders.deadlineAt,
+        hasG1Brief: sql<boolean>`coalesce(jsonb_exists(${tenders.raw}, 'g1Brief'), false)`,
+        hasG2Scenarios: sql<boolean>`coalesce(jsonb_exists(${tenders.raw}, 'g2Scenarios'), false)`,
+        hasBidDraft: sql<boolean>`coalesce(jsonb_exists(${tenders.raw}, 'bidDraft'), false)`,
+        extraction: sql<Record<string, unknown> | null>`${tenders.raw}->'extraction'`,
+      })
+      .from(tenders)
+      .where(notInArray(tenders.pipelineState, [...ORCHESTRATOR_TERMINAL_STATES]))
+      .orderBy(asc(tenders.deadlineAt));
+    return rows.map((row) => ({
+      id: row.id,
+      reference: row.reference,
+      pipelineState: row.pipelineState as PipelineState,
+      ...(row.estimationMad != null
+        ? { estimationMad: Number(row.estimationMad) }
+        : {}),
+      ...(row.cautionProvisoireMad != null
+        ? { cautionProvisoireMad: Number(row.cautionProvisoireMad) }
+        : {}),
+      deadlineAt: row.deadlineAt,
+      hasG1Brief: row.hasG1Brief,
+      hasG2Scenarios: row.hasG2Scenarios,
+      hasBidDraft: row.hasBidDraft,
+      extraction: row.extraction ?? null,
+    }));
+  }
+
+  async agentsActivity(): Promise<AgentsActivity> {
+    // One-pass aggregate: per-artifact count + newest timestamp via FILTER, all in
+    // Postgres. jsonb_typeof(...) = 'object' mirrors the old JS `typeof node ===
+    // 'object'` test; max(... ->> tsKey) mirrors the JS lexicographic max of the
+    // ISO string. No raw jsonb is shipped — only the scalar aggregates.
+    const [agg] = await this.db
+      .select({
+        g1Count: sql<number>`count(*) filter (where jsonb_typeof(${tenders.raw}->'g1Brief') = 'object')`,
+        g1Last: sql<string | null>`max(${tenders.raw}->'g1Brief'->>'generatedAt') filter (where jsonb_typeof(${tenders.raw}->'g1Brief') = 'object')`,
+        g2Count: sql<number>`count(*) filter (where jsonb_typeof(${tenders.raw}->'g2Scenarios') = 'object')`,
+        g2Last: sql<string | null>`max(${tenders.raw}->'g2Scenarios'->>'generatedAt') filter (where jsonb_typeof(${tenders.raw}->'g2Scenarios') = 'object')`,
+        riskCount: sql<number>`count(*) filter (where jsonb_typeof(${tenders.raw}->'riskAssessment') = 'object')`,
+        riskLast: sql<string | null>`max(${tenders.raw}->'riskAssessment'->>'generatedAt') filter (where jsonb_typeof(${tenders.raw}->'riskAssessment') = 'object')`,
+        bidCount: sql<number>`count(*) filter (where jsonb_typeof(${tenders.raw}->'bidDraft') = 'object')`,
+        bidLast: sql<string | null>`max(${tenders.raw}->'bidDraft'->>'generatedAt') filter (where jsonb_typeof(${tenders.raw}->'bidDraft') = 'object')`,
+        estCount: sql<number>`count(*) filter (where jsonb_typeof(${tenders.raw}->'estimateSkeleton') = 'object')`,
+        estLast: sql<string | null>`max(${tenders.raw}->'estimateSkeleton'->>'generatedAt') filter (where jsonb_typeof(${tenders.raw}->'estimateSkeleton') = 'object')`,
+        extrCount: sql<number>`count(*) filter (where jsonb_typeof(${tenders.raw}->'extraction') = 'object')`,
+        extrLast: sql<string | null>`max(${tenders.raw}->'extraction'->>'extractedAt') filter (where jsonb_typeof(${tenders.raw}->'extraction') = 'object')`,
+        qualCount: sql<number>`count(*) filter (where ${tenders.qualification} is not null)`,
+        qualLast: sql<string | null>`max(${tenders.qualification}->>'checkedAt') filter (where ${tenders.qualification} is not null)`,
+      })
+      .from(tenders);
+    const stateRows = await this.db
+      .select({ state: tenders.pipelineState, count: sql<number>`count(*)` })
+      .from(tenders)
+      .groupBy(tenders.pipelineState);
+    const stat = (
+      count: number | undefined,
+      last: string | null | undefined,
+    ): ActivityStat => ({
+      count: Number(count ?? 0),
+      last: last ?? null,
+    });
+    return {
+      g1Brief: stat(agg?.g1Count, agg?.g1Last),
+      g2Scenarios: stat(agg?.g2Count, agg?.g2Last),
+      riskAssessment: stat(agg?.riskCount, agg?.riskLast),
+      bidDraft: stat(agg?.bidCount, agg?.bidLast),
+      estimateSkeleton: stat(agg?.estCount, agg?.estLast),
+      extraction: stat(agg?.extrCount, agg?.extrLast),
+      qualifier: stat(agg?.qualCount, agg?.qualLast),
+      stateCounts: stateRows.map((row) => ({
+        state: row.state as PipelineState,
+        count: Number(row.count),
+      })),
+    };
   }
 
   async findAllInventoryRows(): Promise<InventoryRow[]> {

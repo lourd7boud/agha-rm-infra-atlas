@@ -14,7 +14,9 @@ export interface DigestTenderInput {
   objet: string;
   pipelineState: string;
   deadlineAt: Date;
-  raw: Record<string, unknown> | null;
+  // Unused by buildDigest — kept optional so the slim findAllForKnowledge()
+  // projection (which never ships raw) satisfies this input directly.
+  raw?: Record<string, unknown> | null;
 }
 
 export interface DigestWallEntry {

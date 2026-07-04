@@ -560,20 +560,48 @@ export class TenderController {
   async orchestrator() {
     return orchestratorCache.getOrCompute('all', ORCHESTRATOR_CACHE_TTL_MS, async () => {
       const now = new Date();
-      const [records, documents] = await Promise.all([
-        this.repository.findAll(),
+      // Projected read (findForOrchestrator): terminal tenders are excluded in SQL
+      // and the heavy `raw` never ships — only a presence-probe for g1Brief/
+      // g2Scenarios/bidDraft + the small `extraction` sub-object are reconstructed
+      // here so buildComplianceChecklist + nextActions see exactly what they read.
+      const [rows, documents] = await Promise.all([
+        this.repository.findForOrchestrator(),
         this.vault.findAll(),
       ]);
-      return records
-        .map((record) => {
-          const checklist = buildComplianceChecklist(record, documents, now);
+      return rows
+        .map((row) => {
+          const raw: Record<string, unknown> = {
+            ...(row.hasG1Brief ? { g1Brief: true } : {}),
+            ...(row.hasG2Scenarios ? { g2Scenarios: true } : {}),
+            ...(row.hasBidDraft ? { bidDraft: true } : {}),
+            ...(row.extraction != null ? { extraction: row.extraction } : {}),
+          };
+          const checklist = buildComplianceChecklist(
+            {
+              reference: row.reference,
+              ...(row.cautionProvisoireMad !== undefined
+                ? { cautionProvisoireMad: row.cautionProvisoireMad }
+                : {}),
+              raw,
+            },
+            documents,
+            now,
+          );
           return {
-            tenderId: record.id,
-            reference: record.reference,
-            etat: record.pipelineState,
-            daysLeft: daysUntil(record.deadlineAt, now),
+            tenderId: row.id,
+            reference: row.reference,
+            etat: row.pipelineState,
+            daysLeft: daysUntil(row.deadlineAt, now),
             actions: nextActions(
-              { ...record, checklistReady: checklist.ready },
+              {
+                pipelineState: row.pipelineState,
+                ...(row.estimationMad !== undefined
+                  ? { estimationMad: row.estimationMad }
+                  : {}),
+                deadlineAt: row.deadlineAt,
+                raw,
+                checklistReady: checklist.ready,
+              },
               now,
             ),
           };

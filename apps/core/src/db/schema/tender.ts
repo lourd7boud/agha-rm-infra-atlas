@@ -111,6 +111,11 @@ export const tenders = tender.table('tender', {
   index('tender_category_idx').on(table.category),
   index('tender_secteur_idx').on(table.secteur),
   index('tender_has_bpu_idx').on(table.hasBpu),
+  // P4 composite (migration 0034): the pipeline board reads one stage ordered by
+  // deadline (e.g. "detected tenders, soonest deadline first"). A composite on
+  // (pipeline_state, deadline_at) serves that filter+order in one index scan —
+  // the single-column tender_pipeline_state_idx above can't order the matches.
+  index('tender_pipeline_deadline_idx').on(table.pipelineState, table.deadlineAt),
 ]);
 
 // ── Phase 0 — Socle de vérité ────────────────────────────────────────────────

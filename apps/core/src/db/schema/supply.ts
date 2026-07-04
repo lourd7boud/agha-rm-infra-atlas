@@ -27,19 +27,27 @@ export const suppliers = supply.table('supplier', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const purchaseOrders = supply.table('purchase_order', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  supplierId: uuid('supplier_id')
-    .notNull()
-    .references(() => suppliers.id),
-  projectId: uuid('project_id').references(() => projects.id),
-  reference: text('reference').notNull(),
-  objet: text('objet').notNull(),
-  amountMad: numeric('amount_mad', { precision: 14, scale: 2 }).notNull(),
-  status: text('status').notNull().default('brouillon'),
-  orderedAt: date('ordered_at', { mode: 'date' }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const purchaseOrders = supply.table(
+  'purchase_order',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    supplierId: uuid('supplier_id')
+      .notNull()
+      .references(() => suppliers.id),
+    projectId: uuid('project_id').references(() => projects.id),
+    reference: text('reference').notNull(),
+    objet: text('objet').notNull(),
+    amountMad: numeric('amount_mad', { precision: 14, scale: 2 }).notNull(),
+    status: text('status').notNull().default('brouillon'),
+    orderedAt: date('ordered_at', { mode: 'date' }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Bons de commande are listed newest-first — keep that ordered read off a
+    // seq scan as the procurement log grows.
+    index('supply_purchase_order_created_at_idx').on(table.createdAt),
+  ],
+);
 
 // Bon de commande line items — inserted with the parent order (mirrors the
 // sales quote_line/invoice_line pattern). When lines are supplied, the order's
@@ -64,17 +72,26 @@ export const purchaseOrderLines = supply.table(
   ],
 );
 
-export const supplierInvoices = supply.table('supplier_invoice', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  supplierId: uuid('supplier_id')
-    .notNull()
-    .references(() => suppliers.id),
-  purchaseOrderId: uuid('purchase_order_id').references(() => purchaseOrders.id),
-  reference: text('reference').notNull(),
-  amountMad: numeric('amount_mad', { precision: 14, scale: 2 }).notNull(),
-  invoiceDate: date('invoice_date', { mode: 'date' }).notNull(),
-  dueDate: date('due_date', { mode: 'date' }).notNull(),
-  status: text('status').notNull().default('recue'),
-  paidAt: date('paid_at', { mode: 'date' }),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const supplierInvoices = supply.table(
+  'supplier_invoice',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    supplierId: uuid('supplier_id')
+      .notNull()
+      .references(() => suppliers.id),
+    purchaseOrderId: uuid('purchase_order_id').references(() => purchaseOrders.id),
+    reference: text('reference').notNull(),
+    amountMad: numeric('amount_mad', { precision: 14, scale: 2 }).notNull(),
+    invoiceDate: date('invoice_date', { mode: 'date' }).notNull(),
+    dueDate: date('due_date', { mode: 'date' }).notNull(),
+    status: text('status').notNull().default('recue'),
+    paidAt: date('paid_at', { mode: 'date' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // The échéancier fournisseur reads by due date (factures à payer) and the
+    // board filters by status — keep both facets off a seq scan as the log grows.
+    index('supply_supplier_invoice_due_date_idx').on(table.dueDate),
+    index('supply_supplier_invoice_status_idx').on(table.status),
+  ],
+);

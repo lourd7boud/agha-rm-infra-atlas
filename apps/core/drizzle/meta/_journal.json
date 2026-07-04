@@ -239,6 +239,13 @@
       "when": 1783200000000,
       "tag": "0033_tender_classification_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1783300000000,
+      "tag": "0034_p4_read_model_indexes",
+      "breakpoints": true
     }
   ]
 }

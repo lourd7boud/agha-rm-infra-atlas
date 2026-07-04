@@ -60,7 +60,10 @@ export class DigestService {
     const now = new Date();
     const [tenders, documents, allCautions, allProjects, allSituations] =
       await Promise.all([
-        this.tenders.findAll(),
+        // Projected read: buildDigest only reads reference/buyerName/deadlineAt/
+        // pipelineState — never `raw` — so the slim knowledge projection avoids
+        // shipping the whole catalogue's raw jsonb on every dashboard + cron run.
+        this.tenders.findAllForKnowledge(),
         this.vault.findAll(),
         this.cautions.findAll(),
         this.projects.findAll(),

@@ -33,6 +33,43 @@ export class AtlasApiError extends Error {
   }
 }
 
+/**
+ * Read circuit breaker for Core. Per-request deadlines already fail one slow
+ * call, but when Core is genuinely unhealthy (DB pool saturated, mid-restart)
+ * EVERY read waits the full deadline and the failures stack until the whole RSC
+ * tree stalls — the "everything hangs" pathology. The breaker trips after a run
+ * of consecutive read failures (timeout / 5xx / network) and then fails fast for
+ * a short cooldown, shedding load so Core can recover instead of being hammered.
+ * Client/domain errors (401, 404, 409) are NOT failures — they say nothing about
+ * Core's health. State is per-process (module scope), matching the cache model.
+ */
+const BREAKER_FAILURE_THRESHOLD = 5;
+const BREAKER_COOLDOWN_MS = 10_000;
+
+const readBreaker: { failures: number; openedAt: number | null } = {
+  failures: 0,
+  openedAt: null,
+};
+
+/** Open while tripped and still inside the cooldown; half-open (one probe) after. */
+function readCircuitOpen(now: number): boolean {
+  if (readBreaker.openedAt === null) return false;
+  if (now - readBreaker.openedAt >= BREAKER_COOLDOWN_MS) return false; // half-open
+  return true;
+}
+
+function recordReadSuccess(): void {
+  readBreaker.failures = 0;
+  readBreaker.openedAt = null;
+}
+
+function recordReadFailure(now: number): void {
+  readBreaker.failures += 1;
+  if (readBreaker.failures >= BREAKER_FAILURE_THRESHOLD) {
+    readBreaker.openedAt = now;
+  }
+}
+
 /** Server-side fetch against ATLAS Core with the session's bearer token. */
 export async function apiGet<T>(
   path: string,
@@ -43,17 +80,35 @@ export async function apiGet<T>(
   if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
     redirect(SIGNIN);
   }
-  const response = await fetch(`${API_URL}${path}`, {
-    headers: { Authorization: `Bearer ${session.accessToken}` },
-    cache: 'no-store',
-    signal: AbortSignal.timeout(options?.timeoutMs ?? API_READ_TIMEOUT_MS),
-  });
+  // Fail fast while the breaker is open: Core is unhealthy, so skip the doomed
+  // round-trip and let error.tsx degrade this section immediately.
+  if (readCircuitOpen(Date.now())) {
+    throw new AtlasApiError(path, 503);
+  }
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      headers: { Authorization: `Bearer ${session.accessToken}` },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(options?.timeoutMs ?? API_READ_TIMEOUT_MS),
+    });
+  } catch (error) {
+    // Timeout (AbortError) or network failure — Core is unreachable/slow.
+    recordReadFailure(Date.now());
+    throw error;
+  }
   if (response.status === 401) {
     redirect(SIGNIN);
+  }
+  // 5xx signals Core health; 4xx is a client/domain error and must not trip it.
+  if (response.status >= 500) {
+    recordReadFailure(Date.now());
+    throw new AtlasApiError(path, response.status);
   }
   if (!response.ok) {
     throw new AtlasApiError(path, response.status);
   }
+  recordReadSuccess();
   return (await response.json()) as T;
 }
 

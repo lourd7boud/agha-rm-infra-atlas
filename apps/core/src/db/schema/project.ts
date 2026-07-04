@@ -31,59 +31,80 @@ export const projects = project.table('project', {
 
 // Situation de travaux / décompte provisoire (CCAG-T): cumulative amounts;
 // the period delta + retenue de garantie are derived in the domain layer.
-export const situations = project.table('situation', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  projectId: uuid('project_id')
-    .notNull()
-    .references(() => projects.id),
-  numero: integer('numero').notNull(),
-  periodEnd: date('period_end', { mode: 'date' }).notNull(),
-  montantCumuleMad: numeric('montant_cumule_mad', { precision: 14, scale: 2 }).notNull(),
-  montantPeriodeMad: numeric('montant_periode_mad', { precision: 14, scale: 2 }).notNull(),
-  retenueGarantieMad: numeric('retenue_garantie_mad', { precision: 14, scale: 2 }).notNull(),
-  netAPayerMad: numeric('net_a_payer_mad', { precision: 14, scale: 2 }).notNull(),
-  avancementPct: numeric('avancement_pct', { precision: 5, scale: 2 }).notNull(),
-  status: text('status').notNull().default('brouillon'),
-  notes: text('notes'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const situations = project.table(
+  'situation',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id),
+    numero: integer('numero').notNull(),
+    periodEnd: date('period_end', { mode: 'date' }).notNull(),
+    montantCumuleMad: numeric('montant_cumule_mad', { precision: 14, scale: 2 }).notNull(),
+    montantPeriodeMad: numeric('montant_periode_mad', { precision: 14, scale: 2 }).notNull(),
+    retenueGarantieMad: numeric('retenue_garantie_mad', { precision: 14, scale: 2 }).notNull(),
+    netAPayerMad: numeric('net_a_payer_mad', { precision: 14, scale: 2 }).notNull(),
+    avancementPct: numeric('avancement_pct', { precision: 5, scale: 2 }).notNull(),
+    status: text('status').notNull().default('brouillon'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Situations are always read per chantier — keep that list query off a seq scan.
+    index('situation_project_id_idx').on(table.projectId),
+  ],
+);
 
 // Avenant — contract amendment changing amount and/or delay. The décompte
 // ceiling becomes montant marché + sum of approved avenant deltas.
-export const avenants = project.table('avenant', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  projectId: uuid('project_id')
-    .notNull()
-    .references(() => projects.id),
-  numero: integer('numero').notNull(),
-  objet: text('objet').notNull(),
-  montantDeltaMad: numeric('montant_delta_mad', { precision: 14, scale: 2 })
-    .notNull()
-    .default('0'),
-  delaiDeltaMois: numeric('delai_delta_mois', { precision: 4, scale: 1 })
-    .notNull()
-    .default('0'),
-  approvedAt: date('approved_at', { mode: 'date' }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const avenants = project.table(
+  'avenant',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id),
+    numero: integer('numero').notNull(),
+    objet: text('objet').notNull(),
+    montantDeltaMad: numeric('montant_delta_mad', { precision: 14, scale: 2 })
+      .notNull()
+      .default('0'),
+    delaiDeltaMois: numeric('delai_delta_mois', { precision: 4, scale: 1 })
+      .notNull()
+      .default('0'),
+    approvedAt: date('approved_at', { mode: 'date' }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Avenants are always read per chantier — keep that list query off a seq scan.
+    index('avenant_project_id_idx').on(table.projectId),
+  ],
+);
 
 // Journal de chantier — daily site report filed by the terrain role.
 // One report per project per day (enforced in application code).
-export const dailyLogs = project.table('daily_log', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  projectId: uuid('project_id')
-    .notNull()
-    .references(() => projects.id),
-  reportDate: date('report_date', { mode: 'date' }).notNull(),
-  effectifs: integer('effectifs').notNull(),
-  travauxRealises: text('travaux_realises').notNull(),
-  materiel: text('materiel'),
-  meteo: text('meteo'),
-  blocages: text('blocages'),
-  incidentsSecurite: integer('incidents_securite').notNull().default(0),
-  createdBy: text('created_by').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const dailyLogs = project.table(
+  'daily_log',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id),
+    reportDate: date('report_date', { mode: 'date' }).notNull(),
+    effectifs: integer('effectifs').notNull(),
+    travauxRealises: text('travaux_realises').notNull(),
+    materiel: text('materiel'),
+    meteo: text('meteo'),
+    blocages: text('blocages'),
+    incidentsSecurite: integer('incidents_securite').notNull().default(0),
+    createdBy: text('created_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Daily logs are always read per chantier — keep that list query off a seq scan.
+    index('daily_log_project_id_idx').on(table.projectId),
+  ],
+);
 
 // Tâches de chantier — the physical work-breakdown for a project. Progress here
 // is PHYSICAL avancement (per-task % rolled up in task.domain), deliberately

@@ -11,7 +11,6 @@ import {
 import { TenderModule } from '../tender/tender.module';
 import {
   TENDER_REPOSITORY,
-  type TenderRecord,
   type TenderRepository,
 } from '../tender/tender.repository';
 import { WatchModule } from '../watch/watch.module';
@@ -83,38 +82,6 @@ function modelFor(tier: LlmTier | undefined): string {
 interface ActivityStat {
   count: number;
   last: string | null;
-}
-
-/** Counts tenders carrying a given raw artifact and its most recent timestamp. */
-function artifactStat(
-  records: readonly TenderRecord[],
-  rawKey: string,
-  tsKey = 'generatedAt',
-): ActivityStat {
-  let count = 0;
-  let last: string | null = null;
-  for (const r of records) {
-    const node = (r.raw as Record<string, unknown> | null)?.[rawKey];
-    if (node && typeof node === 'object') {
-      count += 1;
-      const g = (node as Record<string, unknown>)[tsKey];
-      if (typeof g === 'string' && (!last || g > last)) last = g;
-    }
-  }
-  return { count, last };
-}
-
-function qualifierStat(records: readonly TenderRecord[]): ActivityStat {
-  let count = 0;
-  let last: string | null = null;
-  for (const r of records) {
-    if (r.qualification) {
-      count += 1;
-      const c = (r.qualification as { checkedAt?: unknown }).checkedAt;
-      if (typeof c === 'string' && (!last || c > last)) last = c;
-    }
-  }
-  return { count, last };
 }
 
 const toIso = (d: Date | null | undefined): string | null =>
@@ -193,29 +160,37 @@ export class AgentsController {
   }
 
   private async compute(): Promise<RoomPayload> {
-    const [engine, records, coverage] = await Promise.all([
+    const [engine, activity, coverage] = await Promise.all([
       checkEngine(this.llm),
-      this.tenders.findAll(),
+      this.tenders.agentsActivity(),
       this.snapshots ? this.snapshots.coverage() : Promise.resolve([]),
     ]);
 
     const watchCov = coverage.find((c) => c.source === 'watch');
     const intelCov = coverage.find((c) => c.source === 'intel');
 
+    // compliance/orchestrator counts come from the DB state histogram — same
+    // predicates as before, just summed over the aggregated per-state counts.
+    const stateCount = (keep: (state: string) => boolean): number =>
+      activity.stateCounts.reduce(
+        (sum, sc) => sum + (keep(sc.state) ? sc.count : 0),
+        0,
+      );
+
     const act: Record<string, ActivityStat> = {
-      strategist: artifactStat(records, 'g1Brief'),
-      modeler: artifactStat(records, 'g2Scenarios'),
-      risk: artifactStat(records, 'riskAssessment'),
-      bidwriter: artifactStat(records, 'bidDraft'),
-      estimator: artifactStat(records, 'estimateSkeleton'),
-      extractor: artifactStat(records, 'extraction', 'extractedAt'),
-      qualifier: qualifierStat(records),
+      strategist: activity.g1Brief,
+      modeler: activity.g2Scenarios,
+      risk: activity.riskAssessment,
+      bidwriter: activity.bidDraft,
+      estimator: activity.estimateSkeleton,
+      extractor: activity.extraction,
+      qualifier: activity.qualifier,
       compliance: {
-        count: records.filter((r) => GO_PLUS_STATES.includes(r.pipelineState)).length,
+        count: stateCount((s) => GO_PLUS_STATES.includes(s)),
         last: null,
       },
       orchestrator: {
-        count: records.filter((r) => !TERMINAL_STATES.includes(r.pipelineState)).length,
+        count: stateCount((s) => !TERMINAL_STATES.includes(s)),
         last: null,
       },
       sentinel: {

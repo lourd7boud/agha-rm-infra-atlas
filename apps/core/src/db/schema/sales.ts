@@ -78,6 +78,8 @@ export const quotes = sales.table(
       table.reference,
     ),
     index('sales_quote_client_id_idx').on(table.clientId),
+    // The devis board filters by status — keep that facet off a seq scan.
+    index('sales_quote_status_idx').on(table.status),
   ],
 );
 
@@ -124,6 +126,8 @@ export const deliveryNotes = sales.table(
       table.reference,
     ),
     index('sales_delivery_note_client_id_idx').on(table.clientId),
+    // The BL board filters by status — keep that facet off a seq scan.
+    index('sales_delivery_note_status_idx').on(table.status),
   ],
 );
 
@@ -179,6 +183,9 @@ export const invoices = sales.table(
       table.reference,
     ),
     index('sales_invoice_client_id_idx').on(table.clientId),
+    // The facture board filters by status (impayées, en retard…) — keep that
+    // facet off a seq scan.
+    index('sales_invoice_status_idx').on(table.status),
   ],
 );
 

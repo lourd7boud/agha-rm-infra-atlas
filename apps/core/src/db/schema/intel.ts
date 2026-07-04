@@ -103,5 +103,8 @@ export const competitorBids = intel.table(
     // full `SELECT * FROM competitor_bid` (listAllBids) in the hot read path
     // once the bid table grows (heading to 150-300k rows).
     index('competitor_bid_reference_idx').on(table.reference),
+    // Per-competitor rollup (all bids by concurrent X) must not seq-scan the bid
+    // archive as it grows — back the competitor-scoped read with a btree index.
+    index('competitor_bid_competitor_id_idx').on(table.competitorId),
   ],
 );

@@ -80,5 +80,11 @@ export const equipmentAssignments = equipment.table(
     // current fleet. Plain btree indexes keep both off a seq scan as the log grows.
     index('equipment_assignment_equipment_id_idx').on(table.equipmentId),
     index('equipment_assignment_project_id_idx').on(table.projectId),
+    // Finding a machine's CURRENT (open) assignment is the assign/return hot
+    // path — a partial index over just the open rows keeps it tiny and off a
+    // seq scan no matter how long the historical assignment log grows.
+    index('equipment_assignment_open_idx')
+      .on(table.equipmentId)
+      .where(sql`${table.returnedAt} IS NULL`),
   ],
 );
