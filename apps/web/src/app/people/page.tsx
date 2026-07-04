@@ -1,14 +1,24 @@
 import { revalidatePath } from 'next/cache';
 import { apiGet, apiPost } from '@/lib/api';
-import type { Employee } from '@/lib/projects';
+import { Pager } from '@/components/ui/Pager';
+import type { EmployeeListItem, Paged } from '@/lib/projects';
 
-interface EmployeeFull extends Employee {
-  cin?: string;
-  phone?: string;
-}
+const PAGE_SIZE = 25;
 
-export default async function PeoplePage() {
-  const employees = await apiGet<EmployeeFull[]>('/people/employees');
+export default async function PeoplePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
+  const { page: pageParam } = await searchParams;
+  const page = Math.max(0, Math.floor(Number(pageParam)) || 0);
+  // One bounded DB page for the table; Paged.total drives the effectif count and
+  // the pager (correct over ALL employees, not just this page).
+  const employeePage = await apiGet<Paged<EmployeeListItem>>(
+    `/people/employees?page=${page}&limit=${PAGE_SIZE}`,
+  );
+  const employees = employeePage.items;
+  const total = employeePage.total;
 
   async function createEmployee(formData: FormData) {
     'use server';
@@ -37,7 +47,7 @@ export default async function PeoplePage() {
 
       <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
         <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
-          Effectif ({employees.length})
+          Effectif ({total})
         </h2>
         <table className="w-full text-left text-sm">
           <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
@@ -75,9 +85,17 @@ export default async function PeoplePage() {
         </table>
         {employees.length === 0 && (
           <p className="p-8 text-center text-sm text-faint">
-            Aucun employé enregistré.
+            {total === 0
+              ? 'Aucun employé enregistré.'
+              : 'Aucun employé sur cette page.'}
           </p>
         )}
+        <Pager
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={total}
+          hrefForPage={(p) => `/people?page=${p}`}
+        />
       </section>
 
       <section className="rounded-xl border border-line bg-paper-2 p-6 shadow-sm">

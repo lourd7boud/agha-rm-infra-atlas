@@ -142,6 +142,22 @@ export interface Employee {
   status: 'actif' | 'inactif';
 }
 
+/** One page of results plus the total matching count (mirrors core Paged<T>). */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
+/**
+ * Employee register row — the columns the /people table renders (name, métier,
+ * CIN, phone, status). Mirrors @atlas/core EmployeeListItem: the full record
+ * minus `createdAt`, which the list never shows.
+ */
+export interface EmployeeListItem extends Employee {
+  cin?: string;
+  phone?: string;
+}
+
 export interface TeamMember {
   id: string;
   employeeId: string;

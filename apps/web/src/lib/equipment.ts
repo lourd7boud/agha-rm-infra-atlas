@@ -38,6 +38,22 @@ export interface EquipmentDetail {
   history: EquipmentAssignmentRecord[];
 }
 
+/** One DB page of fleet rows + the total matching count (mirrors core Paged<T>). */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
+/**
+ * GET /equipment/summary envelope — DB-computed status tallies over the WHOLE
+ * parc (correct regardless of paging) plus the total. Mirrors core
+ * EquipmentSummary.
+ */
+export interface EquipmentSummary {
+  counts: Record<EquipmentStatus, number>;
+  total: number;
+}
+
 /**
  * GET /equipment/projects/:id row — a machine on the chantier with its open
  * assignment inline (affecté-le / retour-prévu), so the project view needs no

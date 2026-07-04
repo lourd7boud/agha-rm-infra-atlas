@@ -7,6 +7,9 @@ const ASSIGNED_AT = new Date('2026-06-21T00:00:00Z');
 const RETURN_AT = new Date('2026-09-30T00:00:00Z');
 const PROJECT_A = 'project-A';
 const PROJECT_B = 'project-B';
+// A page window wide enough that the small fixtures below never spill a page —
+// listEquipment is now DB-side paginated and returns a Paged<EquipmentRecord>.
+const PAGE = { limit: 100, offset: 0 };
 
 describe('InMemoryEquipmentRepository — upsert & list', () => {
   let repo: InMemoryEquipmentRepository;
@@ -38,12 +41,13 @@ describe('InMemoryEquipmentRepository — upsert & list', () => {
       name: 'Compacteur BOMAG',
       code: 'COMP-02',
     });
-    const all = await repo.listEquipment({});
+    const all = await repo.listEquipment({}, PAGE);
 
     // Assert
     expect(second.id).toBe(first.id);
     expect(second.code).toBe('COMP-02');
-    expect(all).toHaveLength(1);
+    expect(all.items).toHaveLength(1);
+    expect(all.total).toBe(1);
   });
 
   test('listEquipment filters by status', async () => {
@@ -53,13 +57,47 @@ describe('InMemoryEquipmentRepository — upsert & list', () => {
     await repo.setEquipmentStatus(idle.id, 'hors_service');
 
     // Act
-    const broken = await repo.listEquipment({ status: 'hors_service' });
-    const available = await repo.listEquipment({ status: 'disponible' });
+    const broken = await repo.listEquipment({ status: 'hors_service' }, PAGE);
+    const available = await repo.listEquipment({ status: 'disponible' }, PAGE);
 
     // Assert
-    expect(broken).toHaveLength(1);
-    expect(broken[0]?.id).toBe(idle.id);
-    expect(available).toHaveLength(1);
+    expect(broken.items).toHaveLength(1);
+    expect(broken.items[0]?.id).toBe(idle.id);
+    expect(available.items).toHaveLength(1);
+  });
+
+  test('listEquipment slices to the page window and reports the full total', async () => {
+    // Arrange — three machines, ask for a 2-per-page window.
+    await repo.upsertEquipment({ name: 'Engin 1' });
+    await repo.upsertEquipment({ name: 'Engin 2' });
+    await repo.upsertEquipment({ name: 'Engin 3' });
+
+    // Act
+    const first = await repo.listEquipment({}, { limit: 2, offset: 0 });
+    const second = await repo.listEquipment({}, { limit: 2, offset: 2 });
+
+    // Assert — total is the whole set on every page; items are the slice.
+    expect(first.items).toHaveLength(2);
+    expect(first.total).toBe(3);
+    expect(second.items).toHaveLength(1);
+    expect(second.total).toBe(3);
+  });
+
+  test('equipmentSummary tallies status over the whole parc, not one page', async () => {
+    // Arrange — 2 disponible, 1 hors_service.
+    await repo.upsertEquipment({ name: 'Dispo 1' });
+    await repo.upsertEquipment({ name: 'Dispo 2' });
+    const broken = await repo.upsertEquipment({ name: 'Cassée' });
+    await repo.setEquipmentStatus(broken.id, 'hors_service');
+
+    // Act — summary takes no paging; it counts the entire table.
+    const summary = await repo.equipmentSummary();
+
+    // Assert
+    expect(summary.total).toBe(3);
+    expect(summary.counts.disponible).toBe(2);
+    expect(summary.counts.hors_service).toBe(1);
+    expect(summary.counts.assignee).toBe(0);
   });
 });
 

@@ -96,11 +96,13 @@ describe('InMemorySupplyRepository — orders', () => {
     await repo.createOrder(orderInput({ reference: 'BC-2026-011' }));
 
     // Act
-    const orders = await repo.listOrders();
+    const page = await repo.listOrders({ limit: 25, offset: 0 });
 
     // Assert
+    const orders = page.items;
     const detailed = orders.find((o) => o.reference === 'BC-2026-010');
     const legacy = orders.find((o) => o.reference === 'BC-2026-011');
+    expect(page.total).toBe(2);
     expect(detailed?.lineCount).toBe(2);
     expect(legacy?.lineCount).toBe(0);
   });

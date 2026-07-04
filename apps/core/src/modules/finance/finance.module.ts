@@ -75,13 +75,24 @@ const expenseInputSchema = z.object({
 
 const expenseCategorySchema = z.enum(EXPENSE_CATEGORIES);
 
-/**
- * Upper bound on rows returned by the journal list endpoints. Neither
- * /finance/payments nor /finance/expenses is paginated yet, so a hard cap keeps
- * a single request from streaming the entire ledger as it grows. Newest-first
- * ordering means the cap keeps the most recent entries.
- */
-const LEDGER_LIST_LIMIT = 200;
+// ── pagination (datao-parity: DB-side LIMIT/OFFSET) ──────────────────────────
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+
+/** Parse the ?page / ?limit query into a bounded DB page window. */
+function parsePaging(
+  page?: string,
+  limit?: string,
+): { limit: number; offset: number } {
+  const pageNum = Math.floor(Number(page));
+  const p = Number.isFinite(pageNum) && pageNum > 0 ? pageNum : 0;
+  const limitNum = Math.floor(Number(limit));
+  const size =
+    Number.isFinite(limitNum) && limitNum > 0
+      ? Math.min(limitNum, MAX_PAGE_SIZE)
+      : DEFAULT_PAGE_SIZE;
+  return { limit: size, offset: p * size };
+}
 
 @Controller('finance')
 export class FinanceController {
@@ -153,8 +164,15 @@ export class FinanceController {
   /** Recettes journal, newest first; optionally scoped to one chantier. */
   @Roles('finance', 'direction', 'admin-si', 'marches')
   @Get('payments')
-  async listPayments(@Query('projectId') projectId?: string) {
-    return this.ledger.listPayments({ projectId, limit: LEDGER_LIST_LIMIT });
+  async listPayments(
+    @Query('projectId') projectId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.ledger.listPayments(
+      { projectId: projectId || undefined },
+      parsePaging(page, limit),
+    );
   }
 
   /** Record a dépense classified by category (validated against the closed list). */
@@ -172,6 +190,8 @@ export class FinanceController {
   async listExpenses(
     @Query('category') category?: string,
     @Query('projectId') projectId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
     const parsedCategory = category
       ? expenseCategorySchema.safeParse(category)
@@ -179,11 +199,13 @@ export class FinanceController {
     if (parsedCategory && !parsedCategory.success) {
       throw new BadRequestException(parsedCategory.error.flatten());
     }
-    return this.ledger.listExpenses({
-      category: parsedCategory?.success ? parsedCategory.data : undefined,
-      projectId,
-      limit: LEDGER_LIST_LIMIT,
-    });
+    return this.ledger.listExpenses(
+      {
+        category: parsedCategory?.success ? parsedCategory.data : undefined,
+        projectId: projectId || undefined,
+      },
+      parsePaging(page, limit),
+    );
   }
 
   /** Dépenses broken down by category — desc by spend, with a grand total. */

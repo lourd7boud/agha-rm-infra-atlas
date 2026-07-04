@@ -10,6 +10,7 @@ import {
   NotFoundException,
   Param,
   Post,
+  Query,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { getDb } from '../../db/client';
@@ -21,6 +22,25 @@ import {
   SUPPLY_REPOSITORY,
   type SupplyRepository,
 } from './supply.repository';
+
+// ── pagination (datao-parity: DB-side LIMIT/OFFSET) ──────────────────────────
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+
+/** Parse the ?page / ?limit query into a bounded DB page window. */
+function parsePaging(
+  page?: string,
+  limit?: string,
+): { limit: number; offset: number } {
+  const pageNum = Math.floor(Number(page));
+  const p = Number.isFinite(pageNum) && pageNum > 0 ? pageNum : 0;
+  const limitNum = Math.floor(Number(limit));
+  const size =
+    Number.isFinite(limitNum) && limitNum > 0
+      ? Math.min(limitNum, MAX_PAGE_SIZE)
+      : DEFAULT_PAGE_SIZE;
+  return { limit: size, offset: p * size };
+}
 
 const supplierSchema = z.object({
   name: z.string().min(2).max(300),
@@ -100,8 +120,18 @@ export class SupplyController {
 
   @Roles('finance', 'direction', 'travaux', 'marches', 'admin-si')
   @Get('orders')
-  async listOrders() {
-    return this.repository.listOrders();
+  async listOrders(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.repository.listOrders(parsePaging(page, limit));
+  }
+
+  // Declared BEFORE orders/:id so the static path wins the route match.
+  @Roles('finance', 'direction', 'travaux', 'marches', 'admin-si')
+  @Get('orders/summary')
+  async ordersSummary() {
+    return this.repository.ordersSummary();
   }
 
   /** Bon de commande détaillé — order + its line items. */
@@ -143,8 +173,11 @@ export class SupplyController {
 
   @Roles('finance', 'direction', 'admin-si')
   @Get('invoices')
-  async listInvoices() {
-    return this.repository.listInvoices();
+  async listInvoices(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.repository.listInvoices(parsePaging(page, limit));
   }
 
   /** Validate (recue→validee). */
@@ -179,7 +212,8 @@ export class SupplyController {
   @Get('payables')
   async payables() {
     const [invoices, suppliers] = await Promise.all([
-      this.repository.listInvoices(),
+      // Ages the WHOLE set — the payables aggregate cannot run off one page.
+      this.repository.listAllInvoices(),
       this.repository.listSuppliers(),
     ]);
     const nameById = new Map(suppliers.map((s) => [s.id, s.name]));

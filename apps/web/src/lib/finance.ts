@@ -76,6 +76,18 @@ export interface Cashflow {
   netMad: number;
 }
 
+/**
+ * One DB page + the total matching-row count — the envelope the paginated
+ * /finance/payments and /finance/expenses endpoints return (mirrors core
+ * ledger.repository Paged<T>). `total` is a DB count(*) over the WHOLE filtered
+ * set, so it drives both the pager and the per-list count labels (a length over
+ * one page would understate them).
+ */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
 /** Fournisseur — frontend mirror of @atlas/core supply SupplierRecord (subset). */
 export interface SupplierRecord {
   id: string;

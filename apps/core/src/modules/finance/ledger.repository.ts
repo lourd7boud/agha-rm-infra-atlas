@@ -53,22 +53,42 @@ export interface ExpenseRecord extends CreateExpense {
 
 export interface PaymentFilter {
   projectId?: string;
-  limit?: number;
 }
 
 export interface ExpenseFilter {
   category?: ExpenseCategory;
   projectId?: string;
-  limit?: number;
+}
+
+// ── Pagination (datao-parity: DB-side LIMIT/OFFSET; totals via count(*)) ──────
+
+/** DB-side page window. limit is bounded by the controller (default 25/max 100). */
+export interface PageParams {
+  limit: number;
+  offset: number;
+}
+
+/** A single page plus the total matching-row count (for the pager). */
+export interface Paged<T> {
+  items: T[];
+  total: number;
 }
 
 export const FINANCE_LEDGER_REPOSITORY = Symbol('FINANCE_LEDGER_REPOSITORY');
 
 export interface FinanceLedgerRepository {
   createPayment(input: CreatePayment): Promise<PaymentRecord>;
-  listPayments(filter: PaymentFilter): Promise<PaymentRecord[]>;
+  /** One DB page of recettes (newest first) + the total matching count. */
+  listPayments(
+    filter: PaymentFilter,
+    paging: PageParams,
+  ): Promise<Paged<PaymentRecord>>;
   createExpense(input: CreateExpense): Promise<ExpenseRecord>;
-  listExpenses(filter: ExpenseFilter): Promise<ExpenseRecord[]>;
+  /** One DB page of dépenses (newest first) + the total matching count. */
+  listExpenses(
+    filter: ExpenseFilter,
+    paging: PageParams,
+  ): Promise<Paged<ExpenseRecord>>;
   expenseSummary(): Promise<ExpenseSummary>;
   cashflow(projectId?: string): Promise<Cashflow>;
   /**
@@ -101,14 +121,15 @@ export class InMemoryFinanceLedgerRepository implements FinanceLedgerRepository 
     return record;
   }
 
-  async listPayments(filter: PaymentFilter): Promise<PaymentRecord[]> {
-    let rows = [...this.paymentRecords].sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
-    );
-    if (filter.projectId) {
-      rows = rows.filter((r) => r.projectId === filter.projectId);
-    }
-    return filter.limit ? rows.slice(0, filter.limit) : rows;
+  async listPayments(
+    filter: PaymentFilter,
+    paging: PageParams,
+  ): Promise<Paged<PaymentRecord>> {
+    const matched = [...this.paymentRecords]
+      .filter((r) => !filter.projectId || r.projectId === filter.projectId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const items = matched.slice(paging.offset, paging.offset + paging.limit);
+    return { items, total: matched.length };
   }
 
   async createExpense(input: CreateExpense): Promise<ExpenseRecord> {
@@ -121,17 +142,16 @@ export class InMemoryFinanceLedgerRepository implements FinanceLedgerRepository 
     return record;
   }
 
-  async listExpenses(filter: ExpenseFilter): Promise<ExpenseRecord[]> {
-    let rows = [...this.expenseRecords].sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
-    );
-    if (filter.category) {
-      rows = rows.filter((r) => r.category === filter.category);
-    }
-    if (filter.projectId) {
-      rows = rows.filter((r) => r.projectId === filter.projectId);
-    }
-    return filter.limit ? rows.slice(0, filter.limit) : rows;
+  async listExpenses(
+    filter: ExpenseFilter,
+    paging: PageParams,
+  ): Promise<Paged<ExpenseRecord>> {
+    const matched = [...this.expenseRecords]
+      .filter((r) => !filter.category || r.category === filter.category)
+      .filter((r) => !filter.projectId || r.projectId === filter.projectId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const items = matched.slice(paging.offset, paging.offset + paging.limit);
+    return { items, total: matched.length };
   }
 
   async expenseSummary(): Promise<ExpenseSummary> {
@@ -192,17 +212,30 @@ export class DrizzleFinanceLedgerRepository implements FinanceLedgerRepository {
     return toPaymentRecord(row);
   }
 
-  async listPayments(filter: PaymentFilter): Promise<PaymentRecord[]> {
+  async listPayments(
+    filter: PaymentFilter,
+    paging: PageParams,
+  ): Promise<Paged<PaymentRecord>> {
+    // DB-side page: newest first, LIMIT/OFFSET — plus a count of the whole
+    // filtered set so the pager knows how many pages exist. payments are flat
+    // rows (no child array), so no projection is needed.
     const where = filter.projectId
       ? eq(payments.projectId, filter.projectId)
       : undefined;
-    const base = this.db
-      .select()
-      .from(payments)
-      .where(where)
-      .orderBy(desc(payments.createdAt));
-    const rows = await (filter.limit ? base.limit(filter.limit) : base);
-    return rows.map(toPaymentRecord);
+    const [rows, [countRow]] = await Promise.all([
+      this.db
+        .select()
+        .from(payments)
+        .where(where)
+        .orderBy(desc(payments.createdAt))
+        .limit(paging.limit)
+        .offset(paging.offset),
+      this.db.select({ total: count() }).from(payments).where(where),
+    ]);
+    return {
+      items: rows.map(toPaymentRecord),
+      total: Number(countRow?.total ?? 0),
+    };
   }
 
   async createExpense(input: CreateExpense): Promise<ExpenseRecord> {
@@ -224,7 +257,12 @@ export class DrizzleFinanceLedgerRepository implements FinanceLedgerRepository {
     return toExpenseRecord(row);
   }
 
-  async listExpenses(filter: ExpenseFilter): Promise<ExpenseRecord[]> {
+  async listExpenses(
+    filter: ExpenseFilter,
+    paging: PageParams,
+  ): Promise<Paged<ExpenseRecord>> {
+    // DB-side page: newest first, LIMIT/OFFSET + count(*) over the whole filtered
+    // set (category and/or project scope). Expenses are flat rows — no projection.
     const conditions = [
       filter.category ? eq(expenses.category, filter.category) : undefined,
       filter.projectId ? eq(expenses.projectId, filter.projectId) : undefined,
@@ -235,13 +273,20 @@ export class DrizzleFinanceLedgerRepository implements FinanceLedgerRepository {
         : conditions.length === 1
           ? conditions[0]
           : and(...conditions);
-    const base = this.db
-      .select()
-      .from(expenses)
-      .where(where)
-      .orderBy(desc(expenses.createdAt));
-    const rows = await (filter.limit ? base.limit(filter.limit) : base);
-    return rows.map(toExpenseRecord);
+    const [rows, [countRow]] = await Promise.all([
+      this.db
+        .select()
+        .from(expenses)
+        .where(where)
+        .orderBy(desc(expenses.createdAt))
+        .limit(paging.limit)
+        .offset(paging.offset),
+      this.db.select({ total: count() }).from(expenses).where(where),
+    ]);
+    return {
+      items: rows.map(toExpenseRecord),
+      total: Number(countRow?.total ?? 0),
+    };
   }
 
   async expenseSummary(): Promise<ExpenseSummary> {

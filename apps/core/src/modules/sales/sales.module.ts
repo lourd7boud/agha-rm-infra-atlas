@@ -131,8 +131,18 @@ export class SalesController {
 
   @Roles('direction', 'finance', 'marches', 'travaux', 'admin-si')
   @Get('clients')
-  async listClients() {
-    return this.repository.listClients();
+  async listClients(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.repository.listClients(parsePaging(page, limit));
+  }
+
+  // Declared BEFORE clients/:id so the static path wins the route match.
+  @Roles('direction', 'finance', 'marches', 'travaux', 'admin-si')
+  @Get('clients/summary')
+  async clientsSummary() {
+    return this.repository.clientsSummary();
   }
 
   @Roles('direction', 'finance', 'marches', 'travaux', 'admin-si')
@@ -160,12 +170,34 @@ export class SalesController {
   async listQuotes(
     @Query('clientId') clientId?: string,
     @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
     const filter = quoteStatusSchema
       .pick({ status: true })
       .partial()
       .safeParse({ status });
-    return this.repository.listQuotes({
+    return this.repository.listQuotes(
+      {
+        clientId: clientId || undefined,
+        status: filter.success ? filter.data.status : undefined,
+      },
+      parsePaging(page, limit),
+    );
+  }
+
+  // Declared BEFORE quotes/:id so the static path wins the route match.
+  @Roles('direction', 'finance', 'marches', 'travaux', 'admin-si')
+  @Get('quotes/summary')
+  async quotesSummary(
+    @Query('clientId') clientId?: string,
+    @Query('status') status?: string,
+  ) {
+    const filter = quoteStatusSchema
+      .pick({ status: true })
+      .partial()
+      .safeParse({ status });
+    return this.repository.quotesSummary({
       clientId: clientId || undefined,
       status: filter.success ? filter.data.status : undefined,
     });
@@ -206,14 +238,19 @@ export class SalesController {
   async listDeliveryNotes(
     @Query('clientId') clientId?: string,
     @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
     const parsedStatus = z
       .enum(['brouillon', 'livre'])
       .safeParse(status);
-    return this.repository.listDeliveryNotes({
-      clientId: clientId || undefined,
-      status: parsedStatus.success ? parsedStatus.data : undefined,
-    });
+    return this.repository.listDeliveryNotes(
+      {
+        clientId: clientId || undefined,
+        status: parsedStatus.success ? parsedStatus.data : undefined,
+      },
+      parsePaging(page, limit),
+    );
   }
 
   @Roles('direction', 'finance', 'marches', 'travaux', 'admin-si')

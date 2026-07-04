@@ -60,6 +60,25 @@ function toHttp(error: unknown): never {
   throw error;
 }
 
+// ── pagination (datao-parity: DB-side LIMIT/OFFSET) ──────────────────────────
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+
+/** Parse the ?page / ?limit query into a bounded DB page window. */
+function parsePaging(
+  page?: string,
+  limit?: string,
+): { limit: number; offset: number } {
+  const pageNum = Math.floor(Number(page));
+  const p = Number.isFinite(pageNum) && pageNum > 0 ? pageNum : 0;
+  const limitNum = Math.floor(Number(limit));
+  const size =
+    Number.isFinite(limitNum) && limitNum > 0
+      ? Math.min(limitNum, MAX_PAGE_SIZE)
+      : DEFAULT_PAGE_SIZE;
+  return { limit: size, offset: p * size };
+}
+
 @Controller('equipment')
 export class EquipmentController {
   constructor(
@@ -79,14 +98,27 @@ export class EquipmentController {
 
   @Roles('travaux', 'direction', 'terrain', 'finance', 'admin-si')
   @Get()
-  async listEquipment(@Query('status') status?: string) {
+  async listEquipment(
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
     const parsedStatus = statusSchema
       .pick({ status: true })
       .partial()
       .safeParse({ status });
-    return this.repository.listEquipment({
-      status: parsedStatus.success ? parsedStatus.data.status : undefined,
-    });
+    return this.repository.listEquipment(
+      { status: parsedStatus.success ? parsedStatus.data.status : undefined },
+      parsePaging(page, limit),
+    );
+  }
+
+  // Declared BEFORE equipment/:id so the static path wins the route match
+  // (otherwise ':id' would capture the literal "summary").
+  @Roles('travaux', 'direction', 'terrain', 'finance', 'admin-si')
+  @Get('summary')
+  async equipmentSummary() {
+    return this.repository.equipmentSummary();
   }
 
   @Roles('travaux', 'direction', 'terrain', 'finance', 'admin-si')

@@ -35,6 +35,12 @@ export const CLIENT_STATUS_BADGES: Record<
   inactif: { label: 'Inactif', classes: 'bg-sand text-faint' },
 };
 
+/** DB-computed client counts over the whole set (paging-independent cards). */
+export interface ClientSummary {
+  count: number;
+  activeCount: number;
+}
+
 // ── Priced line (devis + facture) ────────────────────────────────────────────
 
 export interface DocLineRecord {
@@ -95,6 +101,15 @@ export const QUOTE_STATUS_OPTIONS: readonly {
   { value: 'expire', label: 'Expiré' },
 ];
 
+/** Quote list row — the record minus its `lines` (the list never renders them). */
+export type QuoteListItem = Omit<QuoteRecord, 'lines'>;
+
+/** DB-computed quote totals over the whole filtered set (paging-independent). */
+export interface QuoteSummary {
+  count: number;
+  totalTtcMad: number;
+}
+
 // ── Delivery notes / bons de livraison ───────────────────────────────────────
 
 export type DeliveryNoteStatus = 'brouillon' | 'livre';
@@ -135,6 +150,12 @@ export const DELIVERY_STATUS_OPTIONS: readonly {
   { value: 'brouillon', label: 'Brouillon' },
   { value: 'livre', label: 'Livré' },
 ];
+
+/** Delivery-note list row — the record minus `lines`, carrying only the line
+ *  count the list column renders. */
+export type DeliveryNoteListItem = Omit<DeliveryNoteRecord, 'lines'> & {
+  lineCount: number;
+};
 
 // ── Invoices / factures ──────────────────────────────────────────────────────
 

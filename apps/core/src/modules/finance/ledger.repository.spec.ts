@@ -49,21 +49,25 @@ describe('InMemoryFinanceLedgerRepository — payments', () => {
     expect(record.createdAt).toBeInstanceOf(Date);
   });
 
-  test('listPayments filters by projectId', async () => {
+  test('listPayments filters by projectId and reports the filtered total', async () => {
     // Arrange
     const repo = new InMemoryFinanceLedgerRepository();
     await repo.createPayment(paymentInput({ projectId: 'p1', amountMad: 100 }));
     await repo.createPayment(paymentInput({ projectId: 'p2', amountMad: 200 }));
 
     // Act
-    const rows = await repo.listPayments({ projectId: 'p1' });
+    const page = await repo.listPayments(
+      { projectId: 'p1' },
+      { limit: 25, offset: 0 },
+    );
 
-    // Assert
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.amountMad).toBe(100);
+    // Assert — total is the count of the filtered set, not all rows.
+    expect(page.total).toBe(1);
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]?.amountMad).toBe(100);
   });
 
-  test('listPayments respects the limit', async () => {
+  test('listPayments returns one bounded page but the full total', async () => {
     // Arrange
     const repo = new InMemoryFinanceLedgerRepository();
     await repo.createPayment(paymentInput({ amountMad: 1 }));
@@ -71,10 +75,26 @@ describe('InMemoryFinanceLedgerRepository — payments', () => {
     await repo.createPayment(paymentInput({ amountMad: 3 }));
 
     // Act
-    const rows = await repo.listPayments({ limit: 2 });
+    const page = await repo.listPayments({}, { limit: 2, offset: 0 });
 
-    // Assert
-    expect(rows).toHaveLength(2);
+    // Assert — page holds LIMIT rows; total counts every matching row.
+    expect(page.items).toHaveLength(2);
+    expect(page.total).toBe(3);
+  });
+
+  test('listPayments applies the offset for the second page', async () => {
+    // Arrange
+    const repo = new InMemoryFinanceLedgerRepository();
+    await repo.createPayment(paymentInput({ amountMad: 1 }));
+    await repo.createPayment(paymentInput({ amountMad: 2 }));
+    await repo.createPayment(paymentInput({ amountMad: 3 }));
+
+    // Act
+    const page = await repo.listPayments({}, { limit: 2, offset: 2 });
+
+    // Assert — only the tail row remains, total still reflects all rows.
+    expect(page.items).toHaveLength(1);
+    expect(page.total).toBe(3);
   });
 });
 
@@ -108,11 +128,30 @@ describe('InMemoryFinanceLedgerRepository — expenses', () => {
     );
 
     // Act
-    const rows = await repo.listExpenses({ projectId: 'p1', category: 'carburant' });
+    const page = await repo.listExpenses(
+      { projectId: 'p1', category: 'carburant' },
+      { limit: 25, offset: 0 },
+    );
 
-    // Assert
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.amountMad).toBe(100);
+    // Assert — one row matches both filters; total reflects that filtered set.
+    expect(page.total).toBe(1);
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]?.amountMad).toBe(100);
+  });
+
+  test('listExpenses returns one bounded page but the full total', async () => {
+    // Arrange
+    const repo = new InMemoryFinanceLedgerRepository();
+    await repo.createExpense(expenseInput({ amountMad: 1 }));
+    await repo.createExpense(expenseInput({ amountMad: 2 }));
+    await repo.createExpense(expenseInput({ amountMad: 3 }));
+
+    // Act
+    const page = await repo.listExpenses({}, { limit: 2, offset: 0 });
+
+    // Assert — page holds LIMIT rows; total counts every matching row.
+    expect(page.items).toHaveLength(2);
+    expect(page.total).toBe(3);
   });
 });
 

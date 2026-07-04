@@ -114,8 +114,10 @@ export default async function InvoicesPage({
   const statusQs = validStatus ? `status=${validStatus}&` : '';
   // One bounded DB page for the table + a DB-side summary for the totals cards
   // (correct over ALL invoices, not just this page) + clients for the name map.
-  const [clients, invoicePage, summary] = await Promise.all([
-    apiGet<ClientRecord[]>('/sales/clients'),
+  // Clients power the name map + the create-form <select>; fetch the first page
+  // at the max limit (the client master for private jobs stays small).
+  const [clientPage, invoicePage, summary] = await Promise.all([
+    apiGet<Paged<ClientRecord>>('/sales/clients?limit=100'),
     apiGet<Paged<InvoiceListItem>>(
       `/sales/invoices?${statusQs}page=${page}&limit=${PAGE_SIZE}`,
     ),
@@ -123,6 +125,7 @@ export default async function InvoicesPage({
       `/sales/invoices/summary${validStatus ? `?status=${validStatus}` : ''}`,
     ),
   ]);
+  const clients = clientPage.items;
   const invoices = invoicePage.items;
   const clientName = new Map(clients.map((client) => [client.id, client.name]));
 

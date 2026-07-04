@@ -2,17 +2,22 @@ import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { apiGet, apiPost, AtlasApiError } from '@/lib/api';
+import { Pager } from '@/components/ui/Pager';
 import {
   fmtDate,
   fmtMad,
   QUOTE_STATUS_BADGES,
   QUOTE_STATUS_OPTIONS,
   type ClientRecord,
-  type QuoteRecord,
+  type Paged,
+  type QuoteListItem,
   type QuoteStatus,
+  type QuoteSummary,
 } from '@/lib/sales';
 import { isRedirectError } from '@/lib/next-redirect';
 import { QuoteLinesEditor } from './QuoteLinesEditor';
+
+const PAGE_SIZE = 25;
 
 interface CreateLineInput {
   designation: string;
@@ -97,24 +102,36 @@ export default async function QuotesPage({
     code?: string;
     clientId?: string;
     status?: string;
+    page?: string;
   }>;
 }) {
   const sp = await searchParams;
   const errorMessage = actionErrorMessage(sp.error, sp.code);
   const status = parseStatus(sp.status);
   const clientId = sp.clientId || undefined;
+  const page = Math.max(0, Math.floor(Number(sp.page)) || 0);
 
-  const query = new URLSearchParams();
-  if (clientId) query.set('clientId', clientId);
-  if (status) query.set('status', status);
-  const queryString = query.toString();
+  // Filter params shared by the list page, the summary and the pager hrefs.
+  const filterQuery = new URLSearchParams();
+  if (clientId) filterQuery.set('clientId', clientId);
+  if (status) filterQuery.set('status', status);
+  const filterString = filterQuery.toString();
+  const filterPrefix = filterString ? `${filterString}&` : '';
 
-  const [quotes, clients] = await Promise.all([
-    apiGet<QuoteRecord[]>(`/sales/quotes${queryString ? `?${queryString}` : ''}`),
-    apiGet<ClientRecord[]>('/sales/clients'),
+  // One bounded DB page for the table + a DB-side summary for the count/total
+  // (correct over ALL matching quotes, not just this page) + clients for names.
+  const [quotePage, summary, clientPage] = await Promise.all([
+    apiGet<Paged<QuoteListItem>>(
+      `/sales/quotes?${filterPrefix}page=${page}&limit=${PAGE_SIZE}`,
+    ),
+    apiGet<QuoteSummary>(
+      `/sales/quotes/summary${filterString ? `?${filterString}` : ''}`,
+    ),
+    apiGet<Paged<ClientRecord>>('/sales/clients?limit=100'),
   ]);
+  const quotes = quotePage.items;
+  const clients = clientPage.items;
   const clientById = new Map(clients.map((client) => [client.id, client]));
-  const totalTtcMad = quotes.reduce((sum, quote) => sum + quote.totalTtcMad, 0);
 
   async function createQuote(formData: FormData) {
     'use server';
@@ -184,9 +201,9 @@ export default async function QuotesPage({
       <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-faint">
-            Devis ({quotes.length}) · total TTC{' '}
+            Devis ({summary.count}) · total TTC{' '}
             <span className="font-mono tabular-nums text-ink-2">
-              {fmtMad(totalTtcMad)}
+              {fmtMad(summary.totalTtcMad)}
             </span>
           </h2>
           <form method="get" className="flex flex-wrap items-end gap-3">
@@ -285,10 +302,17 @@ export default async function QuotesPage({
         </table>
         {quotes.length === 0 && (
           <p className="p-8 text-center text-sm text-faint">
-            Aucun devis{clientId || status ? ' pour ce filtre' : ''} — créez-en
-            un ci-dessous.
+            {summary.count === 0
+              ? `Aucun devis${clientId || status ? ' pour ce filtre' : ''} — créez-en un ci-dessous.`
+              : 'Aucun devis sur cette page.'}
           </p>
         )}
+        <Pager
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={quotePage.total}
+          hrefForPage={(p) => `/sales/quotes?${filterPrefix}page=${p}`}
+        />
       </section>
 
       <section className="rounded-xl border border-line bg-paper-2 p-6 shadow-sm">

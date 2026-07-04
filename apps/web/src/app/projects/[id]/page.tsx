@@ -5,8 +5,9 @@ import { apiGet, apiPatch, apiPost, AtlasApiError } from '@/lib/api';
 import { isRedirectError } from '@/lib/next-redirect';
 import {
   PROJECT_STATUS_BADGES,
-  type Employee,
+  type EmployeeListItem,
   type JournalResponse,
+  type Paged,
   type ProjectCost,
   type ProjectLabor,
   type ProjectSummary,
@@ -140,7 +141,9 @@ export default async function ProjectDetailPage({
     apiGet<ProjectDetail>(`/project/projects/${id}`),
     apiGet<JournalResponse>(`/field/projects/${id}/logs`),
     apiGet<TeamResponse>(`/people/projects/${id}/team`),
-    apiGet<Employee[]>('/people/employees'),
+    apiGet<Paged<EmployeeListItem>>('/people/employees?limit=100').then(
+      (p) => p.items,
+    ),
     apiGet<ProjectMaterialConsumption[]>(`/stock/projects/${id}/consumption`),
     apiGet<TasksResponse>(`/project/projects/${id}/tasks`),
     apiGet<ProjectLabor>(`/people/projects/${id}/labor`),

@@ -2,12 +2,17 @@ import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { apiGet, apiPost, AtlasApiError } from '@/lib/api';
+import { Pager } from '@/components/ui/Pager';
 import {
   CLIENT_STATUS_BADGES,
   fmtDate,
   type ClientRecord,
+  type ClientSummary,
+  type Paged,
 } from '@/lib/sales';
 import { isRedirectError } from '@/lib/next-redirect';
+
+const PAGE_SIZE = 25;
 
 // Turn an action failure into user-visible feedback: log the real cause
 // server-side, then redirect back with a stable error code the page renders as
@@ -44,12 +49,23 @@ function actionErrorMessage(
 export default async function ClientsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; code?: string }>;
+  searchParams: Promise<{ error?: string; code?: string; page?: string }>;
 }) {
-  const { error: actionError, code: actionCode } = await searchParams;
+  const {
+    error: actionError,
+    code: actionCode,
+    page: pageParam,
+  } = await searchParams;
   const errorMessage = actionErrorMessage(actionError, actionCode);
-  const clients = await apiGet<ClientRecord[]>('/sales/clients');
-  const activeCount = clients.filter((c) => c.status === 'actif').length;
+  const page = Math.max(0, Math.floor(Number(pageParam)) || 0);
+  // One bounded DB page for the table + a DB-side summary for the cards (counts
+  // over ALL clients, not just this page — a page-local filter would understate).
+  const [clientPage, summary] = await Promise.all([
+    apiGet<Paged<ClientRecord>>(`/sales/clients?page=${page}&limit=${PAGE_SIZE}`),
+    apiGet<ClientSummary>('/sales/clients/summary'),
+  ]);
+  const clients = clientPage.items;
+  const activeCount = summary.activeCount;
 
   async function createClient(formData: FormData) {
     'use server';
@@ -109,7 +125,7 @@ export default async function ClientsPage({
             Clients
           </p>
           <p className="mt-2 font-mono text-lg font-bold tabular-nums">
-            {clients.length}
+            {summary.count}
           </p>
         </div>
         <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
@@ -125,14 +141,14 @@ export default async function ClientsPage({
             Inactifs
           </p>
           <p className="mt-2 font-mono text-lg font-bold tabular-nums">
-            {clients.length - activeCount}
+            {summary.count - activeCount}
           </p>
         </div>
       </div>
 
       <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
         <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
-          Répertoire ({clients.length})
+          Répertoire ({summary.count})
         </h2>
         <table className="w-full text-left text-sm">
           <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
@@ -187,9 +203,17 @@ export default async function ClientsPage({
         </table>
         {clients.length === 0 && (
           <p className="p-8 text-center text-sm text-faint">
-            Aucun client — enregistrez le premier ci-dessous.
+            {summary.count === 0
+              ? 'Aucun client — enregistrez le premier ci-dessous.'
+              : 'Aucun client sur cette page.'}
           </p>
         )}
+        <Pager
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={clientPage.total}
+          hrefForPage={(p) => `/sales/clients?page=${p}`}
+        />
       </section>
 
       <section className="rounded-xl border border-line bg-paper-2 p-6 shadow-sm">

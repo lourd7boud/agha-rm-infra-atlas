@@ -13,10 +13,21 @@ import {
   type ExpenseCategory,
   type ExpenseRecord,
   type ExpenseSummary,
+  type Paged,
   type PaymentRecord,
   type SupplierRecord,
 } from '@/lib/finance';
 import { isRedirectError } from '@/lib/next-redirect';
+import { Pager } from '@/components/ui/Pager';
+
+/** Rows per page for the paginated ledger lists (payments + expenses). */
+const PAGE_SIZE = 25;
+
+/** Parse a ?…Page query value into a zero-based, non-negative page index. */
+function parsePageParam(value: string | undefined): number {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
 
 interface CautionItem {
   id: string;
@@ -116,12 +127,20 @@ function fmtDate(value: string): string {
 export default async function FinancePage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; code?: string; category?: string }>;
+  searchParams: Promise<{
+    error?: string;
+    code?: string;
+    category?: string;
+    paymentsPage?: string;
+    expensesPage?: string;
+  }>;
 }) {
   const {
     error: actionError,
     code: actionCode,
     category: rawCategory,
+    paymentsPage: rawPaymentsPage,
+    expensesPage: rawExpensesPage,
   } = await searchParams;
   const errorMessage = actionErrorMessage(actionError, actionCode);
 
@@ -133,9 +152,20 @@ export default async function FinancePage({
     ? (rawCategory as ExpenseCategory)
     : undefined;
 
-  const expensesPath = activeCategory
-    ? `/finance/expenses?category=${activeCategory}`
-    : '/finance/expenses';
+  // Independent zero-based page indices for each list — one list paging never
+  // moves the other (each pager preserves the other list's page + the category).
+  const paymentsPage = parsePageParam(rawPaymentsPage);
+  const expensesPage = parsePageParam(rawExpensesPage);
+
+  // Fetch exactly one bounded page per list (DB-side LIMIT/OFFSET); the category
+  // scope rides on the expenses request only.
+  const paymentsPath = `/finance/payments?page=${paymentsPage}&limit=${PAGE_SIZE}`;
+  const expensesQuery = new URLSearchParams({
+    page: String(expensesPage),
+    limit: String(PAGE_SIZE),
+  });
+  if (activeCategory) expensesQuery.set('category', activeCategory);
+  const expensesPath = `/finance/expenses?${expensesQuery.toString()}`;
 
   const [
     cautions,
@@ -149,13 +179,33 @@ export default async function FinancePage({
   ] = await Promise.all([
     apiGet<CautionsResponse>('/finance/cautions'),
     apiGet<ReceivablesResponse>('/finance/receivables'),
-    apiGet<PaymentRecord[]>('/finance/payments'),
-    apiGet<ExpenseRecord[]>(expensesPath),
+    apiGet<Paged<PaymentRecord>>(paymentsPath),
+    apiGet<Paged<ExpenseRecord>>(expensesPath),
     apiGet<ExpenseSummary>('/finance/expenses/summary'),
     apiGet<Cashflow>('/finance/cashflow'),
     apiGet<ProjectSummary[]>('/project/projects'),
     apiGet<SupplierRecord[]>('/supply/suppliers'),
   ]);
+
+  // Per-list href builders for the two pagers: each preserves the OTHER list's
+  // page param and the active category so paging one section is isolated.
+  function paymentsHref(page: number): string {
+    const params = new URLSearchParams();
+    if (page > 0) params.set('paymentsPage', String(page));
+    if (expensesPage > 0) params.set('expensesPage', String(expensesPage));
+    if (activeCategory) params.set('category', activeCategory);
+    const qs = params.toString();
+    return qs ? `/finance?${qs}` : '/finance';
+  }
+
+  function expensesHref(page: number): string {
+    const params = new URLSearchParams();
+    if (page > 0) params.set('expensesPage', String(page));
+    if (paymentsPage > 0) params.set('paymentsPage', String(paymentsPage));
+    if (activeCategory) params.set('category', activeCategory);
+    const qs = params.toString();
+    return qs ? `/finance?${qs}` : '/finance';
+  }
 
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const supplierById = new Map(
@@ -414,7 +464,7 @@ export default async function FinancePage({
             {fmtMad(cashflow.incomesMad)}
           </p>
           <p className="mt-1 text-xs text-faint">
-            {payments.length} encaissement(s)
+            {payments.total} encaissement(s)
           </p>
         </div>
         <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
@@ -443,7 +493,7 @@ export default async function FinancePage({
 
       <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
         <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
-          Paiements / Encaissements ({payments.length})
+          Paiements / Encaissements ({payments.total})
         </h2>
         <table className="w-full text-left text-sm">
           <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
@@ -458,7 +508,7 @@ export default async function FinancePage({
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {payments.map((payment) => (
+            {payments.items.map((payment) => (
               <tr key={payment.id}>
                 <td className="px-4 py-3 font-mono text-xs tabular-nums text-muted">
                   {fmtDate(payment.paidAt)}
@@ -483,11 +533,17 @@ export default async function FinancePage({
             ))}
           </tbody>
         </table>
-        {payments.length === 0 && (
+        {payments.total === 0 && (
           <p className="p-8 text-center text-sm text-faint">
             Aucun encaissement enregistré — ajoutez-en ci-dessous.
           </p>
         )}
+        <Pager
+          page={paymentsPage}
+          pageSize={PAGE_SIZE}
+          total={payments.total}
+          hrefForPage={paymentsHref}
+        />
         <form
           action={createPayment}
           className="flex flex-wrap items-end gap-3 border-t border-line px-5 py-4"
@@ -629,7 +685,7 @@ export default async function FinancePage({
       <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
         <div className="flex flex-wrap items-center gap-2 border-b border-line px-5 py-4">
           <h2 className="mr-2 text-xs font-semibold uppercase tracking-widest text-faint">
-            Dépenses ({expenses.length})
+            Dépenses ({expenses.total})
           </h2>
           <Link
             href="/finance"
@@ -668,7 +724,7 @@ export default async function FinancePage({
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {expenses.map((expense) => (
+            {expenses.items.map((expense) => (
               <tr key={expense.id}>
                 <td className="px-4 py-3 font-mono text-xs tabular-nums text-muted">
                   {fmtDate(expense.spentAt)}
@@ -697,13 +753,19 @@ export default async function FinancePage({
             ))}
           </tbody>
         </table>
-        {expenses.length === 0 && (
+        {expenses.total === 0 && (
           <p className="p-8 text-center text-sm text-faint">
             {activeCategory
               ? 'Aucune dépense dans cette catégorie.'
               : 'Aucune dépense enregistrée — ajoutez-en ci-dessous.'}
           </p>
         )}
+        <Pager
+          page={expensesPage}
+          pageSize={PAGE_SIZE}
+          total={expenses.total}
+          hrefForPage={expensesHref}
+        />
         <form
           action={createExpense}
           className="flex flex-wrap items-end gap-3 border-t border-line px-5 py-4"

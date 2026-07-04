@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { asc, count, desc, eq } from 'drizzle-orm';
+import { asc, count, desc, eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import {
   purchaseOrderLines,
@@ -8,6 +8,20 @@ import {
   suppliers,
 } from '../../db/schema';
 import { lineTotal, type SupplierInvoiceStatus } from './supply.domain';
+
+// ── Pagination (datao-parity: DB-side LIMIT/OFFSET; totals via a summary) ─────
+
+/** DB-side page window. limit is bounded by the controller (default 25/max 100). */
+export interface PageParams {
+  limit: number;
+  offset: number;
+}
+
+/** A single page plus the total matching-row count (for the pager). */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
 
 export type SupplierStatus = 'actif' | 'inactif';
 export type PurchaseOrderStatus = 'brouillon' | 'envoye' | 'recu' | 'annule';
@@ -71,6 +85,17 @@ export interface PurchaseOrderRecord {
   lines: PurchaseOrderLineRecord[];
 }
 
+/** List projection — a purchase order minus the heavy `lines` array (the list
+ *  view renders only `lineCount`; the detail page still fetches the full order). */
+export type PurchaseOrderListItem = Omit<PurchaseOrderRecord, 'lines'>;
+
+/** DB-computed order totals over the WHOLE filtered set — correct regardless of
+ *  paging (a JS reduce over one page would understate them as data grows). */
+export interface OrdersSummary {
+  count: number;
+  totalMad: number;
+}
+
 export interface CreateSupplierInvoice {
   supplierId: string;
   purchaseOrderId?: string;
@@ -93,7 +118,10 @@ export interface SupplyRepository {
   listSuppliers(): Promise<SupplierRecord[]>;
   findSupplierById(id: string): Promise<SupplierRecord | null>;
   createOrder(input: CreatePurchaseOrder): Promise<PurchaseOrderRecord>;
-  listOrders(): Promise<PurchaseOrderRecord[]>;
+  /** One DB page of orders (projected, no lines) + the total matching count. */
+  listOrders(paging: PageParams): Promise<Paged<PurchaseOrderListItem>>;
+  /** DB-side order totals over the whole set (paging-independent). */
+  ordersSummary(): Promise<OrdersSummary>;
   /** Order detail with its lines (empty array for legacy line-less orders). */
   getOrder(id: string): Promise<PurchaseOrderRecord | null>;
   /** The lines of one order (empty array when none). */
@@ -103,7 +131,11 @@ export interface SupplyRepository {
     status: PurchaseOrderStatus,
   ): Promise<PurchaseOrderRecord | null>;
   createInvoice(input: CreateSupplierInvoice): Promise<SupplierInvoiceRecord>;
-  listInvoices(): Promise<SupplierInvoiceRecord[]>;
+  /** One DB page of supplier invoices + the total matching count. */
+  listInvoices(paging: PageParams): Promise<Paged<SupplierInvoiceRecord>>;
+  /** The whole (unbounded) set of supplier invoices — for the payables aggregate,
+   *  which ages every validated invoice and cannot run off a single page. */
+  listAllInvoices(): Promise<SupplierInvoiceRecord[]>;
   findInvoiceById(id: string): Promise<SupplierInvoiceRecord | null>;
   setInvoiceStatus(
     id: string,
@@ -174,8 +206,26 @@ export class InMemorySupplyRepository implements SupplyRepository {
     this.orders = [...this.orders, record];
     return record;
   }
-  async listOrders(): Promise<PurchaseOrderRecord[]> {
-    return [...this.orders];
+  async listOrders(
+    paging: PageParams,
+  ): Promise<Paged<PurchaseOrderListItem>> {
+    // Newest-first (mirrors the Drizzle desc(createdAt) order), then a page
+    // window; the list view never renders line bodies, so `lines` is stripped.
+    const matched = [...this.orders].sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
+    const items = matched
+      .slice(paging.offset, paging.offset + paging.limit)
+      .map(({ lines: _lines, ...item }) => item);
+    return { items, total: matched.length };
+  }
+  async ordersSummary(): Promise<OrdersSummary> {
+    // Totals over EVERY order (not one page): a JS reduce over a single page
+    // would understate the cumul as the procurement log grows.
+    return {
+      count: this.orders.length,
+      totalMad: this.orders.reduce((sum, o) => sum + o.amountMad, 0),
+    };
   }
   async getOrder(id: string): Promise<PurchaseOrderRecord | null> {
     return this.orders.find((o) => o.id === id) ?? null;
@@ -206,7 +256,17 @@ export class InMemorySupplyRepository implements SupplyRepository {
     this.invoices = [...this.invoices, record];
     return record;
   }
-  async listInvoices(): Promise<SupplierInvoiceRecord[]> {
+  async listInvoices(
+    paging: PageParams,
+  ): Promise<Paged<SupplierInvoiceRecord>> {
+    // By due date desc (mirrors the Drizzle order), then a page window.
+    const matched = [...this.invoices].sort(
+      (a, b) => b.dueDate.getTime() - a.dueDate.getTime(),
+    );
+    const items = matched.slice(paging.offset, paging.offset + paging.limit);
+    return { items, total: matched.length };
+  }
+  async listAllInvoices(): Promise<SupplierInvoiceRecord[]> {
     return [...this.invoices];
   }
   async findInvoiceById(id: string): Promise<SupplierInvoiceRecord | null> {
@@ -300,24 +360,51 @@ export class DrizzleSupplyRepository implements SupplyRepository {
       return toOrder(head, lineRows);
     });
   }
-  async listOrders(): Promise<PurchaseOrderRecord[]> {
-    // One grouped query: each order plus the COUNT of its lines. A LEFT JOIN
-    // keeps line-less orders, and count(line.id) ignores the NULL produced for
-    // them — so they read 0 without a per-order follow-up query (no N+1).
-    const rows = await this.db
+  async listOrders(
+    paging: PageParams,
+  ): Promise<Paged<PurchaseOrderListItem>> {
+    // DB-side page: one grouped query (each order + the COUNT of its lines via a
+    // LEFT JOIN, so line-less orders read 0 without an N+1) ordered newest-first
+    // with LIMIT/OFFSET — plus a parallel count of the whole set so the pager
+    // knows how many pages exist. The list view never renders line bodies, so
+    // each item is projected without the (already empty) `lines` array.
+    const [rows, [countRow]] = await Promise.all([
+      this.db
+        .select({
+          order: purchaseOrders,
+          lineCount: count(purchaseOrderLines.id),
+        })
+        .from(purchaseOrders)
+        .leftJoin(
+          purchaseOrderLines,
+          eq(purchaseOrderLines.purchaseOrderId, purchaseOrders.id),
+        )
+        .groupBy(purchaseOrders.id)
+        .orderBy(desc(purchaseOrders.createdAt))
+        .limit(paging.limit)
+        .offset(paging.offset),
+      this.db.select({ total: sql<number>`count(*)` }).from(purchaseOrders),
+    ]);
+    return {
+      items: rows.map((row) =>
+        toOrderListItem(row.order, Number(row.lineCount)),
+      ),
+      total: Number(countRow?.total ?? 0),
+    };
+  }
+  async ordersSummary(): Promise<OrdersSummary> {
+    // Totals over the WHOLE set (not one page): a JS reduce over a single page
+    // would understate the cumul as the procurement log grows.
+    const [row] = await this.db
       .select({
-        order: purchaseOrders,
-        lineCount: count(purchaseOrderLines.id),
+        count: sql<number>`count(*)`,
+        totalMad: sql<string>`coalesce(sum(${purchaseOrders.amountMad}), 0)`,
       })
-      .from(purchaseOrders)
-      .leftJoin(
-        purchaseOrderLines,
-        eq(purchaseOrderLines.purchaseOrderId, purchaseOrders.id),
-      )
-      .groupBy(purchaseOrders.id)
-      .orderBy(desc(purchaseOrders.createdAt));
-    // List view never needs the line bodies — pass [] and the explicit count.
-    return rows.map((row) => toOrder(row.order, [], Number(row.lineCount)));
+      .from(purchaseOrders);
+    return {
+      count: Number(row?.count ?? 0),
+      totalMad: Number(row?.totalMad ?? 0),
+    };
   }
   async getOrder(id: string): Promise<PurchaseOrderRecord | null> {
     const [row] = await this.db
@@ -376,7 +463,28 @@ export class DrizzleSupplyRepository implements SupplyRepository {
     if (!row) throw new Error('Supplier invoice insert returned no row');
     return toInvoice(row);
   }
-  async listInvoices(): Promise<SupplierInvoiceRecord[]> {
+  async listInvoices(
+    paging: PageParams,
+  ): Promise<Paged<SupplierInvoiceRecord>> {
+    // DB-side page: ordered by due date (échéancier), LIMIT/OFFSET — plus a
+    // parallel count of the whole set so the pager knows how many pages exist.
+    const [rows, [countRow]] = await Promise.all([
+      this.db
+        .select()
+        .from(supplierInvoices)
+        .orderBy(desc(supplierInvoices.dueDate))
+        .limit(paging.limit)
+        .offset(paging.offset),
+      this.db.select({ total: sql<number>`count(*)` }).from(supplierInvoices),
+    ]);
+    return {
+      items: rows.map(toInvoice),
+      total: Number(countRow?.total ?? 0),
+    };
+  }
+  async listAllInvoices(): Promise<SupplierInvoiceRecord[]> {
+    // Whole (unbounded) set — the payables aggregate ages every validated
+    // invoice and cannot run off a single page.
     const rows = await this.db
       .select()
       .from(supplierInvoices)
@@ -433,15 +541,14 @@ function toOrderLine(row: OrderLineRow): PurchaseOrderLineRecord {
   };
 }
 /**
- * Map an order row to a record. `lineCount` defaults to the number of supplied
- * line rows (detail/transition paths), but list endpoints pass an explicit
- * count from a COUNT aggregate so they can omit the lines entirely.
+ * List projection — every order field except the `lines` array. `lineCount` is
+ * passed explicitly by list endpoints from a COUNT aggregate so they can omit
+ * the line bodies entirely.
  */
-function toOrder(
+function toOrderListItem(
   row: OrderRow,
-  lineRows: OrderLineRow[],
-  lineCount: number = lineRows.length,
-): PurchaseOrderRecord {
+  lineCount: number,
+): PurchaseOrderListItem {
   return {
     id: row.id,
     supplierId: row.supplierId,
@@ -453,6 +560,20 @@ function toOrder(
     orderedAt: row.orderedAt,
     createdAt: row.createdAt,
     lineCount,
+  };
+}
+/**
+ * Map an order row to a full record. `lineCount` defaults to the number of
+ * supplied line rows (detail/transition paths), but callers may pass an explicit
+ * count from a COUNT aggregate.
+ */
+function toOrder(
+  row: OrderRow,
+  lineRows: OrderLineRow[],
+  lineCount: number = lineRows.length,
+): PurchaseOrderRecord {
+  return {
+    ...toOrderListItem(row, lineCount),
     lines: lineRows.map(toOrderLine),
   };
 }

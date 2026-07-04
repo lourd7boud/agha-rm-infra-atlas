@@ -9,11 +9,13 @@ import { randomUUID } from 'node:crypto';
 import { computeDocTotals, lineTotal } from './sales.domain';
 import type {
   ClientRecord,
+  ClientSummary,
   CreateDeliveryNote,
   CreateInvoice,
   CreateQuote,
   DeliveryLineRecord,
   DeliveryNoteFilter,
+  DeliveryNoteListItem,
   DeliveryNoteRecord,
   DocLineRecord,
   InvoiceFilter,
@@ -23,7 +25,9 @@ import type {
   PageParams,
   Paged,
   QuoteFilter,
+  QuoteListItem,
   QuoteRecord,
+  QuoteSummary,
   SalesRepository,
   UpsertClient,
 } from './sales.types';
@@ -105,8 +109,19 @@ export class InMemorySalesRepository implements SalesRepository {
     return merged;
   }
 
-  async listClients(): Promise<ClientRecord[]> {
-    return [...this.clients];
+  async listClients(paging: PageParams): Promise<Paged<ClientRecord>> {
+    const ordered = [...this.clients].sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
+    const items = ordered.slice(paging.offset, paging.offset + paging.limit);
+    return { items, total: ordered.length };
+  }
+
+  async clientsSummary(): Promise<ClientSummary> {
+    return {
+      count: this.clients.length,
+      activeCount: this.clients.filter((c) => c.status === 'actif').length,
+    };
   }
 
   async getClient(id: string): Promise<ClientRecord | null> {
@@ -136,14 +151,33 @@ export class InMemorySalesRepository implements SalesRepository {
     return record;
   }
 
-  async listQuotes(filter: QuoteFilter): Promise<QuoteRecord[]> {
-    return [...this.quotes]
-      .filter((q) => {
-        if (filter.clientId && q.clientId !== filter.clientId) return false;
-        if (filter.status && q.status !== filter.status) return false;
-        return true;
-      })
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  async listQuotes(
+    filter: QuoteFilter,
+    paging: PageParams,
+  ): Promise<Paged<QuoteListItem>> {
+    const matched = this.matchQuotes(filter).sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
+    const items = matched
+      .slice(paging.offset, paging.offset + paging.limit)
+      .map(({ lines: _lines, ...item }) => item);
+    return { items, total: matched.length };
+  }
+
+  async quotesSummary(filter: QuoteFilter): Promise<QuoteSummary> {
+    const matched = this.matchQuotes(filter);
+    return {
+      count: matched.length,
+      totalTtcMad: matched.reduce((sum, q) => sum + q.totalTtcMad, 0),
+    };
+  }
+
+  private matchQuotes(filter: QuoteFilter): QuoteRecord[] {
+    return this.quotes.filter((q) => {
+      if (filter.clientId && q.clientId !== filter.clientId) return false;
+      if (filter.status && q.status !== filter.status) return false;
+      return true;
+    });
   }
 
   async getQuote(id: string): Promise<QuoteRecord | null> {
@@ -182,14 +216,24 @@ export class InMemorySalesRepository implements SalesRepository {
 
   async listDeliveryNotes(
     filter: DeliveryNoteFilter,
-  ): Promise<DeliveryNoteRecord[]> {
-    return [...this.deliveryNotes]
-      .filter((d) => {
-        if (filter.clientId && d.clientId !== filter.clientId) return false;
-        if (filter.status && d.status !== filter.status) return false;
-        return true;
-      })
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    paging: PageParams,
+  ): Promise<Paged<DeliveryNoteListItem>> {
+    const matched = this.matchDeliveryNotes(filter).sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
+    // Project to the list shape: drop `lines`, carry only its count.
+    const items = matched
+      .slice(paging.offset, paging.offset + paging.limit)
+      .map(({ lines, ...rest }) => ({ ...rest, lineCount: lines.length }));
+    return { items, total: matched.length };
+  }
+
+  private matchDeliveryNotes(filter: DeliveryNoteFilter): DeliveryNoteRecord[] {
+    return this.deliveryNotes.filter((d) => {
+      if (filter.clientId && d.clientId !== filter.clientId) return false;
+      if (filter.status && d.status !== filter.status) return false;
+      return true;
+    });
   }
 
   async getDeliveryNote(id: string): Promise<DeliveryNoteRecord | null> {

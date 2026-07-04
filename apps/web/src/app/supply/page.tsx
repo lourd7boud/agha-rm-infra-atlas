@@ -9,13 +9,18 @@ import {
   fmtMad,
   ORDER_STATUS_BADGES,
   SUPPLIER_INVOICE_STATUS_BADGES,
+  type OrdersSummary,
+  type Paged,
   type Payables,
-  type PurchaseOrderRecord,
+  type PurchaseOrderListItem,
   type SupplierInvoiceRecord,
   type SupplierRecord,
 } from '@/lib/supply';
 import { OrderLinesEditor } from '@/components/supply/OrderLinesEditor';
+import { Pager } from '@/components/ui/Pager';
 import { isRedirectError } from '@/lib/next-redirect';
+
+const PAGE_SIZE = 25;
 
 interface CreateLineInput {
   designation: string;
@@ -109,18 +114,42 @@ function parseLines(raw: string): CreateLineInput[] {
 export default async function SupplyPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; code?: string }>;
+  searchParams: Promise<{
+    error?: string;
+    code?: string;
+    ordersPage?: string;
+    invoicesPage?: string;
+  }>;
 }) {
-  const { error: actionError, code: actionCode } = await searchParams;
+  const {
+    error: actionError,
+    code: actionCode,
+    ordersPage: ordersPageParam,
+    invoicesPage: invoicesPageParam,
+  } = await searchParams;
   const errorMessage = actionErrorMessage(actionError, actionCode);
+  const ordersPage = Math.max(0, Math.floor(Number(ordersPageParam)) || 0);
+  const invoicesPage = Math.max(0, Math.floor(Number(invoicesPageParam)) || 0);
 
-  const [suppliers, orders, invoices, payables, projects] = await Promise.all([
-    apiGet<SupplierRecord[]>('/supply/suppliers'),
-    apiGet<PurchaseOrderRecord[]>('/supply/orders'),
-    apiGet<SupplierInvoiceRecord[]>('/supply/invoices'),
-    apiGet<Payables>('/supply/payables'),
-    apiGet<ProjectSummary[]>('/project/projects'),
-  ]);
+  // Each list is one bounded DB page + a DB-side total: the orders card reads
+  // its cumul from ordersSummary (correct over ALL orders, not just this page),
+  // and the invoice totals stay on the payables endpoint (its own aggregate).
+  const [suppliers, ordersPageData, ordersSummary, invoicesPageData, payables, projects] =
+    await Promise.all([
+      apiGet<SupplierRecord[]>('/supply/suppliers'),
+      apiGet<Paged<PurchaseOrderListItem>>(
+        `/supply/orders?page=${ordersPage}&limit=${PAGE_SIZE}`,
+      ),
+      apiGet<OrdersSummary>('/supply/orders/summary'),
+      apiGet<Paged<SupplierInvoiceRecord>>(
+        `/supply/invoices?page=${invoicesPage}&limit=${PAGE_SIZE}`,
+      ),
+      apiGet<Payables>('/supply/payables'),
+      apiGet<ProjectSummary[]>('/project/projects'),
+    ]);
+
+  const orders = ordersPageData.items;
+  const invoices = invoicesPageData.items;
 
   const supplierById = new Map(suppliers.map((s) => [s.id, s]));
   const projectById = new Map(projects.map((p) => [p.id, p]));
@@ -134,7 +163,8 @@ export default async function SupplyPage({
     return projectById.get(id)?.reference ?? id;
   }
 
-  const ordersTotalMad = orders.reduce((sum, order) => sum + order.amountMad, 0);
+  // Cumul over ALL orders — a DB aggregate, never a reduce over the current page.
+  const ordersTotalMad = ordersSummary.totalMad;
 
   const cards = [
     {
@@ -150,7 +180,7 @@ export default async function SupplyPage({
     {
       label: 'Bons de commande (cumul)',
       value: fmtMad(ordersTotalMad),
-      hint: `${orders.length} bon(s) de commande`,
+      hint: `${ordersSummary.count} bon(s) de commande`,
     },
     {
       label: 'Fournisseurs actifs',
@@ -493,10 +523,13 @@ export default async function SupplyPage({
       </section>
 
       {/* ── Purchase orders ── */}
-      <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
+      <section
+        id="bons-de-commande"
+        className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm"
+      >
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-faint">
-            Bons de commande ({orders.length}) · cumul{' '}
+            Bons de commande ({ordersSummary.count}) · cumul{' '}
             <span className="font-mono tabular-nums text-ink-2">
               {fmtMad(ordersTotalMad)}
             </span>
@@ -578,9 +611,21 @@ export default async function SupplyPage({
         </table>
         {orders.length === 0 && (
           <p className="p-8 text-center text-sm text-faint">
-            Aucun bon de commande — créez-en un ci-dessous.
+            {ordersSummary.count === 0
+              ? 'Aucun bon de commande — créez-en un ci-dessous.'
+              : 'Aucun bon de commande sur cette page.'}
           </p>
         )}
+        <Pager
+          page={ordersPage}
+          pageSize={PAGE_SIZE}
+          total={ordersPageData.total}
+          hrefForPage={(p) =>
+            `/supply?ordersPage=${p}${
+              invoicesPage > 0 ? `&invoicesPage=${invoicesPage}` : ''
+            }#bons-de-commande`
+          }
+        />
       </section>
 
       <section className="mb-6 rounded-xl border border-line bg-paper-2 p-6 shadow-sm">
@@ -691,9 +736,12 @@ export default async function SupplyPage({
       </section>
 
       {/* ── Supplier invoices ── */}
-      <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
+      <section
+        id="factures-fournisseurs"
+        className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm"
+      >
         <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
-          Factures fournisseurs ({invoices.length})
+          Factures fournisseurs ({invoicesPageData.total})
         </h2>
         <table className="w-full text-left text-sm">
           <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
@@ -764,9 +812,21 @@ export default async function SupplyPage({
         </table>
         {invoices.length === 0 && (
           <p className="p-8 text-center text-sm text-faint">
-            Aucune facture fournisseur — ajoutez-en une ci-dessous.
+            {invoicesPageData.total === 0
+              ? 'Aucune facture fournisseur — ajoutez-en une ci-dessous.'
+              : 'Aucune facture fournisseur sur cette page.'}
           </p>
         )}
+        <Pager
+          page={invoicesPage}
+          pageSize={PAGE_SIZE}
+          total={invoicesPageData.total}
+          hrefForPage={(p) =>
+            `/supply?invoicesPage=${p}${
+              ordersPage > 0 ? `&ordersPage=${ordersPage}` : ''
+            }#factures-fournisseurs`
+          }
+        />
         <form
           action={createInvoice}
           className="flex flex-wrap items-end gap-3 border-t border-line px-5 py-4"

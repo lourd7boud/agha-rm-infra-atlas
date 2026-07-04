@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { apiGet, apiPatch, apiPost, AtlasApiError } from '@/lib/api';
+import { Pager } from '@/components/ui/Pager';
 import type { ProjectSummary } from '@/lib/projects';
 import {
   fmtDate,
@@ -10,8 +11,12 @@ import {
   type EquipmentDetail,
   type EquipmentRecord,
   type EquipmentStatus,
+  type EquipmentSummary,
+  type Paged,
 } from '@/lib/equipment';
 import { isRedirectError } from '@/lib/next-redirect';
+
+const PAGE_SIZE = 25;
 
 // One place to turn an action failure into user-visible feedback: log the real
 // cause server-side, then redirect back to /equipment with a stable error code
@@ -61,18 +66,31 @@ function actionErrorMessage(
 export default async function EquipmentPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; code?: string }>;
+  searchParams: Promise<{ error?: string; code?: string; page?: string }>;
 }) {
-  const { error: actionError, code: actionCode } = await searchParams;
+  const {
+    error: actionError,
+    code: actionCode,
+    page: pageParam,
+  } = await searchParams;
   const errorMessage = actionErrorMessage(actionError, actionCode);
-  const [equipment, projects] = await Promise.all([
-    apiGet<EquipmentRecord[]>('/equipment'),
+  const page = Math.max(0, Math.floor(Number(pageParam)) || 0);
+  // One bounded DB page for the table + a DB-side summary for the KPI tiles
+  // (status counts correct over the WHOLE parc, not just this page) + projects
+  // for the chantier name map.
+  const [equipmentPage, summary, projects] = await Promise.all([
+    apiGet<Paged<EquipmentRecord>>(`/equipment?page=${page}&limit=${PAGE_SIZE}`),
+    apiGet<EquipmentSummary>('/equipment/summary'),
     apiGet<ProjectSummary[]>('/project/projects'),
   ]);
+  const equipment = equipmentPage.items;
+  const counts = summary.counts;
 
   // The open assignment (project + expected return) lives in GET /equipment/:id;
-  // fetch the detail of each posted machine so its row can show where it is and
-  // when it is due back, without an N-fetch for idle/broken machines.
+  // fetch the detail of each posted machine ON THIS PAGE so its row can show
+  // where it is and when it is due back. (Pre-pagination this iterated the whole
+  // fleet; now it iterates the current page's items — the N+1 fan-out is a
+  // separate follow-up and is intentionally left in place here.)
   const assignedIds = equipment
     .filter((e) => e.status === 'assignee')
     .map((e) => e.id);
@@ -85,14 +103,6 @@ export default async function EquipmentPage({
       .map((d) => [d.equipment.id, d.openAssignment!]),
   );
   const projectById = new Map(projects.map((p) => [p.id, p]));
-
-  const counts = EQUIPMENT_STATUS_ORDER.reduce<Record<EquipmentStatus, number>>(
-    (acc, status) => {
-      acc[status] = equipment.filter((e) => e.status === status).length;
-      return acc;
-    },
-    { disponible: 0, assignee: 0, hors_service: 0 },
-  );
 
   async function createEquipment(formData: FormData) {
     'use server';
@@ -201,7 +211,7 @@ export default async function EquipmentPage({
             Parc total
           </p>
           <p className="mt-2 font-mono text-lg font-bold tabular-nums">
-            {equipment.length}
+            {summary.total}
           </p>
         </div>
         {EQUIPMENT_STATUS_ORDER.map((status) => {
@@ -224,7 +234,7 @@ export default async function EquipmentPage({
 
       <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
         <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
-          Inventaire ({equipment.length})
+          Inventaire ({summary.total})
         </h2>
         <table className="w-full text-left text-sm">
           <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
@@ -337,9 +347,17 @@ export default async function EquipmentPage({
         </table>
         {equipment.length === 0 && (
           <p className="p-8 text-center text-sm text-faint">
-            Aucun matériel — ajoutez un engin ci-dessous.
+            {summary.total === 0
+              ? 'Aucun matériel — ajoutez un engin ci-dessous.'
+              : 'Aucun matériel sur cette page.'}
           </p>
         )}
+        <Pager
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={equipmentPage.total}
+          hrefForPage={(p) => `/equipment?page=${p}`}
+        />
         <form
           action={createEquipment}
           className="flex flex-wrap items-end gap-3 border-t border-line px-5 py-4"

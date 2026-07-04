@@ -6,7 +6,7 @@
  * parent + its lines together (situations/avenants pattern). Money/quantities
  * are stored as numeric strings (.toString()) and surfaced as numbers (Number()).
  */
-import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import {
   clients,
@@ -26,11 +26,13 @@ import type {
 import type {
   ClientRecord,
   ClientStatus,
+  ClientSummary,
   CreateDeliveryNote,
   CreateInvoice,
   CreateQuote,
   DeliveryLineRecord,
   DeliveryNoteFilter,
+  DeliveryNoteListItem,
   DeliveryNoteRecord,
   DocLineRecord,
   InvoiceFilter,
@@ -40,7 +42,9 @@ import type {
   PageParams,
   Paged,
   QuoteFilter,
+  QuoteListItem,
   QuoteRecord,
+  QuoteSummary,
   SalesRepository,
   UpsertClient,
 } from './sales.types';
@@ -89,12 +93,37 @@ export class DrizzleSalesRepository implements SalesRepository {
     return toClient(row);
   }
 
-  async listClients(): Promise<ClientRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(clients)
-      .orderBy(desc(clients.createdAt));
-    return rows.map(toClient);
+  async listClients(paging: PageParams): Promise<Paged<ClientRecord>> {
+    // DB-side page (ordered, LIMIT/OFFSET) + a count of the whole set so the
+    // pager knows how many pages exist. Clients have no status filter.
+    const [rows, [countRow]] = await Promise.all([
+      this.db
+        .select()
+        .from(clients)
+        .orderBy(desc(clients.createdAt))
+        .limit(paging.limit)
+        .offset(paging.offset),
+      this.db.select({ total: sql<number>`count(*)` }).from(clients),
+    ]);
+    return {
+      items: rows.map(toClient),
+      total: Number(countRow?.total ?? 0),
+    };
+  }
+
+  async clientsSummary(): Promise<ClientSummary> {
+    // Counts over the WHOLE set (not one page): a JS filter over a single page
+    // would understate the actif/inactif cards.
+    const [row] = await this.db
+      .select({
+        count: sql<number>`count(*)`,
+        activeCount: sql<number>`count(*) filter (where ${clients.status} = 'actif')`,
+      })
+      .from(clients);
+    return {
+      count: Number(row?.count ?? 0),
+      activeCount: Number(row?.activeCount ?? 0),
+    };
   }
 
   async getClient(id: string): Promise<ClientRecord | null> {
@@ -146,27 +175,44 @@ export class DrizzleSalesRepository implements SalesRepository {
     });
   }
 
-  async listQuotes(filter: QuoteFilter): Promise<QuoteRecord[]> {
-    const rows = await this.db
-      .select()
+  async listQuotes(
+    filter: QuoteFilter,
+    paging: PageParams,
+  ): Promise<Paged<QuoteListItem>> {
+    // DB-side page: projected (no `lines`), ordered, LIMIT/OFFSET — plus a count
+    // of the whole filtered set for the pager. The list view never renders line
+    // items, so the batched line fetch is dropped here.
+    const where = quoteWhere(filter);
+    const [rows, [countRow]] = await Promise.all([
+      this.db
+        .select()
+        .from(quotes)
+        .where(where)
+        .orderBy(desc(quotes.createdAt))
+        .limit(paging.limit)
+        .offset(paging.offset),
+      this.db.select({ total: sql<number>`count(*)` }).from(quotes).where(where),
+    ]);
+    return {
+      items: rows.map(toQuoteListItem),
+      total: Number(countRow?.total ?? 0),
+    };
+  }
+
+  async quotesSummary(filter: QuoteFilter): Promise<QuoteSummary> {
+    // Totals over the WHOLE filtered set (not one page): a JS reduce over a
+    // single page would understate them.
+    const [row] = await this.db
+      .select({
+        count: sql<number>`count(*)`,
+        totalTtcMad: sql<string>`coalesce(sum(${quotes.totalTtcMad}), 0)`,
+      })
       .from(quotes)
-      .where(quoteWhere(filter))
-      .orderBy(desc(quotes.createdAt));
-    if (rows.length === 0) return [];
-    // One batched line fetch (no N+1): SELECT … WHERE quote_id = ANY($ids),
-    // grouped per parent in memory; uses sales_quote_line_quote_id_idx.
-    const lineRows = await this.db
-      .select()
-      .from(quoteLines)
-      .where(
-        inArray(
-          quoteLines.quoteId,
-          rows.map((row) => row.id),
-        ),
-      )
-      .orderBy(asc(quoteLines.orderIndex));
-    const byQuote = groupBy(lineRows, (line) => line.quoteId);
-    return rows.map((row) => toQuote(row, byQuote.get(row.id) ?? []));
+      .where(quoteWhere(filter));
+    return {
+      count: Number(row?.count ?? 0),
+      totalTtcMad: Number(row?.totalTtcMad ?? 0),
+    };
   }
 
   async getQuote(id: string): Promise<QuoteRecord | null> {
@@ -225,26 +271,36 @@ export class DrizzleSalesRepository implements SalesRepository {
 
   async listDeliveryNotes(
     filter: DeliveryNoteFilter,
-  ): Promise<DeliveryNoteRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(deliveryNotes)
-      .where(deliveryWhere(filter))
-      .orderBy(desc(deliveryNotes.createdAt));
-    if (rows.length === 0) return [];
-    // One batched line fetch (no N+1) — see listQuotes.
-    const lineRows = await this.db
-      .select()
-      .from(deliveryLines)
-      .where(
-        inArray(
-          deliveryLines.deliveryNoteId,
-          rows.map((row) => row.id),
-        ),
-      )
-      .orderBy(asc(deliveryLines.orderIndex));
-    const byNote = groupBy(lineRows, (line) => line.deliveryNoteId);
-    return rows.map((row) => toDeliveryNote(row, byNote.get(row.id) ?? []));
+    paging: PageParams,
+  ): Promise<Paged<DeliveryNoteListItem>> {
+    // DB-side page: projected (no `lines`), ordered, LIMIT/OFFSET — plus a count
+    // of the whole filtered set for the pager. The list only shows a line COUNT,
+    // so we fold it in via a correlated scalar subquery over delivery_line
+    // (sales_delivery_line_delivery_note_id_idx) instead of loading line rows.
+    const where = deliveryWhere(filter);
+    const lineCount = sql<number>`(
+      select count(*) from ${deliveryLines}
+      where ${deliveryLines.deliveryNoteId} = ${deliveryNotes.id}
+    )`;
+    const [rows, [countRow]] = await Promise.all([
+      this.db
+        .select({ note: deliveryNotes, lineCount })
+        .from(deliveryNotes)
+        .where(where)
+        .orderBy(desc(deliveryNotes.createdAt))
+        .limit(paging.limit)
+        .offset(paging.offset),
+      this.db
+        .select({ total: sql<number>`count(*)` })
+        .from(deliveryNotes)
+        .where(where),
+    ]);
+    return {
+      items: rows.map((row) =>
+        toDeliveryNoteListItem(row.note, Number(row.lineCount ?? 0)),
+      ),
+      total: Number(countRow?.total ?? 0),
+    };
   }
 
   async getDeliveryNote(id: string): Promise<DeliveryNoteRecord | null> {
@@ -405,20 +461,6 @@ export class DrizzleSalesRepository implements SalesRepository {
   }
 }
 
-// ── line grouping (batched list loaders) ─────────────────────────────────────
-
-/** Bucket rows by a derived key, preserving input order within each bucket. */
-function groupBy<T, K>(rows: readonly T[], keyOf: (row: T) => K): Map<K, T[]> {
-  const grouped = new Map<K, T[]>();
-  for (const row of rows) {
-    const key = keyOf(row);
-    const bucket = grouped.get(key);
-    if (bucket) bucket.push(row);
-    else grouped.set(key, [row]);
-  }
-  return grouped;
-}
-
 // ── filters ────────────────────────────────────────────────────────────────
 
 function quoteWhere(filter: QuoteFilter): SQL | undefined {
@@ -486,6 +528,14 @@ function toDeliveryLine(row: DeliveryLineRow): DeliveryLineRecord {
 
 function toQuote(row: QuoteRow, lineRows: QuoteLineRow[]): QuoteRecord {
   return {
+    ...toQuoteListItem(row),
+    lines: lineRows.map(toDocLine),
+  };
+}
+
+/** List projection — every quote field except the `lines` array. */
+function toQuoteListItem(row: QuoteRow): QuoteListItem {
+  return {
     id: row.id,
     clientId: row.clientId,
     projectId: row.projectId ?? undefined,
@@ -499,7 +549,6 @@ function toQuote(row: QuoteRow, lineRows: QuoteLineRow[]): QuoteRecord {
     totalTtcMad: Number(row.totalTtcMad),
     notes: row.notes ?? undefined,
     createdAt: row.createdAt,
-    lines: lineRows.map(toDocLine),
   };
 }
 
@@ -518,6 +567,26 @@ function toDeliveryNote(
     notes: row.notes ?? undefined,
     createdAt: row.createdAt,
     lines: lineRows.map(toDeliveryLine),
+  };
+}
+
+/** List projection — the note minus `lines`, carrying only the line count the
+ *  list column renders. */
+function toDeliveryNoteListItem(
+  row: DeliveryNoteRow,
+  lineCount: number,
+): DeliveryNoteListItem {
+  return {
+    id: row.id,
+    clientId: row.clientId,
+    projectId: row.projectId ?? undefined,
+    quoteId: row.quoteId ?? undefined,
+    reference: row.reference,
+    deliveryDate: row.deliveryDate,
+    status: row.status as DeliveryNoteRecord['status'],
+    notes: row.notes ?? undefined,
+    createdAt: row.createdAt,
+    lineCount,
   };
 }
 

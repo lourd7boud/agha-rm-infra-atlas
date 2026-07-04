@@ -7,9 +7,16 @@ import {
   INVOICE_STATUS_BADGES,
   QUOTE_STATUS_BADGES,
   type ClientRecord,
-  type InvoiceRecord,
-  type QuoteRecord,
+  type InvoiceListItem,
+  type InvoiceSummary,
+  type Paged,
+  type QuoteListItem,
+  type QuoteSummary,
 } from '@/lib/sales';
+
+// The client's quote/invoice tables show one bounded DB page; the totals cards
+// come from the DB-side summary (correct over the whole set, not one page).
+const LIST_LIMIT = 100;
 
 /** One labelled coordinate row in the client identity card. */
 function Field({ label, value }: { label: string; value?: string }) {
@@ -29,15 +36,29 @@ export default async function ClientDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [client, quotes, invoices] = await Promise.all([
-    apiGet<ClientRecord>(`/sales/clients/${id}`),
-    apiGet<QuoteRecord[]>(`/sales/quotes?clientId=${id}`),
-    apiGet<InvoiceRecord[]>(`/sales/invoices?clientId=${id}`),
-  ]);
+  // Tables render one bounded page; the count/total cards use the DB-side
+  // summaries so they stay correct over the client's whole set of documents.
+  const [client, quotePage, invoicePage, quoteSummary, invoiceSummary] =
+    await Promise.all([
+      apiGet<ClientRecord>(`/sales/clients/${id}`),
+      apiGet<Paged<QuoteListItem>>(
+        `/sales/quotes?clientId=${id}&limit=${LIST_LIMIT}`,
+      ),
+      apiGet<Paged<InvoiceListItem>>(
+        `/sales/invoices?clientId=${id}&limit=${LIST_LIMIT}`,
+      ),
+      apiGet<QuoteSummary>(`/sales/quotes/summary?clientId=${id}`),
+      apiGet<InvoiceSummary>(`/sales/invoices/summary?clientId=${id}`),
+    ]);
 
+  const quotes = quotePage.items;
+  const invoices = invoicePage.items;
   const badge = CLIENT_STATUS_BADGES[client.status];
-  const quotesTotalMad = quotes.reduce((sum, q) => sum + q.totalTtcMad, 0);
-  const invoicesTotalMad = invoices.reduce((sum, i) => sum + i.totalTtcMad, 0);
+  // Count/total cards use the DB summaries (whole-set correct). Encaissé keeps
+  // its strict "payée only" meaning, summed over the fetched page (a single
+  // client's settled invoices stay well within the bounded window).
+  const quotesTotalMad = quoteSummary.totalTtcMad;
+  const invoicesTotalMad = invoiceSummary.totalTtcMad;
   const paidMad = invoices
     .filter((i) => i.status === 'payee')
     .reduce((sum, i) => sum + i.totalTtcMad, 0);
@@ -84,7 +105,9 @@ export default async function ClientDetailPage({
             <p className="mt-2 font-mono text-lg font-bold tabular-nums">
               {fmtMad(quotesTotalMad)}
             </p>
-            <p className="mt-1 text-xs text-faint">{quotes.length} document(s)</p>
+            <p className="mt-1 text-xs text-faint">
+              {quoteSummary.count} document(s)
+            </p>
           </div>
           <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
             <p className="text-xs font-semibold uppercase tracking-widest text-faint">
@@ -94,7 +117,7 @@ export default async function ClientDetailPage({
               {fmtMad(invoicesTotalMad)}
             </p>
             <p className="mt-1 text-xs text-faint">
-              {invoices.length} facture(s)
+              {invoiceSummary.count} facture(s)
             </p>
           </div>
           <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
@@ -114,7 +137,7 @@ export default async function ClientDetailPage({
       <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4">
           <h2 className="text-xs font-semibold uppercase tracking-widest text-faint">
-            Devis ({quotes.length})
+            Devis ({quoteSummary.count})
           </h2>
           <Link
             href={`/sales/quotes?clientId=${id}`}
@@ -178,7 +201,7 @@ export default async function ClientDetailPage({
 
       <section className="overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
         <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
-          Factures ({invoices.length})
+          Factures ({invoiceSummary.count})
         </h2>
         <table className="w-full text-left text-sm">
           <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">

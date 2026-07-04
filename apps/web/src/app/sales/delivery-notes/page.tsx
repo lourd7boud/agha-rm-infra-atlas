@@ -3,15 +3,19 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { apiGet, apiPost, AtlasApiError } from '@/lib/api';
 import { LineEditor } from '@/components/sales/LineEditor';
+import { Pager } from '@/components/ui/Pager';
 import {
   DELIVERY_STATUS_BADGES,
   DELIVERY_STATUS_OPTIONS,
   fmtDate,
   type ClientRecord,
-  type DeliveryNoteRecord,
+  type DeliveryNoteListItem,
   type DeliveryNoteStatus,
+  type Paged,
 } from '@/lib/sales';
 import { isRedirectError } from '@/lib/next-redirect';
+
+const PAGE_SIZE = 25;
 
 function failToDeliveryNotes(action: string, error: unknown): never {
   if (isRedirectError(error)) throw error;
@@ -77,10 +81,16 @@ function parseLines(raw: string): DeliveryLineInput[] | null {
 export default async function DeliveryNotesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: string; error?: string; code?: string }>;
+  searchParams: Promise<{
+    status?: string;
+    page?: string;
+    error?: string;
+    code?: string;
+  }>;
 }) {
   const {
     status: statusFilter,
+    page: pageParam,
     error: actionError,
     code: actionCode,
   } = await searchParams;
@@ -90,11 +100,19 @@ export default async function DeliveryNotesPage({
   )
     ? (statusFilter as DeliveryNoteStatus)
     : undefined;
-  const query = validStatus ? `?status=${validStatus}` : '';
-  const [clients, notes] = await Promise.all([
-    apiGet<ClientRecord[]>('/sales/clients'),
-    apiGet<DeliveryNoteRecord[]>(`/sales/delivery-notes${query}`),
+  const page = Math.max(0, Math.floor(Number(pageParam)) || 0);
+  const statusQs = validStatus ? `status=${validStatus}&` : '';
+  // One bounded DB page for the table (the list shows only a line COUNT, so the
+  // projected item carries `lineCount` and never loads line rows). The page shows
+  // a total count only, so Paged.total suffices — no summary endpoint needed.
+  const [clientPage, notePage] = await Promise.all([
+    apiGet<Paged<ClientRecord>>('/sales/clients?limit=100'),
+    apiGet<Paged<DeliveryNoteListItem>>(
+      `/sales/delivery-notes?${statusQs}page=${page}&limit=${PAGE_SIZE}`,
+    ),
   ]);
+  const clients = clientPage.items;
+  const notes = notePage.items;
   const clientName = new Map(clients.map((client) => [client.id, client.name]));
 
   async function createDeliveryNote(formData: FormData) {
@@ -169,7 +187,7 @@ export default async function DeliveryNotesPage({
 
       <section className="mb-8 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
         <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
-          Bons de livraison ({notes.length})
+          Bons de livraison ({notePage.total})
         </h2>
         <table className="w-full text-left text-sm">
           <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
@@ -197,7 +215,7 @@ export default async function DeliveryNotesPage({
                     {fmtDate(note.deliveryDate)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums">
-                    {note.lines.length}
+                    {note.lineCount}
                   </td>
                   <td className="px-4 py-3">
                     <span
@@ -221,9 +239,17 @@ export default async function DeliveryNotesPage({
         </table>
         {notes.length === 0 && (
           <p className="p-8 text-center text-sm text-faint">
-            Aucun bon de livraison — créez-en un ci-dessous.
+            {notePage.total === 0
+              ? 'Aucun bon de livraison — créez-en un ci-dessous.'
+              : 'Aucun bon de livraison sur cette page.'}
           </p>
         )}
+        <Pager
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={notePage.total}
+          hrefForPage={(p) => `/sales/delivery-notes?${statusQs}page=${p}`}
+        />
       </section>
 
       <section className="rounded-xl border border-line bg-paper-2 p-6 shadow-sm">

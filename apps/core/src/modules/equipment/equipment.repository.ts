@@ -72,6 +72,30 @@ export interface EquipmentFilter {
   status?: EquipmentStatus;
 }
 
+// ── Pagination (datao-parity: DB-side LIMIT/OFFSET; counts via a summary) ─────
+
+/** DB-side page window. limit is bounded by the controller (default 25/max 100). */
+export interface PageParams {
+  limit: number;
+  offset: number;
+}
+
+/** A single page plus the total matching-row count (for the pager). */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
+/**
+ * DB-computed fleet status tallies over the WHOLE table — correct regardless of
+ * paging (three JS `.filter().length` over one page would only count that page).
+ * `total` is the sum of the per-status counts (whole parc).
+ */
+export interface EquipmentSummary {
+  counts: Record<EquipmentStatus, number>;
+  total: number;
+}
+
 export interface AssignmentFilter {
   projectId?: string;
   equipmentId?: string;
@@ -100,7 +124,13 @@ export const EQUIPMENT_REPOSITORY = Symbol('EQUIPMENT_REPOSITORY');
 export interface EquipmentRepository {
   /** Inserts a machine, or back-fills it when (companyId, name) exists. */
   upsertEquipment(input: UpsertEquipment): Promise<EquipmentRecord>;
-  listEquipment(filter: EquipmentFilter): Promise<EquipmentRecord[]>;
+  /** One DB page of fleet rows + the total matching count (for the pager). */
+  listEquipment(
+    filter: EquipmentFilter,
+    paging: PageParams,
+  ): Promise<Paged<EquipmentRecord>>;
+  /** DB-side fleet status tallies over the whole parc (paging-independent). */
+  equipmentSummary(): Promise<EquipmentSummary>;
   /** The machine with its open assignment + assignment history, null when unknown. */
   getEquipment(id: string): Promise<EquipmentDetail | null>;
   /** TRANSACTIONAL: guards canAssign, opens an assignment, flips status to assignee. */
@@ -169,10 +199,27 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
     return merged;
   }
 
-  async listEquipment(filter: EquipmentFilter): Promise<EquipmentRecord[]> {
-    return [...this.equipment]
+  async listEquipment(
+    filter: EquipmentFilter,
+    paging: PageParams,
+  ): Promise<Paged<EquipmentRecord>> {
+    const matched = [...this.equipment]
       .filter((e) => (filter.status ? e.status === filter.status : true))
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const items = matched.slice(paging.offset, paging.offset + paging.limit);
+    return { items, total: matched.length };
+  }
+
+  async equipmentSummary(): Promise<EquipmentSummary> {
+    // Tallies over the WHOLE parc (not one page): a JS filter over a single page
+    // would only count that page. Seed every status at 0 so absent buckets show.
+    const counts: Record<EquipmentStatus, number> = {
+      disponible: 0,
+      assignee: 0,
+      hors_service: 0,
+    };
+    for (const machine of this.equipment) counts[machine.status] += 1;
+    return { counts, total: this.equipment.length };
   }
 
   async getEquipment(id: string): Promise<EquipmentDetail | null> {
@@ -332,13 +379,55 @@ export class DrizzleEquipmentRepository implements EquipmentRepository {
     return toEquipment(row);
   }
 
-  async listEquipment(filter: EquipmentFilter): Promise<EquipmentRecord[]> {
+  async listEquipment(
+    filter: EquipmentFilter,
+    paging: PageParams,
+  ): Promise<Paged<EquipmentRecord>> {
+    // DB-side page: keep the existing ORDER BY + optional status filter, add
+    // LIMIT/OFFSET, and count the whole filtered set in parallel so the pager
+    // knows how many pages exist. Mirrors the Phase-6 sales listInvoices shape.
+    const where = filter.status
+      ? eq(equipments.status, filter.status)
+      : undefined;
+    const [rows, [countRow]] = await Promise.all([
+      this.db
+        .select()
+        .from(equipments)
+        .where(where)
+        .orderBy(desc(equipments.createdAt))
+        .limit(paging.limit)
+        .offset(paging.offset),
+      this.db
+        .select({ total: sql<number>`count(*)` })
+        .from(equipments)
+        .where(where),
+    ]);
+    return {
+      items: rows.map(toEquipment),
+      total: Number(countRow?.total ?? 0),
+    };
+  }
+
+  async equipmentSummary(): Promise<EquipmentSummary> {
+    // SELECT status, count(*) GROUP BY status over the whole parc — one round-trip
+    // for all three tallies, correct regardless of paging. Seed every status at 0
+    // so a bucket with no rows still renders its KPI tile.
     const rows = await this.db
-      .select()
+      .select({ status: equipments.status, count: sql<number>`count(*)` })
       .from(equipments)
-      .where(filter.status ? eq(equipments.status, filter.status) : undefined)
-      .orderBy(desc(equipments.createdAt));
-    return rows.map(toEquipment);
+      .groupBy(equipments.status);
+    const counts: Record<EquipmentStatus, number> = {
+      disponible: 0,
+      assignee: 0,
+      hors_service: 0,
+    };
+    let total = 0;
+    for (const row of rows) {
+      const n = Number(row.count ?? 0);
+      counts[row.status as EquipmentStatus] = n;
+      total += n;
+    }
+    return { counts, total };
   }
 
   async getEquipment(id: string): Promise<EquipmentDetail | null> {

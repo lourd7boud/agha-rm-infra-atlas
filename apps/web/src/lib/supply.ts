@@ -66,6 +66,19 @@ export interface PurchaseOrderRecord {
   lines: OrderLineRecord[];
 }
 
+/**
+ * List projection returned by GET /supply/orders — a purchase order minus the
+ * heavy `lines` array (the list only shows `lineCount`; the detail page fetches
+ * the full order with its lines).
+ */
+export type PurchaseOrderListItem = Omit<PurchaseOrderRecord, 'lines'>;
+
+/** DB-computed order totals over the whole set (GET /supply/orders/summary). */
+export interface OrdersSummary {
+  count: number;
+  totalMad: number;
+}
+
 export const ORDER_STATUS_BADGES: Record<
   PurchaseOrderStatus,
   { label: string; classes: string }
@@ -155,6 +168,14 @@ export const BUCKET_TONES: Record<AgingBucket, string> = {
   '61-90': 'bg-ochre-soft text-ochre-deep',
   '90+': 'bg-clay-soft text-clay',
 };
+
+// ── Pagination (datao-parity: DB-side LIMIT/OFFSET; totals via a summary) ─────
+
+/** One page of a list endpoint plus the total matching-row count (for the pager). */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 

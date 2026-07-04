@@ -198,6 +198,27 @@ export interface InvoiceSummary {
   outstandingTtcMad: number;
 }
 
+/** Quote list projection — every quote field except the heavy `lines` array. */
+export type QuoteListItem = Omit<QuoteRecord, 'lines'>;
+
+/** DB-computed quote totals over the WHOLE filtered set (paging-independent). */
+export interface QuoteSummary {
+  count: number;
+  totalTtcMad: number;
+}
+
+/** Delivery-note list projection — the note minus its `lines`, but carrying the
+ *  line count the list column renders (so the page never loads the line rows). */
+export type DeliveryNoteListItem = Omit<DeliveryNoteRecord, 'lines'> & {
+  lineCount: number;
+};
+
+/** DB-computed client counts over the whole set (paging-independent cards). */
+export interface ClientSummary {
+  count: number;
+  activeCount: number;
+}
+
 // ── Repository contract ──────────────────────────────────────────────────────
 
 export const SALES_REPOSITORY = Symbol('SALES_REPOSITORY');
@@ -205,17 +226,30 @@ export const SALES_REPOSITORY = Symbol('SALES_REPOSITORY');
 export interface SalesRepository {
   /** Inserts a client, or back-fills it when (companyId, name) exists. */
   upsertClient(input: UpsertClient): Promise<ClientRecord>;
-  listClients(): Promise<ClientRecord[]>;
+  /** One DB page of clients (ordered) + the total count for the pager. */
+  listClients(paging: PageParams): Promise<Paged<ClientRecord>>;
+  /** DB-side client counts over the whole set (paging-independent). */
+  clientsSummary(): Promise<ClientSummary>;
   getClient(id: string): Promise<ClientRecord | null>;
 
   /** Creates a quote with its lines; totals folded via sales.domain. */
   createQuote(input: CreateQuote): Promise<QuoteRecord>;
-  listQuotes(filter: QuoteFilter): Promise<QuoteRecord[]>;
+  /** One DB page of quotes (projected, no lines) + the total matching count. */
+  listQuotes(
+    filter: QuoteFilter,
+    paging: PageParams,
+  ): Promise<Paged<QuoteListItem>>;
+  /** DB-side quote totals over the whole filtered set (paging-independent). */
+  quotesSummary(filter: QuoteFilter): Promise<QuoteSummary>;
   getQuote(id: string): Promise<QuoteRecord | null>;
   setQuoteStatus(id: string, status: QuoteStatus): Promise<QuoteRecord | null>;
 
   createDeliveryNote(input: CreateDeliveryNote): Promise<DeliveryNoteRecord>;
-  listDeliveryNotes(filter: DeliveryNoteFilter): Promise<DeliveryNoteRecord[]>;
+  /** One DB page of delivery notes (projected, lineCount only) + total count. */
+  listDeliveryNotes(
+    filter: DeliveryNoteFilter,
+    paging: PageParams,
+  ): Promise<Paged<DeliveryNoteListItem>>;
   getDeliveryNote(id: string): Promise<DeliveryNoteRecord | null>;
   setDeliveryNoteStatus(
     id: string,

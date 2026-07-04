@@ -30,6 +30,24 @@ export interface EmployeeRecord extends CreateEmployee {
   createdAt: Date;
 }
 
+// ── Pagination (datao-parity: DB-side LIMIT/OFFSET; total via a parallel count) ─
+
+/** DB-side page window. limit is bounded by the controller (default 25/max 100). */
+export interface PageParams {
+  limit: number;
+  offset: number;
+}
+
+/** A single page plus the total matching-row count (for the pager). */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
+/** List projection — every employee field the register renders (name, métier,
+ *  CIN, phone, status); drops `createdAt`, which the list view never shows. */
+export type EmployeeListItem = Omit<EmployeeRecord, 'createdAt'>;
+
 /** Optional pay basis carried on a new assignment (Phase 3 — labour cost). */
 export interface AssignmentRate {
   rateType?: RateType;
@@ -77,7 +95,8 @@ export const PEOPLE_REPOSITORY = Symbol('PEOPLE_REPOSITORY');
 
 export interface PeopleRepository {
   createEmployee(input: CreateEmployee): Promise<EmployeeRecord>;
-  listEmployees(): Promise<EmployeeRecord[]>;
+  /** One DB page of employees (projected, no createdAt) + the total row count. */
+  listEmployees(paging: PageParams): Promise<Paged<EmployeeListItem>>;
   findEmployeeById(id: string): Promise<EmployeeRecord | null>;
   /** The single open (endDate null) assignment, if any. */
   findActiveAssignment(employeeId: string): Promise<AssignmentRecord | null>;
@@ -131,8 +150,14 @@ export class InMemoryPeopleRepository implements PeopleRepository {
     return record;
   }
 
-  async listEmployees(): Promise<EmployeeRecord[]> {
-    return [...this.employees];
+  async listEmployees(paging: PageParams): Promise<Paged<EmployeeListItem>> {
+    const sorted = [...this.employees].sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
+    const items = sorted
+      .slice(paging.offset, paging.offset + paging.limit)
+      .map(({ createdAt: _createdAt, ...item }) => item);
+    return { items, total: sorted.length };
   }
 
   async findEmployeeById(id: string): Promise<EmployeeRecord | null> {
@@ -314,12 +339,30 @@ export class DrizzlePeopleRepository implements PeopleRepository {
     return toEmployee(row);
   }
 
-  async listEmployees(): Promise<EmployeeRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(employees)
-      .orderBy(desc(employees.createdAt));
-    return rows.map(toEmployee);
+  async listEmployees(paging: PageParams): Promise<Paged<EmployeeListItem>> {
+    // DB-side page: projected (only the columns the register renders, no
+    // createdAt), ordered newest-first, LIMIT/OFFSET — plus a parallel count of
+    // the whole table so the pager knows how many pages exist.
+    const [rows, [countRow]] = await Promise.all([
+      this.db
+        .select({
+          id: employees.id,
+          fullName: employees.fullName,
+          metier: employees.metier,
+          cin: employees.cin,
+          phone: employees.phone,
+          status: employees.status,
+        })
+        .from(employees)
+        .orderBy(desc(employees.createdAt))
+        .limit(paging.limit)
+        .offset(paging.offset),
+      this.db.select({ total: sql<number>`count(*)` }).from(employees),
+    ]);
+    return {
+      items: rows.map(toEmployeeListItem),
+      total: Number(countRow?.total ?? 0),
+    };
   }
 
   async findEmployeeById(id: string): Promise<EmployeeRecord | null> {
@@ -554,6 +597,24 @@ function toEmployee(row: EmployeeRow): EmployeeRecord {
     phone: row.phone ?? undefined,
     status: row.status as EmployeeStatus,
     createdAt: row.createdAt,
+  };
+}
+
+/** List projection — the register columns only (no createdAt). Accepts the
+ *  projected select row (the subset selected in listEmployees). */
+function toEmployeeListItem(
+  row: Pick<
+    EmployeeRow,
+    'id' | 'fullName' | 'metier' | 'cin' | 'phone' | 'status'
+  >,
+): EmployeeListItem {
+  return {
+    id: row.id,
+    fullName: row.fullName,
+    metier: row.metier,
+    cin: row.cin ?? undefined,
+    phone: row.phone ?? undefined,
+    status: row.status as EmployeeStatus,
   };
 }
 

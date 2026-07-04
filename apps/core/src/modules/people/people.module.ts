@@ -10,6 +10,7 @@ import {
   NotFoundException,
   Param,
   Post,
+  Query,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { getDb } from '../../db/client';
@@ -66,6 +67,25 @@ const workDaySchema = z.object({
   notes: z.string().max(1000).optional(),
 });
 
+// ── pagination (datao-parity: DB-side LIMIT/OFFSET) ──────────────────────────
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+
+/** Parse the ?page / ?limit query into a bounded DB page window. */
+function parsePaging(
+  page?: string,
+  limit?: string,
+): { limit: number; offset: number } {
+  const pageNum = Math.floor(Number(page));
+  const p = Number.isFinite(pageNum) && pageNum > 0 ? pageNum : 0;
+  const limitNum = Math.floor(Number(limit));
+  const size =
+    Number.isFinite(limitNum) && limitNum > 0
+      ? Math.min(limitNum, MAX_PAGE_SIZE)
+      : DEFAULT_PAGE_SIZE;
+  return { limit: size, offset: p * size };
+}
+
 @Controller('people')
 export class PeopleController {
   constructor(
@@ -84,8 +104,11 @@ export class PeopleController {
 
   @Roles('travaux', 'direction', 'finance', 'marches', 'admin-si')
   @Get('employees')
-  async listEmployees() {
-    return this.repository.listEmployees();
+  async listEmployees(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.repository.listEmployees(parsePaging(page, limit));
   }
 
   /** Assign to a chantier — one active assignment per employee. */
