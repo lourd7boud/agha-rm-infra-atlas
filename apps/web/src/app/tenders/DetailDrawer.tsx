@@ -120,6 +120,32 @@ export function DetailDrawer({
     else bpuGroups.push({ section, rows: [row] });
   }
   const quals = view.qualifications ?? [];
+  // Portal-first "fiche du portail": the published detail block (zero LLM). The
+  // portal prints "-" for empty fields — treat those as absent.
+  const pd = view.portalDetail;
+  const meaningful = (s?: string | null): s is string =>
+    Boolean(s && s.trim() && s.trim() !== '-');
+  // Contact: prefer the portal source (it also publishes a télécopieur), fall
+  // back to the DCE-extracted contact. Normalized to one concrete shape.
+  const portalContact = pd?.contact;
+  const contactFromPortal = Boolean(
+    portalContact &&
+      (portalContact.nom ||
+        portalContact.email ||
+        portalContact.telephone ||
+        portalContact.telecopieur),
+  );
+  const contactSource = contactFromPortal ? portalContact : view.contact;
+  const contact = contactSource
+    ? {
+        nom: contactSource.nom ?? null,
+        email: contactSource.email ?? null,
+        telephone: contactSource.telephone ?? null,
+        telecopieur:
+          (contactSource as { telecopieur?: string | null }).telecopieur ?? null,
+      }
+    : null;
+  const reserveAuxPme = pd?.reserveAuxPme ?? view.reserveAuxPme;
   const competitors = view.competitors ?? [];
   const winner = view.winner;
   const isAttribue = item.lifecycleStatus === 'attribue';
@@ -374,7 +400,7 @@ export function DetailDrawer({
             {tab === 'resume' && (
               <div className="space-y-4">
                 <AiBanner enriched={enriched} />
-                {view.reserveAuxPme && (
+                {reserveAuxPme && (
                   <span className="inline-block rounded-full bg-emerald-soft px-2.5 py-0.5 text-xs font-medium text-emerald">
                     Réservé aux PME / TPE / coopératives
                   </span>
@@ -432,6 +458,70 @@ export function DetailDrawer({
                   )}
                 </div>
 
+                {/* Fiche du portail — the block published openly on the
+                    consultation page (harvested by the crawler, NO LLM). */}
+                {pd && (
+                  <div>
+                    <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
+                      Fiche du portail
+                      <span className="rounded bg-ink px-1 py-0.5 text-[9px] font-bold normal-case text-paper">
+                        Portail
+                      </span>
+                    </h3>
+                    <div>
+                      {meaningful(pd.typeProcedure) && (
+                        <ConditionRow
+                          label="Procédure"
+                          value={[pd.typeProcedure, pd.modePassation]
+                            .filter(meaningful)
+                            .join(' · ')}
+                        />
+                      )}
+                      {meaningful(pd.domainesActivite) && (
+                        <ConditionRow label="Domaine d’activité" value={pd.domainesActivite} />
+                      )}
+                      {meaningful(pd.lieuOuverturePlis) && (
+                        <ConditionRow label="Ouverture des plis" value={pd.lieuOuverturePlis} />
+                      )}
+                      {meaningful(pd.adresseRetrait) && (
+                        <ConditionRow label="Retrait des dossiers" value={pd.adresseRetrait} />
+                      )}
+                      {meaningful(pd.adresseDepot) && (
+                        <ConditionRow label="Dépôt des offres" value={pd.adresseDepot} />
+                      )}
+                      {pd.prixAcquisitionPlansMad != null && (
+                        <ConditionRow
+                          label="Prix d’acquisition des plans"
+                          value={fmtMad(pd.prixAcquisitionPlansMad)}
+                        />
+                      )}
+                      {meaningful(pd.agrements) && (
+                        <ConditionRow label="Agréments" value={pd.agrements} />
+                      )}
+                      {pd.variante != null && (
+                        <ConditionRow label="Variante autorisée" value={pd.variante ? 'Oui' : 'Non'} />
+                      )}
+                      {meaningful(pd.reunion) && (
+                        <ConditionRow label="Réunion" value={pd.reunion} />
+                      )}
+                    </div>
+                    {pd.visites && pd.visites.length > 0 && (
+                      <div className="mt-2 rounded-lg bg-sand/60 px-3 py-2">
+                        <p className="mb-1 text-xs font-semibold text-muted">
+                          Visite des lieux
+                        </p>
+                        <ul className="space-y-1 text-sm text-ink-2">
+                          {pd.visites.map((v, i) => (
+                            <li key={i}>
+                              {[v.date, v.adresse].filter(meaningful).join(' — ')}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {quals.length > 0 && (
                   <div>
                     <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
@@ -478,37 +568,47 @@ export function DetailDrawer({
                   </div>
                 )}
 
-                {/* Contact — datao "Contact :" */}
-                {view.contact &&
-                  (view.contact.nom ||
-                    view.contact.email ||
-                    view.contact.telephone) && (
+                {/* Contact administratif — portal-first (incl. télécopieur), DCE fallback. */}
+                {contact &&
+                  (contact.nom ||
+                    contact.email ||
+                    contact.telephone ||
+                    contact.telecopieur) && (
                     <div>
                       <h3 className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-faint">
-                        Contact
-                        <span className="rounded bg-emerald px-1 py-0.5 text-[9px] font-bold normal-case text-paper">
-                          DCE
+                        Contact administratif
+                        <span
+                          className={`rounded px-1 py-0.5 text-[9px] font-bold normal-case text-paper ${
+                            contactFromPortal ? 'bg-ink' : 'bg-emerald'
+                          }`}
+                        >
+                          {contactFromPortal ? 'Portail' : 'DCE'}
                         </span>
                       </h3>
                       <div className="space-y-0.5 text-sm text-ink-2">
-                        {view.contact.nom && (
-                          <p className="font-medium text-ink">{view.contact.nom}</p>
+                        {contact.nom && (
+                          <p className="font-medium text-ink">{contact.nom}</p>
                         )}
-                        {view.contact.email && (
+                        {contact.email && (
                           <a
-                            href={`mailto:${view.contact.email}`}
+                            href={`mailto:${contact.email}`}
                             className="block text-cyan hover:underline"
                           >
-                            {view.contact.email}
+                            {contact.email}
                           </a>
                         )}
-                        {view.contact.telephone && (
+                        {contact.telephone && (
                           <a
-                            href={`tel:${view.contact.telephone.replace(/\s+/g, '')}`}
+                            href={`tel:${contact.telephone.replace(/\s+/g, '')}`}
                             className="block font-mono text-muted hover:text-ink"
                           >
-                            {view.contact.telephone}
+                            {contact.telephone}
                           </a>
+                        )}
+                        {contact.telecopieur && (
+                          <p className="font-mono text-muted">
+                            Fax&nbsp;: {contact.telecopieur}
+                          </p>
                         )}
                       </div>
                     </div>

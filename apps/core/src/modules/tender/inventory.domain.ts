@@ -2,6 +2,7 @@ import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import { daysUntil } from '../../lib/dates';
 import { readAiEnrichment } from './ai-enrichment';
 import { readDossierExtraction } from './dossier-extraction';
+import { readPortalDetail, type PortalDetail } from './portal-detail';
 import {
   canonicalReferenceKey,
   type CompetitorBidRecord,
@@ -624,6 +625,14 @@ export interface InventoryItem {
   autres?: string[];
   /** ISO timestamp the DCE dossier was read (provenance marker). */
   dossierExtractedAt?: string;
+  /**
+   * The published portal metadata block (datao "fiche du portail") harvested by
+   * the watch detail crawler into raw.detail — buyer entity, procédure, mode de
+   * passation, lieu d'exécution/ouverture, domaines, réservé PME, variante,
+   * visites des lieux, contact administratif (incl. télécopieur), etc. Zero LLM;
+   * the drawer renders it with a "Portail" provenance badge.
+   */
+  portalDetail?: PortalDetail;
   // ── Consultation-side lifecycle + result (datao "Résultat de l'appel d'offre") ──
   /** Where the consultation stands on the portal (NOT our internal funnel). */
   lifecycleStatus: LifecycleStatus;
@@ -1020,6 +1029,9 @@ function buildItem(c: Classified, now: Date): InventoryItem {
     conditionsLegales: dossier?.conditionsLegales,
     autres: dossier?.autres,
     dossierExtractedAt: dossier?.extractedAt,
+    // Portal-first: the published detail block (no LLM). Undefined until the
+    // detail crawler has stamped raw.detail for this row.
+    portalDetail: readPortalDetail(record.raw) ?? undefined,
     lifecycleStatus: c.lifecycle,
     lifecycleLabel: LIFECYCLE_LABELS[c.lifecycle],
     winner: c.competitors.find((x) => x.isWinner) ?? null,

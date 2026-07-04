@@ -68,6 +68,7 @@ const chatBodySchema = z.object({
     .optional(),
 });
 import type { InventoryRow, InventoryFilters } from './inventory.domain';
+import { readPortalDetail } from './portal-detail';
 import {
   INTEL_REPOSITORY,
   type CompetitorBidRecord,
@@ -695,6 +696,9 @@ export class TenderController {
     const record = await this.findOr404(id);
     return {
       ...present(record),
+      // Portal-first "fiche du portail" — the published detail block harvested
+      // into raw.detail, typed for the drawer (rendered with a "Portail" badge).
+      portalDetail: readPortalDetail(record.raw) ?? undefined,
       plan: buildBackPlan(record.deadlineAt, new Date()),
     };
   }

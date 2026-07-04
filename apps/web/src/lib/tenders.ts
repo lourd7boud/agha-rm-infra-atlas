@@ -77,6 +77,8 @@ export interface TenderItem {
   /** Other notable conditions (datao "Autres :"). */
   autres?: string[];
   dossierExtractedAt?: string;
+  /** Published portal metadata block (datao "fiche du portail") — zero LLM. */
+  portalDetail?: PortalDetail;
   // ── Consultation-side lifecycle + result (datao "Résultat de l'appel d'offre") ──
   lifecycleStatus: LifecycleStatus;
   lifecycleLabel: string;
@@ -86,6 +88,43 @@ export interface TenderItem {
   /** ISO timestamp of the row's last write — drives live silent refresh: the
    *  explorer polls `?since=<max updatedAt>` and merges only changed rows. */
   updatedAt?: string;
+}
+
+/**
+ * The published portal metadata block (datao "fiche du portail") harvested by
+ * the watch detail crawler into raw.detail and projected by the API. Rendered in
+ * the drawer with a "Portail" provenance badge — zero LLM. Mirrors the core
+ * PortalDetail (apps/core .../portal-detail.ts).
+ */
+export interface PortalDetail {
+  fetchedAt?: string | null;
+  buyerEntity?: string | null;
+  typeAnnonce?: string | null;
+  typeProcedure?: string | null;
+  modePassation?: string | null;
+  location?: string | null;
+  deadline?: string | null;
+  estimationMad?: number | null;
+  cautionProvisoireMad?: number | null;
+  domainesActivite?: string | null;
+  adresseRetrait?: string | null;
+  adresseDepot?: string | null;
+  lieuOuverturePlis?: string | null;
+  prixAcquisitionPlansMad?: number | null;
+  reserveAuxPme?: boolean | null;
+  qualifications?: string | null;
+  agrements?: string | null;
+  prospectus?: string | null;
+  reunion?: string | null;
+  variante?: boolean | null;
+  lotCount?: number | null;
+  visites?: Array<{ date?: string | null; adresse?: string | null }>;
+  contact?: {
+    nom?: string | null;
+    email?: string | null;
+    telephone?: string | null;
+    telecopieur?: string | null;
+  } | null;
 }
 
 /** Mirrors the core LifecycleStatus (en_cours/cloture/attribue/infructueux). */
