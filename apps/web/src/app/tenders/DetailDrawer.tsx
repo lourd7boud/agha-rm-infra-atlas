@@ -330,14 +330,14 @@ export function DetailDrawer({
             <div>
               <dt className="text-xs text-faint">Budget estimé</dt>
               <dd className="font-mono font-semibold text-ink">
-                {item.estimationMad != null ? fmtMad(item.estimationMad) : '—'}
+                {view.estimationMad != null ? fmtMad(view.estimationMad) : '—'}
               </dd>
             </div>
             <div>
               <dt className="text-xs text-faint">Caution provisoire</dt>
               <dd className="font-mono font-semibold text-ink">
-                {item.cautionProvisoireMad != null
-                  ? fmtMad(item.cautionProvisoireMad)
+                {view.cautionProvisoireMad != null
+                  ? fmtMad(view.cautionProvisoireMad)
                   : '—'}
               </dd>
             </div>
@@ -427,7 +427,7 @@ export function DetailDrawer({
                   </h3>
                   <ConditionRow
                     label={budgetVerified ? 'Estimation (maître d’ouvrage)' : 'Budget estimé'}
-                    value={item.estimationMad != null ? fmtMad(item.estimationMad) : '—'}
+                    value={view.estimationMad != null ? fmtMad(view.estimationMad) : '—'}
                   />
                   <ConditionRow
                     label="Cautionnement provisoire"
