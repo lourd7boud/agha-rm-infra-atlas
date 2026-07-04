@@ -34,7 +34,11 @@ import type {
   DeliveryNoteRecord,
   DocLineRecord,
   InvoiceFilter,
+  InvoiceListItem,
   InvoiceRecord,
+  InvoiceSummary,
+  PageParams,
+  Paged,
   QuoteFilter,
   QuoteRecord,
   SalesRepository,
@@ -302,26 +306,49 @@ export class DrizzleSalesRepository implements SalesRepository {
     });
   }
 
-  async listInvoices(filter: InvoiceFilter): Promise<InvoiceRecord[]> {
-    const rows = await this.db
-      .select()
+  async listInvoices(
+    filter: InvoiceFilter,
+    paging: PageParams,
+  ): Promise<Paged<InvoiceListItem>> {
+    // DB-side page: projected (no `lines`), ordered, LIMIT/OFFSET — plus a count
+    // of the whole filtered set so the pager knows how many pages exist. The list
+    // view never renders line items, so the batched line fetch is dropped here.
+    const where = invoiceWhere(filter);
+    const [rows, [countRow]] = await Promise.all([
+      this.db
+        .select()
+        .from(invoices)
+        .where(where)
+        .orderBy(desc(invoices.createdAt))
+        .limit(paging.limit)
+        .offset(paging.offset),
+      this.db
+        .select({ total: sql<number>`count(*)` })
+        .from(invoices)
+        .where(where),
+    ]);
+    return {
+      items: rows.map(toInvoiceListItem),
+      total: Number(countRow?.total ?? 0),
+    };
+  }
+
+  async invoicesSummary(filter: InvoiceFilter): Promise<InvoiceSummary> {
+    // Totals over the WHOLE filtered set (not one page): a JS reduce over a single
+    // page would understate them. `outstanding` excludes paid + cancelled.
+    const [row] = await this.db
+      .select({
+        count: sql<number>`count(*)`,
+        totalTtcMad: sql<string>`coalesce(sum(${invoices.totalTtcMad}), 0)`,
+        outstandingTtcMad: sql<string>`coalesce(sum(${invoices.totalTtcMad}) filter (where ${invoices.status} not in ('payee', 'annulee')), 0)`,
+      })
       .from(invoices)
-      .where(invoiceWhere(filter))
-      .orderBy(desc(invoices.createdAt));
-    if (rows.length === 0) return [];
-    // One batched line fetch (no N+1) — see listQuotes.
-    const lineRows = await this.db
-      .select()
-      .from(invoiceLines)
-      .where(
-        inArray(
-          invoiceLines.invoiceId,
-          rows.map((row) => row.id),
-        ),
-      )
-      .orderBy(asc(invoiceLines.orderIndex));
-    const byInvoice = groupBy(lineRows, (line) => line.invoiceId);
-    return rows.map((row) => toInvoice(row, byInvoice.get(row.id) ?? []));
+      .where(invoiceWhere(filter));
+    return {
+      count: Number(row?.count ?? 0),
+      totalTtcMad: Number(row?.totalTtcMad ?? 0),
+      outstandingTtcMad: Number(row?.outstandingTtcMad ?? 0),
+    };
   }
 
   async getInvoice(id: string): Promise<InvoiceRecord | null> {
@@ -496,6 +523,14 @@ function toDeliveryNote(
 
 function toInvoice(row: InvoiceRow, lineRows: InvoiceLineRow[]): InvoiceRecord {
   return {
+    ...toInvoiceListItem(row),
+    lines: lineRows.map(toDocLine),
+  };
+}
+
+/** List projection — every invoice field except the `lines` array. */
+function toInvoiceListItem(row: InvoiceRow): InvoiceListItem {
+  return {
     id: row.id,
     clientId: row.clientId,
     projectId: row.projectId ?? undefined,
@@ -510,6 +545,5 @@ function toInvoice(row: InvoiceRow, lineRows: InvoiceLineRow[]): InvoiceRecord {
     paidAt: row.paidAt ?? undefined,
     notes: row.notes ?? undefined,
     createdAt: row.createdAt,
-    lines: lineRows.map(toDocLine),
   };
 }

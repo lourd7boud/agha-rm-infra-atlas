@@ -216,10 +216,34 @@ describe('InMemorySalesRepository — invoices', () => {
     await repo.setInvoiceStatus(paid.id, 'payee');
 
     // Act
-    const payees = await repo.listInvoices({ status: 'payee' });
+    const payees = await repo.listInvoices(
+      { status: 'payee' },
+      { limit: 25, offset: 0 },
+    );
 
     // Assert
-    expect(payees).toHaveLength(1);
-    expect(payees[0]?.id).toBe(paid.id);
+    expect(payees.total).toBe(1);
+    expect(payees.items).toHaveLength(1);
+    expect(payees.items[0]?.id).toBe(paid.id);
+  });
+
+  test('listInvoices paginates and invoicesSummary totals the whole set', async () => {
+    // Arrange — three invoices; one paid so it drops out of "outstanding".
+    await repo.createInvoice(invoiceInput({ reference: 'FA-A' }));
+    await repo.createInvoice(invoiceInput({ reference: 'FA-B' }));
+    const paid = await repo.createInvoice(invoiceInput({ reference: 'FA-C' }));
+    await repo.setInvoiceStatus(paid.id, 'payee');
+
+    // Act — page window of 2, then the DB-side summary over all three.
+    const firstPage = await repo.listInvoices({}, { limit: 2, offset: 0 });
+    const secondPage = await repo.listInvoices({}, { limit: 2, offset: 2 });
+    const summary = await repo.invoicesSummary({});
+
+    // Assert — total counts every match; each page is bounded; summary spans all.
+    expect(firstPage.total).toBe(3);
+    expect(firstPage.items).toHaveLength(2);
+    expect(secondPage.items).toHaveLength(1);
+    expect(summary.count).toBe(3);
+    expect(summary.totalTtcMad).toBeGreaterThan(summary.outstandingTtcMad);
   });
 });

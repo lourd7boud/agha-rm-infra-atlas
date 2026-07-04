@@ -172,6 +172,32 @@ export interface InvoiceFilter {
   status?: InvoiceStatus;
 }
 
+// ── Pagination (datao-parity: DB-side LIMIT/OFFSET; totals via a summary) ─────
+
+/** DB-side page window. limit is bounded by the controller (default 25/max 100). */
+export interface PageParams {
+  limit: number;
+  offset: number;
+}
+
+/** A single page plus the total matching-row count (for the pager). */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
+/** List projection — the invoices table minus the heavy `lines` array (the list
+ *  view never renders lines; the detail page still fetches the full record). */
+export type InvoiceListItem = Omit<InvoiceRecord, 'lines'>;
+
+/** DB-computed totals over the WHOLE filtered set — correct regardless of paging
+ *  (a JS reduce over one page would understate them). */
+export interface InvoiceSummary {
+  count: number;
+  totalTtcMad: number;
+  outstandingTtcMad: number;
+}
+
 // ── Repository contract ──────────────────────────────────────────────────────
 
 export const SALES_REPOSITORY = Symbol('SALES_REPOSITORY');
@@ -198,7 +224,13 @@ export interface SalesRepository {
 
   /** Creates an invoice with its lines; totals folded via sales.domain. */
   createInvoice(input: CreateInvoice): Promise<InvoiceRecord>;
-  listInvoices(filter: InvoiceFilter): Promise<InvoiceRecord[]>;
+  /** One DB page of invoices (projected, no lines) + the total matching count. */
+  listInvoices(
+    filter: InvoiceFilter,
+    paging: PageParams,
+  ): Promise<Paged<InvoiceListItem>>;
+  /** DB-side totals over the whole filtered set (paging-independent). */
+  invoicesSummary(filter: InvoiceFilter): Promise<InvoiceSummary>;
   getInvoice(id: string): Promise<InvoiceRecord | null>;
   setInvoiceStatus(
     id: string,

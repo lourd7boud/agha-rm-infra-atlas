@@ -158,6 +158,22 @@ export interface InvoiceRecord {
   lines: DocLineRecord[];
 }
 
+/** One page of results plus the total matching count (mirrors core Paged<T>). */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
+/** Invoice list row — the record minus its `lines` (the list never renders them). */
+export type InvoiceListItem = Omit<InvoiceRecord, 'lines'>;
+
+/** DB-computed invoice totals over the whole filtered set (paging-independent). */
+export interface InvoiceSummary {
+  count: number;
+  totalTtcMad: number;
+  outstandingTtcMad: number;
+}
+
 export const INVOICE_STATUS_BADGES: Record<
   InvoiceStatus,
   { label: string; classes: string }

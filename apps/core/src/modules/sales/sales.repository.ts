@@ -17,7 +17,11 @@ import type {
   DeliveryNoteRecord,
   DocLineRecord,
   InvoiceFilter,
+  InvoiceListItem,
   InvoiceRecord,
+  InvoiceSummary,
+  PageParams,
+  Paged,
   QuoteFilter,
   QuoteRecord,
   SalesRepository,
@@ -228,14 +232,37 @@ export class InMemorySalesRepository implements SalesRepository {
     return record;
   }
 
-  async listInvoices(filter: InvoiceFilter): Promise<InvoiceRecord[]> {
-    return [...this.invoices]
-      .filter((i) => {
-        if (filter.clientId && i.clientId !== filter.clientId) return false;
-        if (filter.status && i.status !== filter.status) return false;
-        return true;
-      })
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  async listInvoices(
+    filter: InvoiceFilter,
+    paging: PageParams,
+  ): Promise<Paged<InvoiceListItem>> {
+    const matched = this.matchInvoices(filter).sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
+    const items = matched
+      .slice(paging.offset, paging.offset + paging.limit)
+      .map(({ lines: _lines, ...item }) => item);
+    return { items, total: matched.length };
+  }
+
+  async invoicesSummary(filter: InvoiceFilter): Promise<InvoiceSummary> {
+    const matched = this.matchInvoices(filter);
+    const outstandingTtcMad = matched
+      .filter((i) => i.status !== 'payee' && i.status !== 'annulee')
+      .reduce((sum, i) => sum + i.totalTtcMad, 0);
+    return {
+      count: matched.length,
+      totalTtcMad: matched.reduce((sum, i) => sum + i.totalTtcMad, 0),
+      outstandingTtcMad,
+    };
+  }
+
+  private matchInvoices(filter: InvoiceFilter): InvoiceRecord[] {
+    return this.invoices.filter((i) => {
+      if (filter.clientId && i.clientId !== filter.clientId) return false;
+      if (filter.status && i.status !== filter.status) return false;
+      return true;
+    });
   }
 
   async getInvoice(id: string): Promise<InvoiceRecord | null> {

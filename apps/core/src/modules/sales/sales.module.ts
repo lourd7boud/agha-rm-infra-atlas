@@ -97,6 +97,22 @@ const invoiceStatusSchema = z.object({
   status: z.enum(['brouillon', 'envoyee', 'payee', 'annulee']),
 });
 
+// ── pagination (datao-parity: DB-side LIMIT/OFFSET) ──────────────────────────
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+
+/** Parse the ?page / ?limit query into a bounded DB page window. */
+function parsePaging(page?: string, limit?: string): { limit: number; offset: number } {
+  const pageNum = Math.floor(Number(page));
+  const p = Number.isFinite(pageNum) && pageNum > 0 ? pageNum : 0;
+  const limitNum = Math.floor(Number(limit));
+  const size =
+    Number.isFinite(limitNum) && limitNum > 0
+      ? Math.min(limitNum, MAX_PAGE_SIZE)
+      : DEFAULT_PAGE_SIZE;
+  return { limit: size, offset: p * size };
+}
+
 @Controller('sales')
 export class SalesController {
   constructor(
@@ -238,12 +254,34 @@ export class SalesController {
   async listInvoices(
     @Query('clientId') clientId?: string,
     @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
     const parsedStatus = invoiceStatusSchema
       .pick({ status: true })
       .partial()
       .safeParse({ status });
-    return this.repository.listInvoices({
+    return this.repository.listInvoices(
+      {
+        clientId: clientId || undefined,
+        status: parsedStatus.success ? parsedStatus.data.status : undefined,
+      },
+      parsePaging(page, limit),
+    );
+  }
+
+  // Declared BEFORE invoices/:id so the static path wins the route match.
+  @Roles('direction', 'finance', 'marches', 'admin-si')
+  @Get('invoices/summary')
+  async invoicesSummary(
+    @Query('clientId') clientId?: string,
+    @Query('status') status?: string,
+  ) {
+    const parsedStatus = invoiceStatusSchema
+      .pick({ status: true })
+      .partial()
+      .safeParse({ status });
+    return this.repository.invoicesSummary({
       clientId: clientId || undefined,
       status: parsedStatus.success ? parsedStatus.data.status : undefined,
     });

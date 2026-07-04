@@ -4,15 +4,20 @@ import { redirect } from 'next/navigation';
 import { apiGet, apiPost, AtlasApiError } from '@/lib/api';
 import { isRedirectError } from '@/lib/next-redirect';
 import { LineEditor } from '@/components/sales/LineEditor';
+import { Pager } from '@/components/ui/Pager';
 import {
   fmtDate,
   fmtMad,
   INVOICE_STATUS_BADGES,
   INVOICE_STATUS_OPTIONS,
   type ClientRecord,
-  type InvoiceRecord,
+  type InvoiceListItem,
   type InvoiceStatus,
+  type InvoiceSummary,
+  type Paged,
 } from '@/lib/sales';
+
+const PAGE_SIZE = 25;
 
 function failToInvoices(action: string, error: unknown): never {
   if (isRedirectError(error)) throw error;
@@ -86,10 +91,16 @@ function parsePricedLines(raw: string): PricedLineInput[] | null {
 export default async function InvoicesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: string; error?: string; code?: string }>;
+  searchParams: Promise<{
+    status?: string;
+    page?: string;
+    error?: string;
+    code?: string;
+  }>;
 }) {
   const {
     status: statusFilter,
+    page: pageParam,
     error: actionError,
     code: actionCode,
   } = await searchParams;
@@ -99,16 +110,21 @@ export default async function InvoicesPage({
   )
     ? (statusFilter as InvoiceStatus)
     : undefined;
-  const query = validStatus ? `?status=${validStatus}` : '';
-  const [clients, invoices] = await Promise.all([
+  const page = Math.max(0, Math.floor(Number(pageParam)) || 0);
+  const statusQs = validStatus ? `status=${validStatus}&` : '';
+  // One bounded DB page for the table + a DB-side summary for the totals cards
+  // (correct over ALL invoices, not just this page) + clients for the name map.
+  const [clients, invoicePage, summary] = await Promise.all([
     apiGet<ClientRecord[]>('/sales/clients'),
-    apiGet<InvoiceRecord[]>(`/sales/invoices${query}`),
+    apiGet<Paged<InvoiceListItem>>(
+      `/sales/invoices?${statusQs}page=${page}&limit=${PAGE_SIZE}`,
+    ),
+    apiGet<InvoiceSummary>(
+      `/sales/invoices/summary${validStatus ? `?status=${validStatus}` : ''}`,
+    ),
   ]);
+  const invoices = invoicePage.items;
   const clientName = new Map(clients.map((client) => [client.id, client.name]));
-  const totalTtc = invoices.reduce((sum, invoice) => sum + invoice.totalTtcMad, 0);
-  const outstandingTtc = invoices
-    .filter((invoice) => invoice.status !== 'payee' && invoice.status !== 'annulee')
-    .reduce((sum, invoice) => sum + invoice.totalTtcMad, 0);
 
   async function createInvoice(formData: FormData) {
     'use server';
@@ -198,7 +214,7 @@ export default async function InvoicesPage({
             Factures
           </p>
           <p className="mt-2 font-mono text-lg font-bold tabular-nums">
-            {invoices.length}
+            {summary.count}
           </p>
         </div>
         <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
@@ -206,7 +222,7 @@ export default async function InvoicesPage({
             Total TTC
           </p>
           <p className="mt-2 font-mono text-lg font-bold tabular-nums">
-            {fmtMad(totalTtc)}
+            {fmtMad(summary.totalTtcMad)}
           </p>
         </div>
         <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
@@ -214,14 +230,14 @@ export default async function InvoicesPage({
             En attente de règlement
           </p>
           <p className="mt-2 font-mono text-lg font-bold tabular-nums text-cyan">
-            {fmtMad(outstandingTtc)}
+            {fmtMad(summary.outstandingTtcMad)}
           </p>
         </div>
       </div>
 
       <section className="mb-8 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
         <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
-          Factures ({invoices.length})
+          Factures ({summary.count})
         </h2>
         <table className="w-full text-left text-sm">
           <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
@@ -277,9 +293,17 @@ export default async function InvoicesPage({
         </table>
         {invoices.length === 0 && (
           <p className="p-8 text-center text-sm text-faint">
-            Aucune facture — créez-en une ci-dessous.
+            {summary.count === 0
+              ? 'Aucune facture — créez-en une ci-dessous.'
+              : 'Aucune facture sur cette page.'}
           </p>
         )}
+        <Pager
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={invoicePage.total}
+          hrefForPage={(p) => `/sales/invoices?${statusQs}page=${p}`}
+        />
       </section>
 
       <section className="rounded-xl border border-line bg-paper-2 p-6 shadow-sm">
