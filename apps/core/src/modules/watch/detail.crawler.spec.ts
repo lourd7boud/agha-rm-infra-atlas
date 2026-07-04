@@ -150,10 +150,15 @@ describe('DetailCrawlerService.backfillMissing', () => {
     });
   }
 
-  it('fills the caution for rows targeted through their stored detail URL', async () => {
+  it('targets rows missing a current-version detail block; fills empties, keeps known values', async () => {
     const repo = new InMemoryTenderRepository();
     const bare = await seed(repo, 'REF/501', { sourceUrl: 'https://portal/d501' });
-    await seed(repo, 'REF/502', { caution: 9000, sourceUrl: 'https://portal/d502' }); // complete
+    // Has a caution but NO detail block yet → still a target (to harvest the full
+    // published block), but its known caution must be preserved (only-if-empty).
+    const known = await seed(repo, 'REF/502', {
+      caution: 9000,
+      sourceUrl: 'https://portal/d502',
+    });
     await seed(repo, 'REF/503', {}); // no sourceUrl → untargetable
 
     vi.stubGlobal(
@@ -162,11 +167,13 @@ describe('DetailCrawlerService.backfillMissing', () => {
     );
     const summary = await makeService(repo).backfillMissing({ delayMs: 0 });
 
-    expect(summary.linksFound).toBe(1); // only the bare row with a URL
-    expect(summary.enriched).toBe(1);
+    expect(summary.linksFound).toBe(2); // both rows with a URL lack a v2 detail
+    expect(summary.enriched).toBe(1); // only the bare row gained a caution
     const healed = await repo.findById(bare.id);
     expect(healed?.cautionProvisoireMad).toBe(7500);
     expect(healed?.raw && 'detail' in healed.raw).toBe(true);
+    // The already-known caution is never overwritten by the portal harvest.
+    expect((await repo.findById(known.id))?.cautionProvisoireMad).toBe(9000);
   });
 
   it('stamps raw.detail even when the page prints no caution — one attempt per row', async () => {

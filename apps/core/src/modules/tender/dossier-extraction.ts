@@ -108,6 +108,39 @@ export function corroborateMoney(
   return textDigits.includes(String(Math.round(value))) ? value : null;
 }
 
+/**
+ * Portal-first precedence for the estimation/caution COLUMNS. The consultation
+ * detail page (harvested by the watch detail crawler into raw.detail + the
+ * columns) is the authoritative published source, so the DCE/LLM only fills a
+ * money column the portal left empty — it never overwrites a value already on
+ * the row. This is the "l'agent n'intervient que là où le portail n'a rien"
+ * rule: the LLM stays the source of truth for the fields the portal does NOT
+ * publish (BPU line items, percentages, délais, chiffre d'affaires…), but for
+ * the two figures the portal DOES publish it defers to the portal.
+ */
+export function resolvePortalFirstAmounts(
+  current: {
+    estimationMad?: number | null;
+    cautionProvisoireMad?: number | null;
+  },
+  extraction: {
+    estimationMad?: number | null;
+    cautionProvisoireMad?: number | null;
+  },
+): { estimationMad?: number; cautionProvisoireMad?: number } {
+  const amounts: { estimationMad?: number; cautionProvisoireMad?: number } = {};
+  if (current.estimationMad == null && typeof extraction.estimationMad === 'number') {
+    amounts.estimationMad = extraction.estimationMad;
+  }
+  if (
+    current.cautionProvisoireMad == null &&
+    typeof extraction.cautionProvisoireMad === 'number'
+  ) {
+    amounts.cautionProvisoireMad = extraction.cautionProvisoireMad;
+  }
+  return amounts;
+}
+
 export type DossierExtractionData = z.infer<typeof dossierExtractionSchema>;
 
 /** Stored envelope = validated data + provenance. */

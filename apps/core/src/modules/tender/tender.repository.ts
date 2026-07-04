@@ -474,8 +474,11 @@ export class InMemoryTenderRepository implements TenderRepository {
       .filter(
         (r) =>
           r.sourceUrl !== undefined &&
-          r.cautionProvisoireMad === undefined &&
-          !(r.raw && 'detail' in r.raw),
+          // Mirror the Drizzle version-aware predicate: target rows whose detail
+          // block is missing or stamped by an older parser (raw.detail.v !== 2).
+          String(
+            (r.raw?.detail as { v?: unknown } | undefined)?.v ?? '',
+          ) !== '2',
       )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, Math.max(0, limit))
@@ -1024,9 +1027,13 @@ export class DrizzleTenderRepository implements TenderRepository {
       .from(tenders)
       .where(
         and(
-          isNull(tenders.cautionProvisoireMad),
           sql`${tenders.sourceUrl} IS NOT NULL`,
-          sql`NOT (${tenders.raw} ? 'detail')`,
+          // Portal-first harvest: target any row whose detail block is missing OR
+          // stamped by an older parser version. NULL raw / no detail / stale v all
+          // yield NULL from the path, which IS DISTINCT FROM the current version.
+          // Bumping DETAIL_VERSION (detail.parser.ts) re-crawls the whole corpus,
+          // self-limiting because each visited row is re-stamped to the new version.
+          sql`(${tenders.raw} #>> '{detail,v}') IS DISTINCT FROM '2'`,
         ),
       )
       .orderBy(sql`${tenders.createdAt} DESC`)

@@ -3,14 +3,35 @@
  *
  * The listing only yields stubs. Each consultation has a GET-accessible detail
  * page whose URL we can build from the (refConsultation, orgAcronyme) pair found
- * in the listing HTML. The detail page publishes the caution provisoire, the
- * required qualifications, the objet and the category — the estimation is
- * `display:none` on open tenders (confidential until results), so it is usually
- * absent here. We match each detail back to a stored tender by `reference`,
- * avoiding fragile row-by-row table parsing.
+ * in the listing HTML. That detail page publishes the WHOLE structured metadata
+ * block in its raw server HTML — every field is present (display:none until the
+ * "+" toggle is clicked, but in the bytes an anonymous GET receives). datao
+ * harvests exactly this published block first and only reaches for the DCE/LLM
+ * for what it cannot find here.
+ *
+ * This parser therefore extracts the full published block (buyer entity, type
+ * de procédure, mode de passation, lieu d'exécution, estimation, caution,
+ * qualifications, agréments, domaines d'activité, adresses, prix des plans,
+ * réservé PME, variante, réunion, visites des lieux, contact administratif,
+ * nombre de lots, deadline). We match each detail back to a stored tender by
+ * `reference`, avoiding fragile row-by-row table parsing.
+ *
+ * NOTE on estimation: the value is NOT under a plain `_estimation` span (that id
+ * does not exist). It lives in a configurable "ReferentielZoneText" repeater —
+ * a titre span ("Estimation (en Dhs TTC)") paired by ctl-index with a
+ * labelReferentielZoneText value span. We pair them by index and pick the one
+ * whose titre mentions estimation.
  */
 
 const SUMMARY = 'idEntrepriseConsultationSummary';
+
+/**
+ * Schema version of the harvested detail block. Bump whenever parseDetailPage's
+ * field set changes so the DB backfill (findDetailBackfillTargets) re-crawls rows
+ * that were stamped by an older parser and picks up the newly-added fields.
+ * v1 = {reference,objet,categorie,caution,estimation-broken}. v2 = full block.
+ */
+export const DETAIL_VERSION = 2;
 
 export interface DetailLink {
   refConsultation: string;
@@ -18,12 +39,52 @@ export interface DetailLink {
   detailUrl: string;
 }
 
+/** One scheduled site visit published under "Visites des lieux". */
+export interface PortalVisite {
+  date: string | null;
+  adresse: string | null;
+}
+
+/** The administrative contact block (the portal even publishes a télécopieur). */
+export interface PortalContact {
+  nom: string | null;
+  email: string | null;
+  telephone: string | null;
+  telecopieur: string | null;
+}
+
+/**
+ * Every field the consultation detail page publishes. The first five keys are
+ * the legacy set (kept for the detail crawler's amount/reference logic); the
+ * rest are the newly-harvested published metadata.
+ */
 export interface DetailFields {
   reference: string | null;
   objet: string | null;
   categorie: string | null;
   cautionProvisoireMad: number | null;
   estimationMad: number | null;
+  // Newly harvested published metadata ↓
+  buyerEntity: string | null;
+  typeAnnonce: string | null;
+  typeProcedure: string | null;
+  modePassation: string | null;
+  location: string | null;
+  deadline: string | null;
+  domainesActivite: string | null;
+  adresseRetrait: string | null;
+  adresseDepot: string | null;
+  lieuOuverturePlis: string | null;
+  prixAcquisitionPlansMad: number | null;
+  reserveAuxPme: boolean | null;
+  qualifications: string | null;
+  agrements: string | null;
+  prospectus: string | null;
+  reunion: string | null;
+  variante: boolean | null;
+  lotCount: number | null;
+  visites: PortalVisite[];
+  contact: PortalContact;
 }
 
 /** "7 000,00 MAD" / "1 250 000,50 Dhs" → number (MAD), or null. */
@@ -31,7 +92,7 @@ export function parseMoneyMad(text: string | null | undefined): number | null {
   if (!text) return null;
   // Drop currency words and any non [digit , . space] noise, keep separators.
   const cleaned = text
-    .replace(/ /g, ' ')
+    .replace(/ /g, ' ')
     .replace(/mad|dhs?|dirhams?|ttc|ht/gi, '')
     .trim();
   const m = /\d[\d .]*(?:,\d+)?/.exec(cleaned);
@@ -114,23 +175,163 @@ function safeOrigin(baseUrl: string): string {
   }
 }
 
-/** Text content of the labelled summary span `<... id="...SUMMARY_<field>">VALUE<`. */
+/** Decode the small set of HTML entities that appear in Atexo summary values. */
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;|&#x0*27;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, d: string) => codePoint(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => codePoint(parseInt(h, 16)));
+}
+
+function codePoint(n: number): string {
+  return Number.isFinite(n) && n > 0 ? String.fromCodePoint(n) : '';
+}
+
+/** Decode entities, collapse whitespace, trim; empty → null. */
+function clean(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const out = decodeEntities(value).replace(/\s+/g, ' ').trim();
+  return out.length > 0 ? out : null;
+}
+
+/**
+ * Text of a labelled summary span `<... id="...SUMMARY_<field>">VALUE</...>`,
+ * for values with no inner tags. Anchored on `"` after the field so
+ * `lieuxExecutions` never captures `lieuxExecutionSuite`.
+ */
 function fieldText(html: string, field: string): string | null {
-  const re = new RegExp(`id="[^"]*${SUMMARY}_${field}"[^>]*>([^<]{0,300})`, 'i');
-  const value = re.exec(html)?.[1];
-  if (value === undefined) return null;
-  const trimmed = value.replace(/\s+/g, ' ').trim();
-  return trimmed.length > 0 ? trimmed : null;
+  const re = new RegExp(`id="[^"]*${SUMMARY}_${field}"[^>]*>([^<]*)`, 'i');
+  return clean(re.exec(html)?.[1]);
+}
+
+/** Strip every tag from a fragment then clean — for list-valued spans (`<ul><li>`). */
+function stripTags(fragment: string): string | null {
+  return clean(fragment.replace(/<[^>]*>/g, ' '));
+}
+
+/**
+ * Rich (may contain inner tags) value of a summary span. Used for the fields the
+ * portal renders as a `<ul><li>` list: domaines d'activité, qualifications,
+ * agréments. Non-greedy up to the closing `</span>`.
+ */
+function fieldRich(html: string, field: string): string | null {
+  const re = new RegExp(
+    `id="[^"]*${SUMMARY}_${field}"[^>]*>([\\s\\S]*?)</span>`,
+    'i',
+  );
+  const inner = re.exec(html)?.[1];
+  return inner === undefined ? null : stripTags(inner);
+}
+
+/** "Oui"/"Non" (case-insensitive) → boolean, else null. */
+function parseOuiNon(value: string | null): boolean | null {
+  if (!value) return null;
+  if (/^oui$/i.test(value)) return true;
+  if (/^non$/i.test(value)) return false;
+  return null;
+}
+
+function parseIntOrNull(value: string | null): number | null {
+  if (!value) return null;
+  const m = /-?\d+/.exec(value);
+  if (!m) return null;
+  const n = Number.parseInt(m[0], 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Estimation lives in a "ReferentielZoneText" repeater: a titre span paired by
+ * ctl-index with a labelReferentielZoneText value span (and a mirrored hidden
+ * oldValue input). Pick the repeater whose titre mentions "estimation".
+ */
+function parseReferentielEstimation(html: string): number | null {
+  const titreRe = /RepeaterReferentielZoneText_ctl(\d+)_titre"[^>]*>([^<]*)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = titreRe.exec(html))) {
+    if (!/estimation/i.test(m[2] ?? '')) continue;
+    const ctl = m[1]!;
+    const labelRe = new RegExp(
+      `RepeaterReferentielZoneText_ctl${ctl}_labelReferentielZoneText"[^>]*>([^<]*)`,
+      'i',
+    );
+    const fromLabel = parseMoneyMad(labelRe.exec(html)?.[1]);
+    if (fromLabel != null) return fromLabel;
+    const oldRe = new RegExp(
+      `RepeaterReferentielZoneText_ctl${ctl}_oldValue"[^>]*value="([^"]*)"`,
+      'i',
+    );
+    const fromOld = parseMoneyMad(oldRe.exec(html)?.[1]);
+    if (fromOld != null) return fromOld;
+  }
+  return null;
+}
+
+/** Réservé PME/TPE — idRefRadio RepeaterReferentielRadio label holds Oui/Non. */
+function parseReserveAuxPme(html: string): boolean | null {
+  const re =
+    /RepeaterReferentielRadio_ctl\d+_labelReferentielRadio"[^>]*>([^<]*)/i;
+  return parseOuiNon(clean(re.exec(html)?.[1]));
+}
+
+/** All published site visits (repeaterVisitesLieux ctl-indexed date + adresse). */
+function parseVisites(html: string): PortalVisite[] {
+  const dateRe = /repeaterVisitesLieux_ctl(\d+)_dateVisites"[^>]*>([^<]*)/gi;
+  const visites: PortalVisite[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = dateRe.exec(html))) {
+    const ctl = m[1]!;
+    const date = clean(m[2]);
+    const adrRe = new RegExp(
+      `repeaterVisitesLieux_ctl${ctl}_adresseVisites"[^>]*>([^<]*)`,
+      'i',
+    );
+    const adresse = clean(adrRe.exec(html)?.[1]);
+    if (date || adresse) visites.push({ date, adresse });
+  }
+  return visites;
 }
 
 /** Extract the publishable fields from a consultation detail page. */
 export function parseDetailPage(html: string): DetailFields {
+  const modePassationRaw = fieldText(html, 'modePassation');
   return {
     reference: fieldText(html, 'reference'),
     objet: fieldText(html, 'objet'),
     categorie: fieldText(html, 'categoriePrincipale'),
     cautionProvisoireMad: parseMoneyMad(fieldText(html, 'cautionProvisoire')),
-    // Hidden (display:none) on open tenders → usually null; parsed when present.
-    estimationMad: parseMoneyMad(fieldText(html, 'estimation')),
+    estimationMad: parseReferentielEstimation(html),
+    buyerEntity: fieldText(html, 'entiteAchat'),
+    typeAnnonce: fieldText(html, 'annonce'),
+    typeProcedure: fieldText(html, 'typeProcedure'),
+    // Published as " | Sur offre de prix" — drop the leading separator.
+    modePassation: modePassationRaw
+      ? modePassationRaw.replace(/^\|\s*/, '').trim() || null
+      : null,
+    location: fieldText(html, 'lieuxExecutions'),
+    deadline: fieldText(html, 'dateHeureLimiteRemisePlis'),
+    domainesActivite: fieldRich(html, 'domainesActivite'),
+    adresseRetrait: fieldText(html, 'adresseRetraitDossiers'),
+    adresseDepot: fieldText(html, 'adresseDepotOffres'),
+    lieuOuverturePlis: fieldText(html, 'lieuOuverturePlis'),
+    prixAcquisitionPlansMad: parseMoneyMad(fieldText(html, 'prixAcquisitionPlan')),
+    reserveAuxPme: parseReserveAuxPme(html),
+    qualifications: fieldRich(html, 'qualification'),
+    agrements: fieldRich(html, 'agrements'),
+    prospectus: fieldText(html, 'dateEchantillons'),
+    reunion: fieldText(html, 'dateReunion'),
+    variante: parseOuiNon(fieldText(html, 'varianteValeur')),
+    lotCount: parseIntOrNull(fieldText(html, 'nbrLots')),
+    visites: parseVisites(html),
+    contact: {
+      nom: fieldText(html, 'contactAdministratif'),
+      email: fieldText(html, 'email'),
+      telephone: fieldText(html, 'telephone'),
+      telecopieur: fieldText(html, 'telecopieur'),
+    },
   };
 }

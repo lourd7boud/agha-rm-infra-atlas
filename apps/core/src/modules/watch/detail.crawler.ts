@@ -3,8 +3,29 @@ import {
   TENDER_REPOSITORY,
   type TenderRepository,
 } from '../tender/tender.repository';
-import { extractDetailLinks, parseDetailPage } from './detail.parser';
+import {
+  DETAIL_VERSION,
+  extractDetailLinks,
+  parseDetailPage,
+  type DetailFields,
+} from './detail.parser';
 import { PORTAL_SOURCE, type PortalSource } from './watch.source';
+
+/**
+ * The full published-metadata block we persist under raw.detail. Everything the
+ * detail page publishes EXCEPT reference/objet (those are the join key / already
+ * a column). Stamped with the parser version + provenance so the backfill knows
+ * whether a row was harvested by the current parser. This is the portal-first
+ * source of truth the UI reads and the LLM defers to.
+ */
+export function buildDetailMeta(
+  fields: DetailFields,
+  url: string,
+  fetchedAt: string,
+): Record<string, unknown> {
+  const { reference: _reference, objet: _objet, ...portal } = fields;
+  return { url, fetchedAt, v: DETAIL_VERSION, ...portal };
+}
 
 /**
  * Canonical join key between a listing stub and its detail page. The live Atexo
@@ -101,11 +122,11 @@ export async function crawlDetails(
         amounts.cautionProvisoireMad = fields.cautionProvisoireMad;
       }
 
-      await deps.applyEnrichment(tender.id, amounts, {
-        url: link.detailUrl,
-        categorie: fields.categorie,
-        fetchedAt: deps.now(),
-      });
+      await deps.applyEnrichment(
+        tender.id,
+        amounts,
+        buildDetailMeta(fields, link.detailUrl, deps.now()),
+      );
       if (Object.keys(amounts).length > 0) enriched += 1;
     } catch {
       errors += 1;
@@ -195,11 +216,7 @@ export class DetailCrawlerService {
         }
 
         await this.tenders.updateEnrichment(target.id, amounts, {
-          detail: {
-            url: target.sourceUrl,
-            categorie: fields.categorie,
-            fetchedAt: new Date().toISOString(),
-          },
+          detail: buildDetailMeta(fields, target.sourceUrl, new Date().toISOString()),
         });
         if (Object.keys(amounts).length > 0) enriched += 1;
       } catch {

@@ -26,6 +26,7 @@ import {
   aiExtractDossier,
   aiExtractDossierVision,
   readDossierExtraction,
+  resolvePortalFirstAmounts,
   type DossierExtraction,
 } from './dossier-extraction';
 import { extractBordereauFromDce } from './bordereau-parser';
@@ -219,10 +220,15 @@ export class DossierExtractionService {
         // (those live in RC/CPS, not Avis), so we never regress the deep
         // coverage that already passed. Best-effort: a vision failure here
         // never fails the whole extraction.
-        if (
-          fresh.estimationMad == null ||
-          fresh.cautionProvisoireMad == null
-        ) {
+        // Portal-first: only spend the (expensive) supplemental vision call when
+        // a money figure is STILL missing after text mode AND the portal did not
+        // already publish it. When raw.detail/columns already carry estimation +
+        // caution, the LLM has nothing to add here — skip the second call.
+        const needEstimation =
+          fresh.estimationMad == null && tender.estimationMad == null;
+        const needCaution =
+          fresh.cautionProvisoireMad == null && tender.cautionProvisoireMad == null;
+        if (needEstimation || needCaution) {
           try {
             const vis = await buildVisionInput(dossier.bytes);
             if (vis.images.length > 0) {
@@ -342,23 +348,20 @@ export class DossierExtractionService {
     // A forced re-run must never regress a previously richer extraction.
     const extraction = existing ? mergeExtractions(existing, fresh) : fresh;
 
-    // Real money onto the columns — only when a corroborated figure was found
-    // (never null, which would also crash .toString()). The dossier's RC figure
-    // is the authoritative estimation, so it wins; log when it replaces a value.
-    const amounts: EnrichmentAmounts = {};
-    if (typeof extraction.estimationMad === 'number') {
-      amounts.estimationMad = extraction.estimationMad;
-    }
-    if (typeof extraction.cautionProvisoireMad === 'number') {
-      amounts.cautionProvisoireMad = extraction.cautionProvisoireMad;
-    }
+    // Real money onto the columns — PORTAL-FIRST: the DCE only fills a figure the
+    // portal detail harvest left empty; it never overwrites a value already on the
+    // row. When the DCE disagrees with a portal figure we keep the portal's and
+    // just log it (the DCE value is still preserved in raw.dossierExtraction). The
+    // full DCE result is always merged into raw so the LLM-only fields survive.
+    const amounts: EnrichmentAmounts = resolvePortalFirstAmounts(tender, extraction);
     if (
       tender.estimationMad != null &&
-      amounts.estimationMad != null &&
-      tender.estimationMad !== amounts.estimationMad
+      typeof extraction.estimationMad === 'number' &&
+      tender.estimationMad !== extraction.estimationMad
     ) {
-      this.logger.warn(
-        `dossier.extract ${tender.reference}: estimation ${tender.estimationMad} → ${amounts.estimationMad} (valeur DCE)`,
+      this.logger.log(
+        `dossier.extract ${tender.reference}: portail garde estimation ${tender.estimationMad} ` +
+          `(DCE proposait ${extraction.estimationMad})`,
       );
     }
     await this.repository.updateEnrichment(id, amounts, {

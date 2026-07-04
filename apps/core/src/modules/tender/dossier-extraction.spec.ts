@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import { FakeLlmClient } from '../brain/llm.client';
-import { aiExtractDossier, readDossierExtraction } from './dossier-extraction';
+import {
+  aiExtractDossier,
+  readDossierExtraction,
+  resolvePortalFirstAmounts,
+} from './dossier-extraction';
 
 // Real RC wording so corroboration (the figure's digits must appear in the text)
 // passes for legitimate values.
@@ -90,5 +94,40 @@ describe('aiExtractDossier', () => {
     expect(back?.estimationMad).toBe(500000);
     expect(readDossierExtraction({})).toBeNull();
     expect(readDossierExtraction(null)).toBeNull();
+  });
+});
+
+describe('resolvePortalFirstAmounts', () => {
+  test('the DCE fills only money columns the portal left empty', () => {
+    const amounts = resolvePortalFirstAmounts(
+      { estimationMad: null, cautionProvisoireMad: null },
+      { estimationMad: 379104, cautionProvisoireMad: 7000 },
+    );
+    expect(amounts).toEqual({ estimationMad: 379104, cautionProvisoireMad: 7000 });
+  });
+
+  test('never overwrites a portal-supplied estimation, even when the DCE disagrees', () => {
+    const amounts = resolvePortalFirstAmounts(
+      { estimationMad: 1399968, cautionProvisoireMad: null },
+      { estimationMad: 1400000, cautionProvisoireMad: 27000 },
+    );
+    // Portal estimation kept (not in the write set); caution filled from the DCE.
+    expect(amounts).toEqual({ cautionProvisoireMad: 27000 });
+  });
+
+  test('emits an empty write set when the portal already has both figures', () => {
+    const amounts = resolvePortalFirstAmounts(
+      { estimationMad: 500000, cautionProvisoireMad: 10000 },
+      { estimationMad: 490000, cautionProvisoireMad: 9000 },
+    );
+    expect(amounts).toEqual({});
+  });
+
+  test('ignores null DCE figures (no column written from a missing value)', () => {
+    const amounts = resolvePortalFirstAmounts(
+      { estimationMad: null, cautionProvisoireMad: null },
+      { estimationMad: null, cautionProvisoireMad: null },
+    );
+    expect(amounts).toEqual({});
   });
 });
