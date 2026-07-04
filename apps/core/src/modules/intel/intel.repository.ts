@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { competitorBids, competitors } from '../../db/schema';
 import { normalizeFr } from '../tender/qualifier.domain';
@@ -644,7 +644,21 @@ export class DrizzleIntelRepository implements IntelRepository {
   }
 
   async rebateBenchmarks(): Promise<RebateBenchmarks> {
-    const rows = await this.db.select().from(competitorBids);
+    // Only a WINNER bid carrying BOTH an estimation and an amount can ever yield
+    // a rebate sample (or a rejected outlier); summarizeRebates skips every other
+    // row anyway (non-winners, or missing inputs → recoveredRebatePct null). So
+    // filtering them in Postgres is output-preserving and bounds the scan to the
+    // relevant subset as the competitor_bid table grows toward its 150-300k ceiling.
+    const rows = await this.db
+      .select()
+      .from(competitorBids)
+      .where(
+        and(
+          eq(competitorBids.isWinner, true),
+          isNotNull(competitorBids.estimationMad),
+          isNotNull(competitorBids.amountMad),
+        ),
+      );
     return summarizeRebates(
       rows.map((row) =>
         bidToObservation({
