@@ -1,6 +1,6 @@
 import NextAuth from 'next-auth';
 import Keycloak from 'next-auth/providers/keycloak';
-import type { NextRequest } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 
 declare module 'next-auth' {
   interface Session {
@@ -199,7 +199,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth((request) => {
     session: { strategy: 'jwt' },
     pages: { signIn: '/login' },
     callbacks: {
-      authorized({ auth: session }) {
+      authorized({ request, auth: session }) {
+        // Keycloak's OIDC endpoints are served under /auth/* on this same origin
+        // by the reverse proxy (nginx → Keycloak), NEVER by Next.js. If such a
+        // request reaches the app, the proxy dropped its /auth route and Next.js
+        // renders a dead 404 mid-re-authentication — the "session ended, stuck on
+        // a 404 instead of the login page" symptom. Bounce to the real sign-in
+        // screen so the user always lands on /login, never a raw 404.
+        if (request.nextUrl.pathname.startsWith('/auth/')) {
+          return NextResponse.redirect(new URL('/login', request.nextUrl.origin));
+        }
         return Boolean(session?.user);
       },
       async jwt({ token, account }) {
