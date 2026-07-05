@@ -26,18 +26,42 @@ export interface SuiviCrawlSummary {
   withBidders: number;
   bidsStored: number;
   errors: number;
+  /**
+   * True when the batch halted early on a run of consecutive fetch failures —
+   * the portal is likely blocking/down. The caller MUST back off (not launch
+   * the next batch): firing the rest of an ~80 k-target backlog into a live ban
+   * is exactly how a soft-ban becomes a hard one.
+   */
+  stoppedEarly?: boolean;
 }
 
 export interface SuiviCrawlOptions {
   maxSuivi?: number;
   delayMs?: number;
+  /** Injectable for tests; defaults to global fetch. */
+  fetchImpl?: typeof fetch;
+  /** Injectable sleep for tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Injectable RNG for delay jitter (default Math.random). */
+  random?: () => number;
 }
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 const TIMEOUT_MS = 30_000;
-const sleepMs = (ms: number): Promise<void> =>
+/**
+ * Consecutive fetch failures that mean the portal is blocking/down. At that
+ * point the batch stops rather than firing every remaining target into the
+ * block — the circuit breaker that makes a mass drain safe to run unattended.
+ */
+const BLOCK_THRESHOLD = 5;
+const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Randomize a base delay ±40% so ~80 k sequential GETs don't share one cadence. */
+function jitter(baseMs: number, random: () => number): number {
+  return Math.round(baseMs * (0.6 + random() * 0.8));
+}
 
 @Injectable()
 export class SuiviCrawlerService {
@@ -55,30 +79,61 @@ export class SuiviCrawlerService {
   async crawlBacklog(opts: SuiviCrawlOptions = {}): Promise<SuiviCrawlSummary> {
     const maxSuivi = Math.max(0, Math.floor(opts.maxSuivi ?? 40));
     const delayMs = Math.max(0, Math.floor(opts.delayMs ?? 800));
+    const doFetch = opts.fetchImpl ?? fetch;
+    const sleep = opts.sleep ?? defaultSleep;
+    const random = opts.random ?? Math.random;
     const targets = await this.tenders.findSuiviBacklogTargets(maxSuivi);
 
     let fetched = 0;
     let withBidders = 0;
     let bidsStored = 0;
     let errors = 0;
+    // Circuit breaker: consecutive fetch failures ⇒ the portal is blocking.
+    let consecutiveFailures = 0;
+    let stoppedEarly = false;
 
     for (let i = 0; i < targets.length; i += 1) {
       const t = targets[i]!;
-      try {
-        const refOrg = refOrgFromUrl(t.sourceUrl);
-        if (!refOrg) {
-          await this.stamp(t.id, 0);
-          continue;
-        }
-        const url = buildSuiviUrl(
-          refOrg.refConsultation,
-          refOrg.orgAcronyme,
-          t.sourceUrl,
-        );
-        const html = await this.fetchText(url);
-        fetched += 1;
-        const { bidders, winner } = parseSuiviCommission(html);
+      const refOrg = refOrgFromUrl(t.sourceUrl);
+      if (!refOrg) {
+        // Not a portal failure — a malformed stored URL. Stamp it out of the
+        // backlog and move on WITHOUT touching the breaker counter.
+        await this.stamp(t.id, 0);
+        if (delayMs > 0 && i < targets.length - 1) await sleep(jitter(delayMs, random));
+        continue;
+      }
+      const url = buildSuiviUrl(
+        refOrg.refConsultation,
+        refOrg.orgAcronyme,
+        t.sourceUrl,
+      );
 
+      let html: string;
+      try {
+        html = await this.fetchText(doFetch, url);
+        // The portal responded → it is not blocking us. Reset the breaker.
+        consecutiveFailures = 0;
+        fetched += 1;
+      } catch {
+        errors += 1;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= BLOCK_THRESHOLD) {
+          stoppedEarly = true;
+          this.logger.warn(
+            `suivi batch halted after ${BLOCK_THRESHOLD} consecutive fetch ` +
+              `failures — portal likely blocking; backing off (targets left ` +
+              `un-stamped, a later run resumes them).`,
+          );
+          break;
+        }
+        if (delayMs > 0 && i < targets.length - 1) await sleep(jitter(delayMs, random));
+        continue;
+      }
+
+      // Parse + persist. A failure here is a data/DB problem, NOT a portal
+      // block, so it must not trip the breaker — leave consecutiveFailures at 0.
+      try {
+        const { bidders, winner } = parseSuiviCommission(html);
         for (const b of bidders) {
           if (!b.entreprise) continue;
           const competitor = await this.intel.upsertCompetitor(b.entreprise);
@@ -101,10 +156,17 @@ export class SuiviCrawlerService {
       } catch {
         errors += 1;
       }
-      if (delayMs > 0 && i < targets.length - 1) await sleepMs(delayMs);
+      if (delayMs > 0 && i < targets.length - 1) await sleep(jitter(delayMs, random));
     }
 
-    const summary = { targets: targets.length, fetched, withBidders, bidsStored, errors };
+    const summary: SuiviCrawlSummary = {
+      targets: targets.length,
+      fetched,
+      withBidders,
+      bidsStored,
+      errors,
+      ...(stoppedEarly ? { stoppedEarly: true } : {}),
+    };
     this.logger.log(`suivi crawl complete ${JSON.stringify(summary)}`);
     return summary;
   }
@@ -116,8 +178,8 @@ export class SuiviCrawlerService {
     });
   }
 
-  private async fetchText(url: string): Promise<string> {
-    const res = await fetch(url, {
+  private async fetchText(doFetch: typeof fetch, url: string): Promise<string> {
+    const res = await doFetch(url, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });

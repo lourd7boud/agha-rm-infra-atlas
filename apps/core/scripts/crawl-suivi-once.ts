@@ -51,6 +51,13 @@ async function main(): Promise<void> {
     console.log(
       `iter ${iter + 1}: ${JSON.stringify(s)} | cum fetched=${fetched} withBidders=${withBidders} bids=${bidsStored} errors=${errors}`,
     );
+    if (s.stoppedEarly) {
+      console.error(
+        'ABORT — batch halted on consecutive fetch failures (portal likely ' +
+          'blocking). Backing off; re-run later to resume (targets un-stamped).',
+      );
+      break;
+    }
     if (s.targets === 0) {
       console.log('DRAINED — no past-deadline commission left to harvest.');
       break;
