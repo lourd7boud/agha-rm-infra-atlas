@@ -127,6 +127,9 @@ type CompetitorBidRow = {
   id: string;
   reference: string;
   buyerName: string;
+  // DB-generated buyer identity that backs the uniqueness key; not part of the
+  // domain record (derived from buyerName), just present on every selected row.
+  buyerKey: string | null;
   bidderName: string;
   competitorId: string | null;
   amountMad: string | null;
@@ -203,6 +206,27 @@ export function refBuyerKey(reference: string, buyerName: string): string {
   return `${canonicalReferenceKey(reference)}|${canonicalReferenceKey(buyerName)}`;
 }
 
+/**
+ * Canonical BUYER identity for the competitor_bid uniqueness key: lower + collapse
+ * every non-alphanumeric run to a single space + trim, KEEPING accented letters.
+ * This is the immutable SQL twin of the `buyer_key` generated column in
+ * db/schema/intel.ts (`btrim(regexp_replace(lower(buyer_name), '[^a-z0-9à-ÿ]+',
+ * ' ', 'g'))`) — accents are kept on BOTH sides because a Postgres generated
+ * column cannot use the non-immutable unaccent(). Keeping the two folds identical
+ * is what lets the in-memory and SQL dedupe paths produce the SAME rows.
+ *
+ * It deliberately differs from canonicalReferenceKey (which strips accents for
+ * read-time reference matching) and from canonicalBuyerKey in rebate.domain (which
+ * folds only .,); those answer different questions. THIS fold only has to agree
+ * with the database column that backs the unique index.
+ */
+export function buyerIdentityKey(buyerName: string): string {
+  return buyerName
+    .toLowerCase()
+    .replace(/[^a-z0-9à-ÿ]+/g, ' ')
+    .trim();
+}
+
 export class InMemoryIntelRepository implements IntelRepository {
   private competitors: readonly CompetitorRecord[] = [];
   private bids: readonly CompetitorBidRecord[] = [];
@@ -225,7 +249,10 @@ export class InMemoryIntelRepository implements IntelRepository {
     competitorId: string,
   ): Promise<boolean> {
     const duplicate = this.bids.some(
-      (bid) => bid.reference === result.reference && bid.competitorId === competitorId,
+      (bid) =>
+        bid.reference === result.reference &&
+        buyerIdentityKey(bid.buyerName) === buyerIdentityKey(result.buyerName) &&
+        bid.competitorId === competitorId,
     );
     if (duplicate) return false;
     this.bids = [
@@ -241,7 +268,9 @@ export class InMemoryIntelRepository implements IntelRepository {
   ): Promise<'inserted' | 'updated'> {
     const index = this.bids.findIndex(
       (bid) =>
-        bid.reference === result.reference && bid.competitorId === competitorId,
+        bid.reference === result.reference &&
+        buyerIdentityKey(bid.buyerName) === buyerIdentityKey(result.buyerName) &&
+        bid.competitorId === competitorId,
     );
     if (index === -1) {
       this.bids = [
@@ -375,14 +404,20 @@ export class DrizzleIntelRepository implements IntelRepository {
     result: PublishedResult,
     competitorId: string,
   ): Promise<boolean> {
-    // Atomic guard on the (reference, competitor_id) unique index: a concurrent
-    // writer that beat us to the row makes this a no-op (no returned id) instead
-    // of a duplicate, replacing the old SELECT-then-INSERT race.
+    // Atomic guard on the (reference, buyer_key, competitor_id) unique index: a
+    // concurrent writer that beat us to the row makes this a no-op (no returned
+    // id) instead of a duplicate, replacing the old SELECT-then-INSERT race.
+    // buyer_key is generated from buyer_name, so it is never inserted directly —
+    // the arbiter matches on the stored generated value.
     const rows = await this.db
       .insert(competitorBids)
       .values(bidInsertValues(result, competitorId))
       .onConflictDoNothing({
-        target: [competitorBids.reference, competitorBids.competitorId],
+        target: [
+          competitorBids.reference,
+          competitorBids.buyerKey,
+          competitorBids.competitorId,
+        ],
       })
       .returning({ id: competitorBids.id });
     return rows.length > 0;
@@ -392,22 +427,32 @@ export class DrizzleIntelRepository implements IntelRepository {
     result: PublishedResult,
     competitorId: string,
   ): Promise<'inserted' | 'updated'> {
-    // One atomic INSERT … ON CONFLICT keyed on the (reference, competitor_id)
-    // unique index, so the result-crawler harvest and the PV harvest can race
-    // without producing a duplicate row that would double-count a winner in the
-    // rebate calibration. The SET clause is back-fill only — identical semantics
-    // to the old read-modify-write: a non-null incoming value enriches the row,
-    // an incoming null never erases what an earlier crawl learned (COALESCE
-    // keeps the existing value), the winner flag is sticky (OR), and a real
-    // buyer name replaces the 'Acheteur non précisé' placeholder. `excluded` is
-    // the row we tried to insert; the bare column is the row already stored.
-    // (xmax = 0) is the Postgres idiom for "this RETURNING row was freshly
-    // inserted" — xmax is 0 on a plain INSERT and non-zero after a DO UPDATE.
+    // One atomic INSERT … ON CONFLICT keyed on the (reference, buyer_key,
+    // competitor_id) unique index, so the result-crawler harvest and the PV
+    // harvest can race without producing a duplicate row that would double-count a
+    // winner in the rebate calibration. Because the buyer is now part of the key,
+    // a conflict means the SAME buyer's market (buyer_key folds spelling/case
+    // drift together) — two DIFFERENT buyers that share a generic reference land
+    // on separate rows instead of clobbering each other. The SET clause is
+    // back-fill only — identical semantics to the old read-modify-write: a
+    // non-null incoming value enriches the row, an incoming null never erases what
+    // an earlier crawl learned (COALESCE keeps the existing value), the winner
+    // flag is sticky (OR), and a spelling that is not the 'Acheteur non précisé'
+    // placeholder replaces it (a placeholder folds to its OWN buyer_key, so it can
+    // never conflict-merge with a real buyer — this branch now only normalizes
+    // same-buyer spelling). `excluded` is the row we tried to insert; the bare
+    // column is the row already stored. (xmax = 0) is the Postgres idiom for "this
+    // RETURNING row was freshly inserted" — xmax is 0 on a plain INSERT and
+    // non-zero after a DO UPDATE.
     const [row] = await this.db
       .insert(competitorBids)
       .values(bidInsertValues(result, competitorId))
       .onConflictDoUpdate({
-        target: [competitorBids.reference, competitorBids.competitorId],
+        target: [
+          competitorBids.reference,
+          competitorBids.buyerKey,
+          competitorBids.competitorId,
+        ],
         set: {
           buyerName: sql`case when excluded.buyer_name <> ${UNKNOWN_BUYER_LABEL} then excluded.buyer_name else ${competitorBids.buyerName} end`,
           amountMad: sql`coalesce(excluded.amount_mad, ${competitorBids.amountMad})`,

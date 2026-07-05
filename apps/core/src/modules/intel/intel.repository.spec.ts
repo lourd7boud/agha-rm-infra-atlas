@@ -173,7 +173,14 @@ describe('InMemoryIntelRepository.upsertResult', () => {
     expect(row?.isWinner).toBe(true); // winner flag is sticky
   });
 
-  it('replaces the unknown-buyer placeholder with the real buyer from a later PV', async () => {
+  it('does NOT fold an unknown-buyer bid into a real buyer (attribution would be a guess)', async () => {
+    // A résultat-définitif with no parseable buyer lands as the placeholder. A
+    // later PV naming a real buyer for the SAME (reference, competitor) is NOT
+    // provably the same market — a generic "AO/5" may belong to any of 654
+    // acheteurs — so it must NOT overwrite the placeholder (the old (reference,
+    // competitor) key did, guessing the attribution). Both rows are kept; the
+    // placeholder still counts in the GLOBAL participation total but is attributed
+    // to no buyer. The real buyer's bid stands on its own row.
     const repo = new InMemoryIntelRepository();
     const c = await repo.upsertCompetitor('STE ALPHA');
     await repo.insertResult(
@@ -187,7 +194,7 @@ describe('InMemoryIntelRepository.upsertResult', () => {
       c.id,
     );
 
-    await repo.upsertResult(
+    const action = await repo.upsertResult(
       {
         reference: 'AO/5',
         buyerName: 'ORMVAH',
@@ -199,8 +206,101 @@ describe('InMemoryIntelRepository.upsertResult', () => {
       c.id,
     );
 
-    const [row] = await repo.listResults(10);
-    expect(row?.buyerName).toBe('ORMVAH');
+    expect(action).toBe('inserted');
+    const rows = await repo.listResults(10);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.buyerName).sort()).toEqual([
+      'Acheteur non précisé',
+      'ORMVAH',
+    ]);
+  });
+});
+
+describe('InMemoryIntelRepository buyer-scoped bid identity', () => {
+  // Portal references (e.g. "05/2026") are reused across 654 distinct acheteurs.
+  // Keying a bid on (reference, competitor) ALONE merged one competitor's bids on
+  // two DIFFERENT buyers' markets into a single row — clobbering amount, sticky-
+  // OR'ing isWinner, overwriting buyerName. The buyer must be part of the identity.
+  it('keeps upserts from two buyers that share one generic reference as separate rows', async () => {
+    // Arrange — the SAME competitor bids on the SAME generic reference for two buyers.
+    const repo = new InMemoryIntelRepository();
+    const alpha = await repo.upsertCompetitor('STE ALPHA');
+    await repo.upsertResult(
+      {
+        reference: '05/2026',
+        buyerName: 'Commune de Rabat',
+        bidderName: 'STE ALPHA',
+        amountMad: 500_000,
+        isWinner: true,
+      },
+      alpha.id,
+    );
+
+    // Act — a bid on the same reference but a DIFFERENT buyer.
+    const action = await repo.upsertResult(
+      {
+        reference: '05/2026',
+        buyerName: 'Province de Safi',
+        bidderName: 'STE ALPHA',
+        amountMad: 700_000,
+        isWinner: false,
+      },
+      alpha.id,
+    );
+
+    // Assert — a new row, not a merge; each buyer keeps its own amount + winner flag.
+    expect(action).toBe('inserted');
+    const rows = await repo.listResults(10);
+    expect(rows).toHaveLength(2);
+    const rabat = rows.find((r) => r.buyerName === 'Commune de Rabat');
+    const safi = rows.find((r) => r.buyerName === 'Province de Safi');
+    expect(rabat?.amountMad).toBe(500_000);
+    expect(rabat?.isWinner).toBe(true);
+    expect(safi?.amountMad).toBe(700_000);
+    expect(safi?.isWinner).toBe(false);
+  });
+
+  it('does not treat a second buyer as a duplicate on insertResult', async () => {
+    // Arrange
+    const repo = new InMemoryIntelRepository();
+    const alpha = await repo.upsertCompetitor('STE ALPHA');
+
+    // Act — two inserts, same reference + competitor, different buyers.
+    const first = await repo.insertResult(
+      { reference: '05/2026', buyerName: 'Commune de Rabat', bidderName: 'STE ALPHA', isWinner: true },
+      alpha.id,
+    );
+    const second = await repo.insertResult(
+      { reference: '05/2026', buyerName: 'Province de Safi', bidderName: 'STE ALPHA', isWinner: true },
+      alpha.id,
+    );
+
+    // Assert — neither is rejected as a duplicate; both markets are recorded.
+    expect(first).toBe(true);
+    expect(second).toBe(true);
+    expect(await repo.listResults(10)).toHaveLength(2);
+  });
+
+  it('still merges a re-harvest of the SAME (reference, buyer, competitor)', async () => {
+    // The identity widened by buyer — it must NOT widen so far that a genuine
+    // re-harvest of one buyer's market stops enriching in place.
+    const repo = new InMemoryIntelRepository();
+    const alpha = await repo.upsertCompetitor('STE ALPHA');
+    await repo.insertResult(
+      { reference: '05/2026', buyerName: 'Commune de Rabat', bidderName: 'STE ALPHA', amountMad: 500_000, isWinner: true },
+      alpha.id,
+    );
+
+    const action = await repo.upsertResult(
+      { reference: '05/2026', buyerName: 'Commune de Rabat', bidderName: 'STE ALPHA', estimationMad: 600_000, isWinner: true },
+      alpha.id,
+    );
+
+    expect(action).toBe('updated');
+    const rows = await repo.listResults(10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.amountMad).toBe(500_000); // preserved
+    expect(rows[0]?.estimationMad).toBe(600_000); // enriched
   });
 });
 

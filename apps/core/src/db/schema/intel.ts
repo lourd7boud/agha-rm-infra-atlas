@@ -1,4 +1,5 @@
 // pg schema: intel — competitor register and harvested competitor bids.
+import { sql } from 'drizzle-orm';
 import {
   boolean,
   date,
@@ -72,6 +73,18 @@ export const competitorBids = intel.table(
     id: uuid('id').primaryKey().defaultRandom(),
     reference: text('reference').notNull(),
     buyerName: text('buyer_name').notNull(),
+    // Canonical buyer identity, DERIVED from buyer_name by the database (lower +
+    // non-alnum→space + collapse, accent-preserving). The immutable SQL twin of
+    // buyerIdentityKey() in intel.repository.ts, so the in-memory and SQL dedupe
+    // paths agree. It exists purely to widen the bid-uniqueness key below: portal
+    // references (e.g. "05/2026") are reused across 654 acheteurs, so keying on
+    // (reference, competitor) alone MERGED one competitor's bids on two different
+    // buyers into one row. Generated (not written by the app), so existing rows,
+    // fresh inserts and re-harvests all fold identically — the UPSERT lands on the
+    // right row instead of duplicating it.
+    buyerKey: text('buyer_key').generatedAlwaysAs(
+      sql`btrim(regexp_replace(lower(buyer_name), '[^a-z0-9à-ÿ]+', ' ', 'g'))`,
+    ),
     bidderName: text('bidder_name').notNull(),
     competitorId: uuid('competitor_id').references(() => competitors.id),
     // Phase 0: the join key to the avis we saw. Nullable until back-filled by
@@ -91,12 +104,18 @@ export const competitorBids = intel.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    // One bid per (avis, competitor): lets the result-crawler harvest and the
-    // PV harvest race without producing duplicate rows that would double-count a
-    // winner in the rebate calibration. competitor_id is nullable but always set
-    // in practice; NULLs are distinct in Postgres, which is fine here.
-    uniqueIndex('competitor_bid_reference_competitor_uniq').on(
+    // One bid per (reference, BUYER, competitor): lets the result-crawler harvest
+    // and the PV harvest race without producing duplicate rows that would double-
+    // count a winner in the rebate calibration. buyer_key is in the key because a
+    // portal reference alone is NOT unique — it is reused across 654 acheteurs, so
+    // without the buyer two different markets sharing "05/2026" would collapse into
+    // one row (buyerName overwritten, amount clobbered, isWinner sticky-OR'd). This
+    // is a strict SUPERSET of the old (reference, competitor) key, so it can never
+    // be violated by rows the old index already kept unique. competitor_id is
+    // nullable but always set in practice; NULLs are distinct in Postgres.
+    uniqueIndex('competitor_bid_reference_buyer_competitor_uniq').on(
       table.reference,
+      table.buyerKey,
       table.competitorId,
     ),
     // Reference-scoped lookup for the bounded inventory bid join — replaces the
