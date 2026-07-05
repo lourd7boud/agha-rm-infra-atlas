@@ -8,6 +8,7 @@ import { decideSnapshot } from './snapshot.domain';
 import { DetailCrawlerService } from './detail.crawler';
 import { ResultCrawlerService } from './result.crawler';
 import { ExtraitPvCrawlerService } from './pv.crawler';
+import { SuiviCrawlerService } from './suivi.crawler';
 import {
   SNAPSHOT_REPOSITORY,
   type SnapshotRepository,
@@ -106,6 +107,9 @@ export class WatchService {
     @Optional()
     @Inject(ExtraitPvCrawlerService)
     private readonly pvCrawler: ExtraitPvCrawlerService | null = null,
+    @Optional()
+    @Inject(SuiviCrawlerService)
+    private readonly suiviCrawler: SuiviCrawlerService | null = null,
     @Optional()
     @Inject(EnrichmentService)
     private readonly enrichment: EnrichmentService | null = null,
@@ -349,6 +353,21 @@ export class WatchService {
         }
       } catch (error) {
         this.logger.error(`pv harvest failed: ${(error as Error).message}`);
+      }
+    }
+    // Stage-3c: harvest "Suivre la commission" (SuiviConsultation) — the WHOLE
+    // structured bidder field + amounts for past-deadline consultations, zero OCR
+    // (the datao "Résultats"/concurrents source). Bounded via WATCH_SUIVI_LIMIT;
+    // failures never fail the Sentinel.
+    if (this.suiviCrawler) {
+      try {
+        const maxSuivi = envLimit('WATCH_SUIVI_LIMIT', 0);
+        if (maxSuivi > 0) {
+          const suivi = await this.suiviCrawler.crawlBacklog({ maxSuivi });
+          this.logger.log(`suivi harvest ${JSON.stringify(suivi)}`);
+        }
+      } catch (error) {
+        this.logger.error(`suivi harvest failed: ${(error as Error).message}`);
       }
     }
     // Stage-4: AI-enrich a bounded batch of newly-detected (still-unenriched)

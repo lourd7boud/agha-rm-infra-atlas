@@ -22,6 +22,7 @@ import { ExpertModule } from '../expert/expert.module';
 import { DetailCrawlerService } from './detail.crawler';
 import { ResultCrawlerService } from './result.crawler';
 import { ExtraitPvCrawlerService } from './pv.crawler';
+import { SuiviCrawlerService } from './suivi.crawler';
 import { NoticeArchiveService } from './notice-archive';
 import { NoticeInterpretService } from './notice-interpret';
 import {
@@ -250,6 +251,7 @@ const snapshotRepositoryProvider = {
     DetailCrawlerService,
     ResultCrawlerService,
     ExtraitPvCrawlerService,
+    SuiviCrawlerService,
     NoticeArchiveService,
     NoticeInterpretService,
   ],
