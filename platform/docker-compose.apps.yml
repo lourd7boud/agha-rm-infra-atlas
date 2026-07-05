@@ -61,6 +61,11 @@ services:
       # via the raw.detail.v version predicate — safe to run large. Lower back to
       # ~40 once the corpus is fully at DETAIL_VERSION if sweep latency matters.
       WATCH_DETAIL_BACKFILL: "300"
+      # Harvest "Suivre la commission" (SuiviConsultation) per sweep — the WHOLE
+      # structured bidder field + amounts for newly-closed consultations, zero OCR
+      # (the datao "Résultats"/concurrents source). The backlog was drained via
+      # crawl-suivi-once; steady-state is a small trickle as en-cours tenders close.
+      WATCH_SUIVI_LIMIT: "60"
     # The extraction pipeline (PDF vision + LLM) is the known CPU/RAM hog:
     # cap it at one core so the API always keeps a core for HTTP.
     cpus: 1.0
