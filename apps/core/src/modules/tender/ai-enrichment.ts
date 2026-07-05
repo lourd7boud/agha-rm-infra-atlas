@@ -141,6 +141,142 @@ export function buildEnrichmentPrompt(input: EnrichmentInput): string {
   return lines.join('\n');
 }
 
+/**
+ * Field length/array caps mirroring aiEnrichmentSchema. The raw model output is
+ * clamped to these BEFORE validation so ONE over-long value (a verbose lot label,
+ * a long résumé) never discards the whole enrichment — the row would otherwise
+ * retry-and-fail every Sentinel sweep, burn LLM budget, and never get a résumé.
+ * Only length/count/range are coerced; genuinely empty required fields
+ * (secteur/résumé) and non-JSON still reject, and the semantic hallucination-
+ * overlap guard (enrichment.service) is untouched — this never fabricates a fact.
+ */
+const ENRICH_CAP = {
+  secteur: 80,
+  resume: 1200,
+  faqQuestion: 300,
+  faqReponse: 800,
+  faqCount: 6,
+  lotDesignation: 200,
+  lotDescription: 800,
+  lotCount: 30,
+} as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Trim + hard-truncate a string to `max`; non-strings pass through unchanged. */
+function truncate(value: unknown, max: number): unknown {
+  return typeof value === 'string' ? value.trim().slice(0, max) : value;
+}
+
+/** A finite number inside [0, max], else null (out-of-range = likely a guess). */
+function clampPct(value: unknown, max: number): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= max
+    ? value
+    : null;
+}
+
+/** A finite integer inside [0, max] (floored), else null. */
+function clampMonths(value: unknown, max: number): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > max) {
+    return null;
+  }
+  return Math.floor(value);
+}
+
+/**
+ * Coerce over-long strings, oversized arrays and out-of-range numbers in the raw
+ * model object to the schema caps so validation fails ONLY on genuinely malformed
+ * output (non-object, empty required field). Immutable — returns a new object.
+ */
+export function clampEnrichment(raw: unknown): unknown {
+  if (!isRecord(raw)) return raw;
+  const out: Record<string, unknown> = { ...raw };
+
+  if ('secteur' in raw) out.secteur = truncate(raw.secteur, ENRICH_CAP.secteur);
+  if ('resume' in raw) out.resume = truncate(raw.resume, ENRICH_CAP.resume);
+
+  if (Array.isArray(raw.faq)) {
+    out.faq = raw.faq
+      .slice(0, ENRICH_CAP.faqCount)
+      .map((f) =>
+        isRecord(f)
+          ? {
+              ...f,
+              question: truncate(f.question, ENRICH_CAP.faqQuestion),
+              reponse: truncate(f.reponse, ENRICH_CAP.faqReponse),
+            }
+          : f,
+      )
+      // Both question AND reponse are required min(1); a FAQ entry missing/empty
+      // either would reject the whole enrichment — drop it, keep the rest.
+      .filter(
+        (f) =>
+          isRecord(f) &&
+          typeof f.question === 'string' &&
+          f.question.length > 0 &&
+          typeof f.reponse === 'string' &&
+          f.reponse.length > 0,
+      );
+  } else if ('faq' in raw) {
+    // A non-array faq would reject (schema expects array); drop → default [].
+    delete out.faq;
+  }
+
+  if (Array.isArray(raw.lots)) {
+    out.lots = raw.lots
+      .slice(0, ENRICH_CAP.lotCount)
+      .map((l) =>
+        isRecord(l)
+          ? {
+              ...l,
+              designation: truncate(l.designation, ENRICH_CAP.lotDesignation),
+              // description is optional (nullish): truncate a string, but coerce
+              // any OTHER non-null type (number/object) to null rather than let it
+              // reject the whole enrichment — never fabricate, just drop the junk.
+              description:
+                l.description == null
+                  ? l.description
+                  : typeof l.description === 'string'
+                    ? truncate(l.description, ENRICH_CAP.lotDescription)
+                    : null,
+            }
+          : l,
+      )
+      // A lot with an empty designation would fail min(1) and reject the whole
+      // enrichment — drop it (the résumé + other lots matter more).
+      .filter(
+        (l) =>
+          isRecord(l) &&
+          typeof l.designation === 'string' &&
+          l.designation.length > 0,
+      );
+  } else if ('lots' in raw) {
+    // A non-array lots would reject (schema expects array); drop → default [].
+    delete out.lots;
+  }
+
+  if (isRecord(raw.conditions)) {
+    out.conditions = {
+      cautionDefinitivePct: clampPct(raw.conditions.cautionDefinitivePct, 100),
+      retenueGarantiePct: clampPct(raw.conditions.retenueGarantiePct, 100),
+      delaiGarantieMois: clampMonths(raw.conditions.delaiGarantieMois, 120),
+    };
+  } else if ('conditions' in raw) {
+    // Non-record conditions (array/string) would reject the whole enrichment;
+    // drop it so the schema default {} applies — mirrors the reserveAuxPme drop.
+    delete out.conditions;
+  }
+
+  // Non-boolean reserveAuxPme would reject; drop it so the schema default applies.
+  if ('reserveAuxPme' in raw && typeof raw.reserveAuxPme !== 'boolean') {
+    delete out.reserveAuxPme;
+  }
+
+  return out;
+}
+
 /** Calls the LLM and returns a validated enrichment. Throws on invalid output. */
 export async function aiEnrich(
   llm: LlmClient,
@@ -163,7 +299,10 @@ export async function aiEnrich(
   } catch {
     throw new ServiceUnavailableException('Réponse IA non-JSON — réessayer');
   }
-  const result = aiEnrichmentSchema.safeParse(parsed);
+  // Clamp length/count/range BEFORE validation so one over-long value never
+  // discards the whole enrichment (see clampEnrichment). Empty required fields
+  // and structurally-broken output still reject below.
+  const result = aiEnrichmentSchema.safeParse(clampEnrichment(parsed));
   if (!result.success) {
     new Logger('AiEnrichment').warn(
       `réponse IA invalide: ${result.error.issues

@@ -86,6 +86,132 @@ describe('aiEnrich', () => {
     expect(out.lots).toEqual([]);
     expect(out.reserveAuxPme).toBe(false);
   });
+
+  // Robustness: one over-long value (a verbose lot label, a long résumé) must NOT
+  // discard the whole enrichment — the row would otherwise retry-and-fail every
+  // sweep and never get a résumé. Length/count/range are coerced BEFORE validation.
+  test('truncates over-long strings instead of rejecting the whole enrichment', async () => {
+    const longDesignation = 'A'.repeat(250); // schema cap is 200
+    const longResume = 'Mot '.repeat(400).trim(); // > 1200 chars
+    const llm = new FakeLlmClient([
+      JSON.stringify({
+        secteur: 'Génie civil',
+        resume: longResume,
+        lots: [{ designation: longDesignation }],
+      }),
+    ]);
+    const out = await aiEnrich(llm, input);
+    expect(out.resume.length).toBeLessThanOrEqual(1200);
+    expect(out.lots).toHaveLength(1);
+    expect(out.lots[0]!.designation.length).toBe(200);
+  });
+
+  test('slices oversized faq/lots arrays to their caps', async () => {
+    const llm = new FakeLlmClient([
+      JSON.stringify({
+        secteur: 'Travaux',
+        resume: 'Un résumé corroboré Travaux Commune.',
+        faq: Array.from({ length: 10 }, (_, i) => ({
+          question: `Q${i} ?`,
+          reponse: `R${i}.`,
+        })),
+        lots: Array.from({ length: 40 }, (_, i) => ({ designation: `Lot ${i}` })),
+      }),
+    ]);
+    const out = await aiEnrich(llm, input);
+    expect(out.faq).toHaveLength(6);
+    expect(out.lots).toHaveLength(30);
+  });
+
+  test('nulls out-of-range conditions instead of rejecting', async () => {
+    const llm = new FakeLlmClient([
+      JSON.stringify({
+        secteur: 'Travaux',
+        resume: 'Un résumé Travaux Commune corroboré.',
+        conditions: {
+          cautionDefinitivePct: 150, // out of [0,100]
+          retenueGarantiePct: 10,
+          delaiGarantieMois: 999, // out of [0,120]
+        },
+      }),
+    ]);
+    const out = await aiEnrich(llm, input);
+    expect(out.conditions.cautionDefinitivePct).toBeNull();
+    expect(out.conditions.retenueGarantiePct).toBe(10);
+    expect(out.conditions.delaiGarantieMois).toBeNull();
+  });
+
+  test('drops malformed faq entries (empty/missing question or reponse)', async () => {
+    const llm = new FakeLlmClient([
+      JSON.stringify({
+        secteur: 'Travaux',
+        resume: 'Un résumé Travaux Commune corroboré.',
+        faq: [
+          { question: 'Vraie question ?', reponse: 'Vraie réponse.' },
+          { question: '', reponse: 'orpheline' },
+          { question: 'sans réponse ?' },
+        ],
+      }),
+    ]);
+    const out = await aiEnrich(llm, input);
+    expect(out.faq).toHaveLength(1);
+    expect(out.faq[0]!.question).toBe('Vraie question ?');
+  });
+
+  test('drops empty-designation lots but keeps the enrichment', async () => {
+    const llm = new FakeLlmClient([
+      JSON.stringify({
+        secteur: 'Travaux',
+        resume: 'Un résumé Travaux Commune corroboré.',
+        lots: [{ designation: '  ' }, { designation: 'Lot réel' }],
+      }),
+    ]);
+    const out = await aiEnrich(llm, input);
+    expect(out.lots).toHaveLength(1);
+    expect(out.lots[0]!.designation).toBe('Lot réel');
+  });
+
+  // Confirmed by adversarial review: a mistyped OPTIONAL field must not be fatal.
+  test('coerces a non-string lot description to null instead of rejecting', async () => {
+    const llm = new FakeLlmClient([
+      JSON.stringify({
+        secteur: 'Travaux',
+        resume: 'Un résumé Travaux Commune corroboré.',
+        lots: [{ designation: 'Lot 1', description: 999 }],
+      }),
+    ]);
+    const out = await aiEnrich(llm, input);
+    expect(out.lots).toHaveLength(1);
+    expect(out.lots[0]!.designation).toBe('Lot 1');
+    expect(out.lots[0]!.description ?? null).toBeNull();
+  });
+
+  test('drops a non-record conditions (array) so the default applies', async () => {
+    const llm = new FakeLlmClient([
+      JSON.stringify({
+        secteur: 'Travaux',
+        resume: 'Un résumé Travaux Commune corroboré.',
+        conditions: [1, 2, 3],
+      }),
+    ]);
+    const out = await aiEnrich(llm, input);
+    expect(out.conditions.cautionDefinitivePct ?? null).toBeNull();
+    expect(out.conditions.delaiGarantieMois ?? null).toBeNull();
+  });
+
+  test('drops non-array faq/lots so their defaults apply', async () => {
+    const llm = new FakeLlmClient([
+      JSON.stringify({
+        secteur: 'Travaux',
+        resume: 'Un résumé Travaux Commune corroboré.',
+        faq: 'pas un tableau',
+        lots: { designation: 'objet, pas tableau' },
+      }),
+    ]);
+    const out = await aiEnrich(llm, input);
+    expect(out.faq).toEqual([]);
+    expect(out.lots).toEqual([]);
+  });
 });
 
 describe('readAiEnrichment', () => {
