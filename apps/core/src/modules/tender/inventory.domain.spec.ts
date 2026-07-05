@@ -490,6 +490,38 @@ describe('buildInventory', () => {
     expect(inv2.items[0]!.secteur).toBe('Routes & voirie');
     expect(inv2.items[0]!.aiResume).toBeUndefined();
   });
+
+  test('reserveAuxPme is portal-first: the published value wins over the AI guess', () => {
+    const build = (reserveInDetail: boolean | null, aiReserve: boolean) =>
+      buildInventory(
+        [
+          {
+            ...rec({ reference: 'PME/1', buyerName: 'Commune', objet: 'Travaux' }),
+            raw: {
+              detail: { v: 2, reserveAuxPme: reserveInDetail },
+              aiEnrichment: {
+                secteur: 'S',
+                resume: 'Résumé',
+                faq: [],
+                lots: [],
+                conditions: {},
+                reserveAuxPme: aiReserve,
+                model: 'test-model',
+                enrichedAt: '2026-06-01T00:00:00.000Z',
+              },
+            },
+          },
+        ],
+        {},
+        NOW,
+      ).items[0]!;
+    // Portal says true, AI says false → the published portal value wins.
+    expect(build(true, false).reserveAuxPme).toBe(true);
+    // Portal explicitly says false (Non) → still wins over an AI true (not nullish).
+    expect(build(false, true).reserveAuxPme).toBe(false);
+    // Portal didn't print it (null) → fall back to the AI guess.
+    expect(build(null, true).reserveAuxPme).toBe(true);
+  });
 });
 
 describe('inferCategory', () => {

@@ -968,6 +968,9 @@ function buildItem(c: Classified, now: Date): InventoryItem {
   const { record } = c;
   const ai = readAiEnrichment(record.raw);
   const dossier = readDossierExtraction(record.raw);
+  // Published portal block (zero LLM) — the source of truth for facts the portal
+  // prints. Parsed once and reused below (reserveAuxPme + portalDetail).
+  const pd = readPortalDetail(record.raw);
   return {
     id: record.id,
     reference: record.reference,
@@ -1010,7 +1013,9 @@ function buildItem(c: Classified, now: Date): InventoryItem {
       delaiGarantieMois:
         dossier?.delaiGarantieMois ?? ai?.conditions?.delaiGarantieMois ?? null,
     },
-    reserveAuxPme: ai?.reserveAuxPme,
+    // Portal-first: the published "Réservé aux PME" wins (incl. an explicit
+    // false); the LLM guess only fills the gap when the portal didn't print it.
+    reserveAuxPme: pd?.reserveAuxPme ?? ai?.reserveAuxPme,
     enrichedAt: ai?.enrichedAt,
     // Real DCE extraction (datao-grade) when present.
     bpu: dossier?.bpu,
@@ -1031,7 +1036,7 @@ function buildItem(c: Classified, now: Date): InventoryItem {
     dossierExtractedAt: dossier?.extractedAt,
     // Portal-first: the published detail block (no LLM). Undefined until the
     // detail crawler has stamped raw.detail for this row.
-    portalDetail: readPortalDetail(record.raw) ?? undefined,
+    portalDetail: pd ?? undefined,
     lifecycleStatus: c.lifecycle,
     lifecycleLabel: LIFECYCLE_LABELS[c.lifecycle],
     winner: c.competitors.find((x) => x.isWinner) ?? null,
