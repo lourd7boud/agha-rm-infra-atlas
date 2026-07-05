@@ -50,9 +50,13 @@ export class PortalOutcomeService {
       ...new Set(submissions.map((s) => canonicalReferenceKey(s.reference))),
     ];
     const winnerBids = await this.intel.findWinnersByReferences(canonicalKeys);
+    // Carry the acheteur through so the domain scopes each match to the SAME buyer
+    // — findWinnersByReferences intentionally matches by reference (broad) but the
+    // verdict must not attribute another organisme's winner to our soumission.
     const winners: OutcomeWinner[] = winnerBids.map((bid) => ({
       reference: bid.reference,
       bidderName: bid.bidderName,
+      buyerName: bid.buyerName,
       ...(bid.amountMad !== undefined ? { amountMad: bid.amountMad } : {}),
     }));
     return computeSubmissionOutcomes(submissions, winners);

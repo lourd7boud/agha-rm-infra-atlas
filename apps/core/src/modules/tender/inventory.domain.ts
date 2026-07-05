@@ -4,7 +4,7 @@ import { readAiEnrichment } from './ai-enrichment';
 import { readDossierExtraction } from './dossier-extraction';
 import { readPortalDetail, type PortalDetail } from './portal-detail';
 import {
-  canonicalReferenceKey,
+  refBuyerKey,
   type CompetitorBidRecord,
 } from '../intel/intel.repository';
 
@@ -45,21 +45,9 @@ function lifecycleStatus(
   return 'cloture';
 }
 
-/**
- * Composite match key = canonical reference + canonical buyer. Portal references
- * are extremely generic ("05/2026" is reused by hundreds of different acheteurs),
- * so matching a harvested result to a tender by reference ALONE mis-attributes it
- * to an unrelated buyer's tender (a wall-construction market showing IT-supplier
- * "bidders"). Both sides canonicalize the buyer the same way (canonicalReferenceKey
- * is a generic lower/accent-fold/alnum canonicalizer that only ever emits
- * [a-z0-9 ]), so a "|" separator can never appear inside either part and keeps
- * the two from bleeding into each other.
- */
-function refBuyerKey(reference: string, buyerName: string): string {
-  return `${canonicalReferenceKey(reference)}|${canonicalReferenceKey(buyerName)}`;
-}
-
-/** Indexes bids by (reference + buyer) key so a single scan answers all tenders. */
+/** Indexes bids by (reference + buyer) key so a single scan answers all tenders.
+ *  refBuyerKey is the ONE shared definition (intel.repository) every result-
+ *  matching surface uses, so the lifecycle and portal-outcome can never drift. */
 function indexBidsByRefAndBuyer(
   bids: readonly CompetitorBidRecord[],
 ): Map<string, CompetitorBidRecord[]> {

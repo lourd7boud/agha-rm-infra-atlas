@@ -117,6 +117,71 @@ describe('computeSubmissionOutcomes', () => {
     expect(result?.outcome).toBe('gagne');
   });
 
+  it('keeps a submission en_attente while its deadline is still in the future, ignoring any winner', () => {
+    // Arrange — a winner is (wrongly) present but our deadline has not passed.
+    const subs = [
+      submission('05/2026', {
+        organisme: 'Commune de Rabat',
+        deadlineAt: new Date('2026-08-01T00:00:00Z'),
+      }),
+    ];
+    const winners: OutcomeWinner[] = [
+      { reference: '05/2026', bidderName: OUR_COMPANY_NAME, buyerName: 'Commune de Rabat' },
+    ];
+
+    // Act — evaluate BEFORE the deadline.
+    const [result] = computeSubmissionOutcomes(subs, winners, {
+      now: new Date('2026-06-13T00:00:00Z'),
+    });
+
+    // Assert — a result cannot precede the deadline.
+    expect(result?.outcome).toBe('en_attente');
+    expect(result?.winnerName).toBeUndefined();
+  });
+
+  it('does not attribute a winner from a DIFFERENT buyer sharing the generic référence', () => {
+    // Arrange — the only "05/2026" winner belongs to another commune.
+    const subs = [
+      submission('05/2026', {
+        organisme: 'Commune de Rabat',
+        deadlineAt: new Date('2026-05-01T00:00:00Z'),
+      }),
+    ];
+    const winners: OutcomeWinner[] = [
+      { reference: '05/2026', bidderName: 'INTERFACE COMPUTER', buyerName: 'Commune de Casablanca' },
+    ];
+
+    // Act
+    const [result] = computeSubmissionOutcomes(subs, winners, {
+      now: new Date('2026-06-13T00:00:00Z'),
+    });
+
+    // Assert — no result for OUR buyer → still waiting, never a stranger's winner.
+    expect(result?.outcome).toBe('en_attente');
+    expect(result?.winnerName).toBeUndefined();
+  });
+
+  it('resolves gagne once the deadline has passed AND the winner is the same buyer', () => {
+    // Arrange — past deadline, our own company won our own market.
+    const subs = [
+      submission('05/2026', {
+        organisme: 'Commune de Rabat',
+        deadlineAt: new Date('2026-05-01T00:00:00Z'),
+      }),
+    ];
+    const winners: OutcomeWinner[] = [
+      { reference: '05/2026', bidderName: OUR_COMPANY_NAME, buyerName: 'Commune de Rabat' },
+    ];
+
+    // Act
+    const [result] = computeSubmissionOutcomes(subs, winners, {
+      now: new Date('2026-06-13T00:00:00Z'),
+    });
+
+    // Assert
+    expect(result?.outcome).toBe('gagne');
+  });
+
   it('returns one verdict per submission, preserving input order', () => {
     // Arrange — three markets, three distinct outcomes.
     const submissions = [

@@ -189,6 +189,20 @@ export function canonicalReferenceKey(reference: string): string {
     .trim();
 }
 
+/**
+ * Buyer-scoped market key = canonical reference + canonical buyer, so a harvested
+ * result is only ever matched to a tender/submission of the SAME acheteur. Portal
+ * references (e.g. "05/2026") are reused across hundreds of buyers, so reference
+ * ALONE mis-attributes a result to an unrelated market. canonicalReferenceKey only
+ * ever emits [a-z0-9 ], so the "|" separator can never appear inside either part.
+ * The ONE shared definition used by every result-matching surface (the tender
+ * lifecycle BidResolver, the competitor-intel view, and the portal-outcome
+ * reconciliation) so they can never disagree on "the same market for this buyer".
+ */
+export function refBuyerKey(reference: string, buyerName: string): string {
+  return `${canonicalReferenceKey(reference)}|${canonicalReferenceKey(buyerName)}`;
+}
+
 export class InMemoryIntelRepository implements IntelRepository {
   private competitors: readonly CompetitorRecord[] = [];
   private bids: readonly CompetitorBidRecord[] = [];

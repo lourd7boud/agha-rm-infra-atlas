@@ -1,6 +1,7 @@
 import {
   canonicalReferenceKey,
   normalizeCompanyName,
+  refBuyerKey,
 } from '../intel/intel.repository';
 import type { PortalSubmissionRecord } from './portal.repository';
 
@@ -30,12 +31,15 @@ export const OUR_COMPANY_NAME =
 /** Verdict for one of our soumissions against the public results. */
 export type SubmissionOutcomeStatus = 'gagne' | 'perdu' | 'en_attente' | 'retire';
 
-/** The winner side of a published attribution, keyed by canonical référence. */
+/** The winner side of a published attribution, keyed by canonical (référence + acheteur). */
 export interface OutcomeWinner {
   reference: string;
   /** Raison sociale of the attributaire as read from the notice/PV. */
   bidderName: string;
   amountMad?: number;
+  /** Acheteur of the attribution — scopes the match to the SAME buyer so a
+   *  generic référence (NN/2026) reused by another organisme never mis-attributes. */
+  buyerName?: string;
 }
 
 export interface SubmissionOutcome {
@@ -56,36 +60,47 @@ export interface SubmissionOutcome {
 export { canonicalReferenceKey };
 
 /**
- * Indexes the winner bids by canonical référence, keeping the first winner seen
- * for each market. Only `isWinner` rows from the public results belong here —
- * the écartés (losing soumissionnaires the PV also records) never decide an
- * outcome.
+ * Indexes the winner bids by canonical (référence + acheteur), keeping the first
+ * winner seen for each market+buyer. Only `isWinner` rows from the public results
+ * belong here — the écartés (losing soumissionnaires the PV also records) never
+ * decide an outcome. Keying on reference ALONE mis-attributed a stranger's winner
+ * to our soumission whenever a generic référence (NN/2026) was reused.
  */
 function indexWinnersByReference(
   winners: readonly OutcomeWinner[],
 ): Map<string, OutcomeWinner> {
-  const byReference = new Map<string, OutcomeWinner>();
+  const byKey = new Map<string, OutcomeWinner>();
   for (const winner of winners) {
-    const key = canonicalReferenceKey(winner.reference);
-    if (key.length === 0 || byReference.has(key)) continue;
-    byReference.set(key, winner);
+    // Skip winners with no usable référence; buyer may be blank (keys as "…|").
+    if (canonicalReferenceKey(winner.reference).length === 0) continue;
+    const key = refBuyerKey(winner.reference, winner.buyerName ?? '');
+    if (byKey.has(key)) continue;
+    byKey.set(key, winner);
   }
-  return byReference;
+  return byKey;
 }
 
 /** Resolves one submission's verdict against the indexed public winners. */
 function resolveOutcome(
   submission: PortalSubmissionRecord,
-  winnersByReference: Map<string, OutcomeWinner>,
+  winnersByKey: Map<string, OutcomeWinner>,
   ourNormalized: string,
+  now: Date,
 ): SubmissionOutcome {
   // A withdrawn soumission has no winner question to ask — we pulled out.
   if (submission.withdrawnAt) return { submission, outcome: 'retire' };
 
-  const winner = winnersByReference.get(
-    canonicalReferenceKey(submission.reference),
+  // An attribution can only exist AFTER the submission deadline + opening. While
+  // the deadline is still ahead, the market is being adjudicated — never claim a
+  // result (a stranger's winner on a reused générique référence used to leak in).
+  if (submission.deadlineAt && submission.deadlineAt.getTime() >= now.getTime()) {
+    return { submission, outcome: 'en_attente' };
+  }
+
+  const winner = winnersByKey.get(
+    refBuyerKey(submission.reference, submission.organisme ?? ''),
   );
-  // No published attribution yet → the market is still being adjudicated.
+  // No published attribution for THIS market+buyer yet → still being adjudicated.
   if (!winner) return { submission, outcome: 'en_attente' };
 
   const isOurs = normalizeCompanyName(winner.bidderName) === ourNormalized;
@@ -102,6 +117,9 @@ function resolveOutcome(
 export interface ComputeOutcomesOptions {
   /** Override our raison sociale (defaults to OUR_COMPANY_NAME). */
   ourCompanyName?: string;
+  /** Clock for the deadline guard — a submission past this is eligible for a
+   *  verdict; still-open ones stay 'en_attente'. Defaults to the current time. */
+  now?: Date;
 }
 
 /**
@@ -118,8 +136,9 @@ export function computeSubmissionOutcomes(
   const ourNormalized = normalizeCompanyName(
     options.ourCompanyName ?? OUR_COMPANY_NAME,
   );
-  const winnersByReference = indexWinnersByReference(winners);
+  const now = options.now ?? new Date();
+  const winnersByKey = indexWinnersByReference(winners);
   return submissions.map((submission) =>
-    resolveOutcome(submission, winnersByReference, ourNormalized),
+    resolveOutcome(submission, winnersByKey, ourNormalized, now),
   );
 }
