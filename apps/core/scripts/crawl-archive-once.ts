@@ -52,6 +52,18 @@ async function main(): Promise<void> {
   }
 
   const url = strArg('url', process.env.WATCH_ARCHIVE_URL ?? DEFAULT_ARCHIVE_URL);
+  // Same-origin guard: this crawler replays a session cookie across ~200 hops.
+  // A typo'd --url must never aim that firehose at an unvetted third-party host.
+  const host = new URL(url).host;
+  if (
+    !host.endsWith('marchespublics.gov.ma') &&
+    !process.argv.includes('--allow-any-host')
+  ) {
+    console.error(
+      `Refusing to crawl non-portal host "${host}". Pass --allow-any-host to override.`,
+    );
+    process.exit(2);
+  }
   // pages must be >= 1; the archive is ~200 pages at 500/page, 210 leaves slack.
   const maxPages = intArg('pages', 210, 1);
   // pagesize 0 disables the switch (falls back to the portal's 10/page).
@@ -68,12 +80,37 @@ async function main(): Promise<void> {
     `crawl-archive-once: walking up to ${maxPages} pages of ${url} ` +
       `(pageSize ${pageSize || 'portal-default'}, delay ${delayMs}ms)`,
   );
-  const before = (await repo.findAll()).length;
+  // NB: no before/after repo.findAll() — that ships ~100 KB/row and would load
+  // the whole ~99 k catalogue into memory (OOM in the capped container). The
+  // summary already reports inserted/healed/duplicates precisely.
   const summary = await service.runOnce();
-  const after = (await repo.findAll()).length;
 
   console.log(`SUMMARY ${JSON.stringify(summary)}`);
-  console.log(`catalogue size: ${before} -> ${after} (+${after - before})`);
+  console.log(
+    `catalogue: +${summary.inserted} new, ${summary.healed} healed, ` +
+      `${summary.duplicates} already known across ${summary.pagesFetched} page(s)`,
+  );
+
+  // Loud failure so a truncated/blocked unattended run is never mistaken for a
+  // complete archive backfill. The walk halts (break) on a portal block or a
+  // fetch failure — both surface as summary.errors > 0.
+  if (summary.errors > 0) {
+    console.error(
+      `WARNING: ${summary.errors} fetch/ingest error(s) — the walk likely halted ` +
+        `early (portal block or timeout). Archive is probably INCOMPLETE; ` +
+        `re-run to resume (idempotent).`,
+    );
+    process.exit(1);
+  }
+  // Reaching the --pages cap means no natural end-of-archive was seen — more
+  // pages remain. A clean finish stops short of the cap (empty next-page).
+  if (summary.pagesFetched >= maxPages) {
+    console.error(
+      `WARNING: hit the --pages=${maxPages} cap with no end-of-archive signal — ` +
+        `more pages remain. Re-run with a higher --pages to finish.`,
+    );
+    process.exit(1);
+  }
   process.exit(0);
 }
 

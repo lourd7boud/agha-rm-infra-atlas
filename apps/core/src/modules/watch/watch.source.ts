@@ -154,6 +154,19 @@ const USER_AGENT =
   'ATLAS-Sentinel/0.1 (AGHA RM INFRA; veille marchés publics)';
 
 /**
+ * A hard rate-limit / block response (HTTP 429 or 403) from the portal or its
+ * WAF. Distinct from a transient error: it must NOT be retried — hammering a
+ * live block amplifies load into the ban and risks a longer soft-ban. The
+ * caller (Sentinel.runOnce) catches it and halts the walk cleanly.
+ */
+export class PortalBlockedError extends Error {
+  constructor(readonly status: number) {
+    super(`Portal blocked the request: HTTP ${status}`);
+    this.name = 'PortalBlockedError';
+  }
+}
+
+/**
  * Resolves the PRADO postback target for the "next page" pager link. PRADO
  * client ids replace the control-name "$" separators with "_", which is
  * ambiguous when a naming-container segment itself contains "_" (CONTENU_PAGE).
@@ -327,12 +340,19 @@ export class PradoPortalSource implements PortalSource {
           signal: AbortSignal.timeout(this.timeoutMs),
         });
         if (!response.ok) {
+          // 429/403 is a rate-limit/block signal, not a transient glitch:
+          // fail fast so the walk halts instead of retrying into a live ban.
+          if (response.status === 429 || response.status === 403) {
+            throw new PortalBlockedError(response.status);
+          }
           throw new Error(`Portal fetch failed: HTTP ${response.status}`);
         }
         this.absorbCookies(response);
         return await response.text();
       } catch (error) {
         lastError = error;
+        // A block is terminal for this run — never retry into it.
+        if (error instanceof PortalBlockedError) break;
         if (attempt < this.attempts) {
           await this.sleep(this.backoffMs * 2 ** (attempt - 1));
         }

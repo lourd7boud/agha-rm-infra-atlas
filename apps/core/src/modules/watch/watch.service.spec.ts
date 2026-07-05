@@ -278,13 +278,39 @@ describe('WatchService.runOnce', () => {
       source,
       new InMemoryTenderRepository(),
       null,
-      { maxPages: 3, delayMs: 500, sleep },
+      // random=0.5 → jitter maps exactly to the base delay (midpoint).
+      { maxPages: 3, delayMs: 500, sleep, random: () => 0.5 },
     );
 
     await service.runOnce();
 
     expect(sleep).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledWith(500);
+  });
+
+  test('jitters the inter-hop delay so the cadence is not fixed', async () => {
+    const sleep = vi.fn(async () => {});
+    // A deterministic RNG that walks 0 → 1 so successive gaps differ.
+    const seq = [0, 1];
+    let i = 0;
+    const source = new PagedFakeSource([
+      rowsTable([['A/1', 'un']]),
+      rowsTable([['B/1', 'deux']]),
+      rowsTable([['C/1', 'trois']]),
+    ]);
+    const service = new WatchService(
+      source,
+      new InMemoryTenderRepository(),
+      null,
+      { maxPages: 3, delayMs: 1000, sleep, random: () => seq[i++ % seq.length] ?? 0 },
+    );
+
+    await service.runOnce();
+
+    // ±40% window: random=0 → 600ms, random=1 → 1400ms. Never the flat 1000.
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenNthCalledWith(1, 600);
+    expect(sleep).toHaveBeenNthCalledWith(2, 1400);
   });
 
   test('does not sleep when delayMs is zero', async () => {

@@ -62,6 +62,22 @@ export interface WatchRunOptions {
   delayMs?: number;
   /** Injectable sleep for tests. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Injectable RNG for the inter-hop delay jitter (default Math.random).
+   * Tests pass a deterministic function; production randomizes the cadence so a
+   * long archive walk doesn't emit a fixed inter-request interval — the single
+   * most common behavioural bot signal a WAF scores on.
+   */
+  random?: () => number;
+}
+
+/**
+ * Randomize a base delay by ±40% (uniform in [0.6, 1.4]×) so consecutive hops
+ * never share one cadence. `random() === 0.5` maps exactly to the base delay,
+ * which keeps the politeness contract testable without asserting a range.
+ */
+function jitterDelay(baseMs: number, random: () => number): number {
+  return Math.round(baseMs * (0.6 + random() * 0.8));
 }
 
 export const WATCH_OPTIONS = Symbol('WATCH_OPTIONS');
@@ -88,6 +104,7 @@ export class WatchService {
   private readonly maxPages: number;
   private readonly delayMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly random: () => number;
 
   constructor(
     @Inject(PORTAL_SOURCE) private readonly source: PortalSource,
@@ -127,6 +144,7 @@ export class WatchService {
     const dm = options?.delayMs;
     this.delayMs = Number.isFinite(dm) && (dm as number) >= 0 ? Math.floor(dm as number) : 0;
     this.sleep = options?.sleep ?? defaultSleep;
+    this.random = options?.random ?? Math.random;
   }
 
   async runOnce(): Promise<WatchRunSummary> {
@@ -278,7 +296,9 @@ export class WatchService {
       }
 
       if (this.delayMs > 0 && page < this.maxPages) {
-        await this.sleep(this.delayMs);
+        // Jittered, not fixed: ~200 sequential hops at a constant gap is a
+        // textbook WAF bot signature. A ±40% window reads as human paging.
+        await this.sleep(jitterDelay(this.delayMs, this.random));
       }
     }
 

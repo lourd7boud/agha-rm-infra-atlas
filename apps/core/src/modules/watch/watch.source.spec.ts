@@ -209,9 +209,10 @@ describe('PradoPortalSource (Atexo MPE stateful pagination)', () => {
     await source.fetch(1);
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect((fetchImpl.mock.calls[0]?.[1] as RequestInit)?.method ?? 'GET').toBe(
-      'GET',
-    );
+    const firstInit = (fetchImpl.mock.calls[0] as unknown[] | undefined)?.[1] as
+      | RequestInit
+      | undefined;
+    expect(firstInit?.method ?? 'GET').toBe('GET');
   });
 
   test('switches the pager to pageSize via a postback on the first hop', async () => {
@@ -260,7 +261,7 @@ describe('PradoPortalSource (Atexo MPE stateful pagination)', () => {
   });
 
   test('replays the captured session cookie on subsequent hops', async () => {
-    const seen: (HeadersInit | undefined)[] = [];
+    const seen: unknown[] = [];
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       seen.push(init?.headers);
       const method = init?.method ?? 'GET';
@@ -282,6 +283,38 @@ describe('PradoPortalSource (Atexo MPE stateful pagination)', () => {
     const postHeaders = seen[1] as Record<string, string> | undefined;
     expect(postHeaders?.Cookie).toContain('PHPSESSID=abc123');
     expect(postHeaders?.Cookie).toContain('TS01fd=waf');
+  });
+
+  test('fails fast on a 429/403 block without retrying into it', async () => {
+    // A WAF block must halt immediately — retrying hammers a live ban.
+    const fetchImpl = vi.fn(async () => errResponse(429));
+    const source = new PradoPortalSource('https://portal/search', {
+      attempts: 3,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {},
+    });
+
+    await expect(source.fetch(1)).rejects.toThrow(/HTTP 429/);
+    // One attempt only — no exponential-backoff retries into the block.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('still retries a transient 5xx with backoff', async () => {
+    // A 503 is transient (overload), not a block: the existing retry applies.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(errResponse(503))
+      .mockResolvedValueOnce(okResponse(pradoPage('S', ['A/1'], false)));
+    const source = new PradoPortalSource('https://portal/search', {
+      attempts: 3,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {},
+    });
+
+    const page = await source.fetch(1);
+
+    expect(page.html).toContain('table-results');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   test('rejects a non-http(s) portal URL at construction', () => {
