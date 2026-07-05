@@ -226,6 +226,67 @@ describe('findInventoryPage (InMemory, contract parity with the JS pipeline)', (
     expect(page.facets.lifecycles.find((f) => f.key === 'attribue')?.count).toBe(1);
     expect(won.id).toBe(item.id);
   });
+
+  test('a FUTURE-deadline tender is never attribué, even with a matching winning bid (a result cannot precede the deadline)', async () => {
+    const repo = new InMemoryTenderRepository();
+    await repo.create(
+      // Submission still open: deadline in the future relative to NOW.
+      input({
+        reference: 'F/1',
+        buyerName: 'Acheteur',
+        deadlineAt: new Date('2026-08-01T09:00:00Z'),
+      }),
+    );
+    const bids: CompetitorBidRecord[] = [
+      {
+        id: 'bid-f',
+        reference: 'F/1',
+        buyerName: 'Acheteur',
+        bidderName: 'Concurrent A',
+        competitorId: 'c1',
+        amountMad: 100,
+        isWinner: true,
+        resultDate: new Date('2026-05-10T00:00:00Z'),
+        createdAt: new Date('2026-05-10T00:00:00Z'),
+      },
+    ];
+    const page = await repo.findInventoryPage({}, {}, NOW, bids);
+    const item = page.items.find((i) => i.reference === 'F/1')!;
+    expect(item.lifecycleStatus).toBe('en_cours');
+    expect(item.winner).toBeNull();
+    expect(item.competitors).toEqual([]);
+    expect(page.facets.lifecycles.find((f) => f.key === 'attribue')).toBeUndefined();
+  });
+
+  test('a bid with the same generic reference but a DIFFERENT buyer is NOT attributed (no cross-buyer collision)', async () => {
+    const repo = new InMemoryTenderRepository();
+    await repo.create(
+      input({
+        reference: '05/2026',
+        buyerName: 'Commune de Rabat',
+        deadlineAt: new Date('2026-05-01T09:00:00Z'),
+      }),
+    );
+    const bids: CompetitorBidRecord[] = [
+      {
+        id: 'bid-x',
+        reference: '05/2026',
+        buyerName: 'Commune de Casablanca', // a DIFFERENT buyer reusing the generic ref
+        bidderName: 'Concurrent B',
+        competitorId: 'c2',
+        amountMad: 100,
+        isWinner: true,
+        resultDate: new Date('2026-05-10T00:00:00Z'),
+        createdAt: new Date('2026-05-10T00:00:00Z'),
+      },
+    ];
+    const page = await repo.findInventoryPage({}, {}, NOW, bids);
+    const item = page.items.find((i) => i.reference === '05/2026')!;
+    // Past deadline but NO matching result for THIS buyer → clôturé, not attribué.
+    expect(item.lifecycleStatus).toBe('cloture');
+    expect(item.winner).toBeNull();
+    expect(item.competitors).toEqual([]);
+  });
 });
 
 describe('NULL-column fallback (pre-backfill correctness)', () => {

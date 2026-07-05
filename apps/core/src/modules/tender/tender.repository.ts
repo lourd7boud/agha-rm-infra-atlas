@@ -881,10 +881,16 @@ export class DrizzleTenderRepository implements TenderRepository {
         this.db.select({ n: sql<number>`count(*)::int` }).from(tenders).where(where),
         this.db.select({ n: sql<number>`count(*)::int` }).from(tenders),
         this.inventoryColumnFacets(),
-        // Minimal whole-catalogue (reference, deadline_at) projection for the
-        // lifecycle facet — no raw/regex/Zod, so it stays cheap.
+        // Minimal whole-catalogue (reference, buyer, deadline_at) projection for
+        // the lifecycle facet — no raw/regex/Zod, so it stays cheap. buyerName is
+        // needed so the bid match is scoped to the SAME buyer (generic refs like
+        // NN/2026 are reused across acheteurs).
         this.db
-          .select({ reference: tenders.reference, deadlineAt: tenders.deadlineAt })
+          .select({
+            reference: tenders.reference,
+            buyerName: tenders.buyerName,
+            deadlineAt: tenders.deadlineAt,
+          })
           .from(tenders),
       ]);
 
@@ -895,6 +901,7 @@ export class DrizzleTenderRepository implements TenderRepository {
       const record = mapInventoryPageRow(row);
       const { competitors, lifecycle, resultDate } = resolver.resolve(
         record.reference,
+        record.buyerName,
         record.deadlineAt,
         now,
       );

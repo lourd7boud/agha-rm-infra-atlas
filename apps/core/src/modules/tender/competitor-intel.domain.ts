@@ -82,9 +82,20 @@ export function buildTenderCompetitorIntel(
   now: Date,
 ): TenderCompetitorIntel {
   const refKey = canonicalReferenceKey(tender.reference);
-  const thisTenderBids = allBids.filter(
-    (b) => canonicalReferenceKey(b.reference) === refKey,
-  );
+  const buyerCanon = canonicalReferenceKey(tender.buyerName);
+  // A result can only exist AFTER the deadline, and generic references (NN/2026)
+  // are reused across hundreds of acheteurs — so a "closed" match requires the
+  // deadline to have passed AND the bid to share this tender's reference AND
+  // buyer. This mirrors the BidResolver lifecycle so the result panel and this
+  // competitor-intel view never disagree (both were reference-only before).
+  const deadlinePassed = tender.deadlineAt.getTime() < now.getTime();
+  const thisTenderBids = deadlinePassed
+    ? allBids.filter(
+        (b) =>
+          canonicalReferenceKey(b.reference) === refKey &&
+          canonicalReferenceKey(b.buyerName) === buyerCanon,
+      )
+    : [];
 
   // CLOSED when we actually harvested this tender's result.
   if (thisTenderBids.length > 0) {

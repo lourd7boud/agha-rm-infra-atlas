@@ -34,19 +34,38 @@ function lifecycleStatus(
   competitors: readonly TenderCompetitor[],
   now: Date,
 ): LifecycleStatus {
+  // A result (attribution / infructueux) can only exist AFTER the submission
+  // deadline + opening. While the deadline is still ahead the tender is "en
+  // cours" no matter what — a matched bid there is a reference collision, never
+  // a real result. This is the guard that stops open tenders showing "Attribué".
+  if (deadlineAt.getTime() >= now.getTime()) return 'en_cours';
   if (competitors.length > 0) {
     return competitors.some((c) => c.isWinner) ? 'attribue' : 'infructueux';
   }
-  return deadlineAt.getTime() >= now.getTime() ? 'en_cours' : 'cloture';
+  return 'cloture';
 }
 
-/** Indexes bids by canonical reference key so a single scan answers all tenders. */
-function indexBidsByReference(
+/**
+ * Composite match key = canonical reference + canonical buyer. Portal references
+ * are extremely generic ("05/2026" is reused by hundreds of different acheteurs),
+ * so matching a harvested result to a tender by reference ALONE mis-attributes it
+ * to an unrelated buyer's tender (a wall-construction market showing IT-supplier
+ * "bidders"). Both sides canonicalize the buyer the same way (canonicalReferenceKey
+ * is a generic lower/accent-fold/alnum canonicalizer that only ever emits
+ * [a-z0-9 ]), so a "|" separator can never appear inside either part and keeps
+ * the two from bleeding into each other.
+ */
+function refBuyerKey(reference: string, buyerName: string): string {
+  return `${canonicalReferenceKey(reference)}|${canonicalReferenceKey(buyerName)}`;
+}
+
+/** Indexes bids by (reference + buyer) key so a single scan answers all tenders. */
+function indexBidsByRefAndBuyer(
   bids: readonly CompetitorBidRecord[],
 ): Map<string, CompetitorBidRecord[]> {
   const out = new Map<string, CompetitorBidRecord[]>();
   for (const bid of bids) {
-    const key = canonicalReferenceKey(bid.reference);
+    const key = refBuyerKey(bid.reference, bid.buyerName);
     const list = out.get(key);
     if (list) list.push(bid);
     else out.set(key, [bid]);
@@ -68,14 +87,26 @@ export interface ResolvedBidState {
  * two. Build it once from the tiny bid set, then resolve per reference+deadline.
  */
 export class BidResolver {
-  private readonly byRef: Map<string, CompetitorBidRecord[]>;
+  private readonly byRefBuyer: Map<string, CompetitorBidRecord[]>;
 
   constructor(bids: readonly CompetitorBidRecord[]) {
-    this.byRef = indexBidsByReference(bids);
+    this.byRefBuyer = indexBidsByRefAndBuyer(bids);
   }
 
-  resolve(reference: string, deadlineAt: Date, now: Date): ResolvedBidState {
-    const matched = this.byRef.get(canonicalReferenceKey(reference)) ?? [];
+  resolve(
+    reference: string,
+    buyerName: string,
+    deadlineAt: Date,
+    now: Date,
+  ): ResolvedBidState {
+    // Deadline still ahead → the tender is open; a published result cannot exist
+    // yet, so surface NO competitors/result and keep it en_cours. This also
+    // neutralises any residual reference+buyer collision (belt-and-suspenders on
+    // top of the buyer-scoped key below).
+    if (deadlineAt.getTime() >= now.getTime()) {
+      return { competitors: [], lifecycle: 'en_cours', resultDate: null };
+    }
+    const matched = this.byRefBuyer.get(refBuyerKey(reference, buyerName)) ?? [];
     const competitors: TenderCompetitor[] = matched.map((b) => ({
       bidderName: b.bidderName,
       amountMad: b.amountMad ?? null,
@@ -110,14 +141,19 @@ const LIFECYCLE_FACET_ORDER: LifecycleStatus[] = [
  * buckets are dropped, matching the JS facet.
  */
 export function lifecycleFacetForRows(
-  rows: ReadonlyArray<{ reference: string; deadlineAt: Date }>,
+  rows: ReadonlyArray<{ reference: string; buyerName: string; deadlineAt: Date }>,
   bids: readonly CompetitorBidRecord[],
   now: Date,
 ): InventoryFacet[] {
   const resolver = new BidResolver(bids);
   const counts = new Map<LifecycleStatus, number>();
   for (const row of rows) {
-    const { lifecycle } = resolver.resolve(row.reference, row.deadlineAt, now);
+    const { lifecycle } = resolver.resolve(
+      row.reference,
+      row.buyerName,
+      row.deadlineAt,
+      now,
+    );
     counts.set(lifecycle, (counts.get(lifecycle) ?? 0) + 1);
   }
   return LIFECYCLE_FACET_ORDER.map((key) => ({
@@ -1131,6 +1167,7 @@ export function selectInventory(
   const classified: Classified[] = records.map((record) => {
     const { competitors, lifecycle, resultDate } = resolver.resolve(
       record.reference,
+      record.buyerName,
       record.deadlineAt,
       now,
     );
