@@ -177,12 +177,27 @@ function findNextPageTarget(
   return namePrefix + suffix.replace(/_/g, '$');
 }
 
+/**
+ * The Atexo result pager's "rows per page" select. Switching it to 500 turns
+ * the 99 642-row `&AllCons` consultation archive from 9 965 pages (10/page)
+ * into ~200 — the deep archive is reachable in a few minutes of polite hops
+ * instead of thousands, and without any (non-functional) date-window filtering.
+ */
+const PAGE_SIZE_FIELD = 'ctl0$CONTENU_PAGE$resultSearch$listePageSizeTop';
+
 export interface PradoPortalOptions {
   attempts?: number;
   backoffMs?: number;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * When set, the source switches the result pager to this many rows per page
+   * on the first hop (a `listePageSizeTop` postback) before walking the
+   * next-pager. Opt-in: unset preserves the portal's default 10/page. The
+   * postback is skipped when the listing carries no size control.
+   */
+  pageSize?: number;
 }
 
 /**
@@ -201,8 +216,11 @@ export class PradoPortalSource implements PortalSource {
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly pageSize?: number;
   private fields: Record<string, string> | null = null;
   private nextTarget: string | null = null;
+  /** Running `Cookie:` header; the portal's session is replayed across hops. */
+  private cookie = '';
 
   constructor(
     private readonly url: string,
@@ -217,12 +235,27 @@ export class PradoPortalSource implements PortalSource {
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? defaultSleep;
+    this.pageSize =
+      Number.isFinite(options.pageSize) && (options.pageSize as number) > 0
+        ? Math.floor(options.pageSize as number)
+        : undefined;
   }
 
   async fetch(page = 1): Promise<PortalPage> {
     if (page <= 1 || !this.fields) {
-      const html = await this.requestWithRetry('GET');
+      let html = await this.requestWithRetry('GET');
       this.capture(html);
+      // One-time page-size switch: fewer, larger pages ⇒ far fewer polite hops
+      // to cover the whole catalogue. Only when the listing exposes the control
+      // (guards non-listing pages) and a target size was requested.
+      if (this.pageSize && this.fields && html.includes('listePageSizeTop')) {
+        const body = new URLSearchParams(this.fields);
+        body.set(PAGE_SIZE_FIELD, String(this.pageSize));
+        body.set('PRADO_POSTBACK_TARGET', PAGE_SIZE_FIELD);
+        body.set('PRADO_POSTBACK_PARAMETER', '');
+        html = await this.requestWithRetry('POST', body);
+        this.capture(html);
+      }
       return { html, sourceUrl: this.url };
     }
     // No "next" link on the last page → an empty page ends the walk cleanly.
@@ -247,6 +280,29 @@ export class PradoPortalSource implements PortalSource {
     this.nextTarget = findNextPageTarget(html, this.fields);
   }
 
+  /**
+   * Merge the response's Set-Cookie batch into the running jar (later values for
+   * the same NAME win), so the PRADO session — and the WAF challenge cookie —
+   * ride along on every subsequent hop, exactly as a browser would. Guarded so
+   * test doubles without a real Headers object are a no-op.
+   */
+  private absorbCookies(response: Response): void {
+    const setCookies =
+      typeof response.headers?.getSetCookie === 'function'
+        ? response.headers.getSetCookie()
+        : [];
+    if (setCookies.length === 0) return;
+    const jar = new Map<string, string>();
+    const addPair = (raw: string): void => {
+      const pair = raw.split(';')[0]?.trim() ?? '';
+      const idx = pair.indexOf('=');
+      if (idx > 0) jar.set(pair.slice(0, idx), pair.slice(idx + 1));
+    };
+    if (this.cookie) for (const pair of this.cookie.split('; ')) addPair(pair);
+    for (const raw of setCookies) addPair(raw);
+    this.cookie = [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+  }
+
   private async requestWithRetry(
     method: 'GET' | 'POST',
     body?: URLSearchParams,
@@ -259,6 +315,7 @@ export class PradoPortalSource implements PortalSource {
           headers: {
             'User-Agent': USER_AGENT,
             Accept: 'text/html',
+            ...(this.cookie ? { Cookie: this.cookie } : {}),
             ...(method === 'POST'
               ? {
                   'Content-Type': 'application/x-www-form-urlencoded',
@@ -272,6 +329,7 @@ export class PradoPortalSource implements PortalSource {
         if (!response.ok) {
           throw new Error(`Portal fetch failed: HTTP ${response.status}`);
         }
+        this.absorbCookies(response);
         return await response.text();
       } catch (error) {
         lastError = error;

@@ -3,6 +3,13 @@ import { HttpPortalSource, PradoPortalSource } from './watch.source';
 
 const okResponse = (html: string) =>
   ({ ok: true, status: 200, text: async () => html }) as Response;
+const okResponseWithCookies = (html: string, cookies: readonly string[]) =>
+  ({
+    ok: true,
+    status: 200,
+    text: async () => html,
+    headers: { getSetCookie: () => [...cookies] },
+  }) as unknown as Response;
 const errResponse = (status: number) =>
   ({ ok: false, status, text: async () => '' }) as Response;
 
@@ -126,6 +133,7 @@ describe('PradoPortalSource (Atexo MPE stateful pagination)', () => {
     pagestate: string,
     refs: readonly string[],
     withNext: boolean,
+    opts: { withSizeSelect?: boolean } = {},
   ) => {
     const rows = refs
       .map(
@@ -140,10 +148,17 @@ describe('PradoPortalSource (Atexo MPE stateful pagination)', () => {
       ? `<a id="ctl0_CONTENU_PAGE_resultSearch_PagerTop_ctl2" href="javascript:;">` +
         `<img src='x.gif' alt='Aller à la page suivante' title='Aller à la page suivante' /></a>`
       : '';
+    // The Atexo "rows per page" select — present on the real result listing; its
+    // postback is what the pageSize option drives.
+    const sizeSelect = opts.withSizeSelect
+      ? `<select name="ctl0$CONTENU_PAGE$resultSearch$listePageSizeTop">` +
+        `<option selected value="10">10</option><option value="500">500</option></select>`
+      : '';
     return (
       `<html><body>` +
       `<input type="hidden" name="PRADO_PAGESTATE" value="${pagestate}" />` +
       `<input type="text" name="ctl0$CONTENU_PAGE$resultSearch$numPageTop" value="1" />` +
+      `${sizeSelect}` +
       `${next}` +
       `<table class="table-results"><tbody>${rows}</tbody></table>` +
       `</body></html>`
@@ -180,6 +195,93 @@ describe('PradoPortalSource (Atexo MPE stateful pagination)', () => {
     // Page 2 has no "next" link → the walk ends with an empty page.
     const p3 = await source.fetch(3);
     expect(p3.html).not.toContain('table-results');
+  });
+
+  test('does a single GET on the first hop when pageSize is unset', async () => {
+    const fetchImpl = vi.fn(async () =>
+      okResponse(pradoPage('S', ['A/1'], true, { withSizeSelect: true })),
+    );
+    const source = new PradoPortalSource('https://portal/search', {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {},
+    });
+
+    await source.fetch(1);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((fetchImpl.mock.calls[0]?.[1] as RequestInit)?.method ?? 'GET').toBe(
+      'GET',
+    );
+  });
+
+  test('switches the pager to pageSize via a postback on the first hop', async () => {
+    const small = pradoPage('STATE10', ['A/1'], true, { withSizeSelect: true });
+    const big = pradoPage('STATE500', ['B/1', 'B/2', 'B/3'], true, {
+      withSizeSelect: true,
+    });
+    const calls: { method: string; body?: string }[] = [];
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      calls.push({ method, body: init?.body?.toString() });
+      return okResponse(method === 'POST' ? big : small);
+    });
+    const source = new PradoPortalSource('https://portal/search', {
+      pageSize: 500,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {},
+    });
+
+    const p1 = await source.fetch(1);
+
+    // GET the listing, then POST the page-size postback, using the resized page.
+    expect(calls[0]?.method).toBe('GET');
+    expect(calls[1]?.method).toBe('POST');
+    expect(calls[1]?.body).toContain('listePageSizeTop=500');
+    expect(calls[1]?.body).toContain(
+      'PRADO_POSTBACK_TARGET=ctl0%24CONTENU_PAGE%24resultSearch%24listePageSizeTop',
+    );
+    expect(p1.html).toContain('STATE500');
+  });
+
+  test('skips the page-size postback when the size control is absent', async () => {
+    // A listing with no listePageSizeTop control must not attempt a resize.
+    const fetchImpl = vi.fn(async () =>
+      okResponse(pradoPage('S', ['A/1'], true)),
+    );
+    const source = new PradoPortalSource('https://portal/search', {
+      pageSize: 500,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {},
+    });
+
+    await source.fetch(1);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('replays the captured session cookie on subsequent hops', async () => {
+    const seen: (HeadersInit | undefined)[] = [];
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      seen.push(init?.headers);
+      const method = init?.method ?? 'GET';
+      return method === 'POST'
+        ? okResponse(pradoPage('S2', ['B/1'], false))
+        : okResponseWithCookies(pradoPage('S1', ['A/1'], true), [
+            'PHPSESSID=abc123; path=/; secure',
+            'TS01fd=waf; Path=/',
+          ]);
+    });
+    const source = new PradoPortalSource('https://portal/search', {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {},
+    });
+
+    await source.fetch(1);
+    await source.fetch(2);
+
+    const postHeaders = seen[1] as Record<string, string> | undefined;
+    expect(postHeaders?.Cookie).toContain('PHPSESSID=abc123');
+    expect(postHeaders?.Cookie).toContain('TS01fd=waf');
   });
 
   test('rejects a non-http(s) portal URL at construction', () => {
