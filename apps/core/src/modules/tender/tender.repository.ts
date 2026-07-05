@@ -166,6 +166,15 @@ export interface DetailBackfillTarget {
   sourceUrl: string;
 }
 
+/** Work item for the "Suivre la commission" (SuiviConsultation) harvest. */
+export interface SuiviBacklogTarget {
+  id: string;
+  reference: string;
+  buyerName: string;
+  deadlineAt: Date;
+  sourceUrl: string;
+}
+
 export interface EnrichmentAmounts {
   estimationMad?: number;
   cautionProvisoireMad?: number;
@@ -206,6 +215,13 @@ export interface TenderRepository {
    * when the page prints no caution, so this list always shrinks.
    */
   findDetailBackfillTargets(limit: number): Promise<DetailBackfillTarget[]>;
+  /**
+   * Past-deadline tenders with a source_url whose commission ("Suivre la
+   * commission" / SuiviConsultation) has NOT been harvested yet (raw.suivi.v
+   * missing/stale), newest-first — the work list for the structured
+   * competitor-field harvest (all soumissionnaires + amounts, no OCR).
+   */
+  findSuiviBacklogTargets(limit: number): Promise<SuiviBacklogTarget[]>;
   findById(id: string): Promise<TenderRecord | null>;
   /**
    * Batch lookup — one round-trip for N ids (the FTS search endpoint feeds up
@@ -489,6 +505,26 @@ export class InMemoryTenderRepository implements TenderRepository {
         ...(r.cautionProvisoireMad !== undefined
           ? { cautionProvisoireMad: r.cautionProvisoireMad }
           : {}),
+        sourceUrl: r.sourceUrl as string,
+      }));
+  }
+
+  async findSuiviBacklogTargets(limit: number): Promise<SuiviBacklogTarget[]> {
+    const now = Date.now();
+    return this.records
+      .filter(
+        (r) =>
+          r.sourceUrl !== undefined &&
+          r.deadlineAt.getTime() < now &&
+          String((r.raw?.suivi as { v?: unknown } | undefined)?.v ?? '') !== '1',
+      )
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, Math.max(0, limit))
+      .map((r) => ({
+        id: r.id,
+        reference: r.reference,
+        buyerName: r.buyerName,
+        deadlineAt: r.deadlineAt,
         sourceUrl: r.sourceUrl as string,
       }));
   }
@@ -1054,6 +1090,35 @@ export class DrizzleTenderRepository implements TenderRepository {
       ...(row.cautionProvisoireMad != null
         ? { cautionProvisoireMad: Number(row.cautionProvisoireMad) }
         : {}),
+      sourceUrl: row.sourceUrl as string,
+    }));
+  }
+
+  async findSuiviBacklogTargets(limit: number): Promise<SuiviBacklogTarget[]> {
+    const rows = await this.db
+      .select({
+        id: tenders.id,
+        reference: tenders.reference,
+        buyerName: tenders.buyerName,
+        deadlineAt: tenders.deadlineAt,
+        sourceUrl: tenders.sourceUrl,
+      })
+      .from(tenders)
+      .where(
+        and(
+          sql`${tenders.sourceUrl} IS NOT NULL`,
+          sql`${tenders.deadlineAt} < now()`,
+          // Not yet harvested (or stamped by an older version).
+          sql`(${tenders.raw} #>> '{suivi,v}') IS DISTINCT FROM '1'`,
+        ),
+      )
+      .orderBy(sql`${tenders.createdAt} DESC`)
+      .limit(Math.max(0, limit));
+    return rows.map((row) => ({
+      id: row.id,
+      reference: row.reference,
+      buyerName: row.buyerName,
+      deadlineAt: row.deadlineAt,
       sourceUrl: row.sourceUrl as string,
     }));
   }
