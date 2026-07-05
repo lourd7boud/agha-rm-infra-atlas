@@ -14,10 +14,11 @@ import {
   type SnapshotRepository,
 } from './snapshot.repository';
 import { parsePmmpResults } from './watch.parser';
-// PortalBlockedError here is the one PradoPortalSource throws on the listing
-// walk. The result-stage crawlers throw portal-fetch's sibling class and report
-// a block to this service via their summary.stoppedEarly flag (no instanceof).
-import { PORTAL_SOURCE, PortalBlockedError, type PortalSource } from './watch.source';
+import { PORTAL_SOURCE, type PortalSource } from './watch.source';
+// Name-based so it matches whichever module's PortalBlockedError the listing
+// walk throws (watch.source has its own). Result-stage crawlers report their
+// own blocks via summary.stoppedEarly instead.
+import { isPortalBlockedError } from './portal-fetch';
 import { EnrichmentService } from '../tender/enrichment.service';
 import { DossierExtractionService } from '../tender/dossier-extraction.service';
 import { ExpertService } from '../expert/expert.service';
@@ -175,7 +176,7 @@ export class WatchService {
         // walk without discarding pages already ingested this run, and the
         // run still returns a summary (the BullMQ job is not rejected).
         errors += 1;
-        if (error instanceof PortalBlockedError) portalBlocked = true;
+        if (isPortalBlockedError(error)) portalBlocked = true;
         this.logger.error(
           `Portal fetch failed on page ${page}: ${(error as Error).message}`,
         );

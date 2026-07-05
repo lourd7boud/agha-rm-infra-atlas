@@ -33,11 +33,12 @@ function fakeRepos(targets: ReturnType<typeof backlog>) {
 }
 
 const blocked = () => ({ ok: false, status: 429, text: async () => '' }) as Response;
+const failed = () => ({ ok: false, status: 500, text: async () => '' }) as Response;
 const okEmpty = () =>
   ({ ok: true, status: 200, text: async () => '<html></html>' }) as Response;
 
 describe('SuiviCrawlerService circuit breaker', () => {
-  test('halts the batch after 5 consecutive fetch failures (does not fire the rest)', async () => {
+  test('halts immediately on the first 429/403 block (does not fire the rest)', async () => {
     const targets = backlog(50);
     const { tenders, intel } = fakeRepos(targets);
     const fetchImpl = vi.fn(async () => blocked());
@@ -53,16 +54,36 @@ describe('SuiviCrawlerService circuit breaker', () => {
 
     expect(summary.stoppedEarly).toBe(true);
     expect(summary.fetched).toBe(0);
-    // Stopped at the breaker, NOT after all 50 targets.
+    // A hard block halts on the FIRST hit — not after 50, not after 5.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('halts after 5 consecutive transient (5xx) failures', async () => {
+    const targets = backlog(50);
+    const { tenders, intel } = fakeRepos(targets);
+    const fetchImpl = vi.fn(async () => failed());
+    const svc = new SuiviCrawlerService(tenders, intel);
+
+    const summary = await svc.crawlBacklog({
+      maxSuivi: 50,
+      delayMs: 0,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {},
+      random: () => 0.5,
+    });
+
+    expect(summary.stoppedEarly).toBe(true);
+    expect(summary.fetched).toBe(0);
+    // A run of transient errors halts after the threshold, not after all 50.
     expect(fetchImpl).toHaveBeenCalledTimes(5);
   });
 
   test('a success resets the breaker so intermittent failures do not halt', async () => {
     const targets = backlog(12);
     const { tenders, intel } = fakeRepos(targets);
-    // Fail 4, succeed 1, then all succeed → never 5 in a row.
+    // Fail 4 (transient), succeed 1, then all succeed → never 5 in a row.
     let call = 0;
-    const fetchImpl = vi.fn(async () => (call++ < 4 ? blocked() : okEmpty()));
+    const fetchImpl = vi.fn(async () => (call++ < 4 ? failed() : okEmpty()));
     const svc = new SuiviCrawlerService(tenders, intel);
 
     const summary = await svc.crawlBacklog({

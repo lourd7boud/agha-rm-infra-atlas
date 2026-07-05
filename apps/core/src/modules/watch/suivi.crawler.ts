@@ -8,6 +8,7 @@ import {
   type TenderRepository,
 } from '../tender/tender.repository';
 import { parseSuiviCommission, refOrgFromUrl, buildSuiviUrl } from './suivi.parser';
+import { isBlockStatus, PortalBlockedError } from './portal-fetch';
 
 /**
  * Stage-3b crawl — harvest the FULL competitor field from "Suivre la commission"
@@ -114,8 +115,18 @@ export class SuiviCrawlerService {
         // The portal responded → it is not blocking us. Reset the breaker.
         consecutiveFailures = 0;
         fetched += 1;
-      } catch {
+      } catch (err) {
         errors += 1;
+        // A 429/403 is a hard block — halt on the FIRST one (parity with the
+        // detail/result/pv crawlers), not after 5 wasted requests.
+        if (err instanceof PortalBlockedError) {
+          stoppedEarly = true;
+          this.logger.warn(
+            'suivi batch halted on a portal block (429/403) — backing off ' +
+              '(targets left un-stamped, a later run resumes them).',
+          );
+          break;
+        }
         consecutiveFailures += 1;
         if (consecutiveFailures >= BLOCK_THRESHOLD) {
           stoppedEarly = true;
@@ -183,6 +194,7 @@ export class SuiviCrawlerService {
       headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
+    if (isBlockStatus(res.status)) throw new PortalBlockedError(res.status);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.text();
   }

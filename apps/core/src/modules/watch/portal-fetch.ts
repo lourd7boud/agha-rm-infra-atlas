@@ -34,6 +34,16 @@ export function isBlockStatus(status: number): boolean {
 }
 
 /**
+ * Name-based check so a caught error is recognised as a portal block regardless
+ * of WHICH module's PortalBlockedError class it is (watch.source has its own
+ * copy for the listing walk). Robust to future DRY-ups that would break a plain
+ * `instanceof` against a single class.
+ */
+export function isPortalBlockedError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'PortalBlockedError';
+}
+
+/**
  * Consecutive fetch failures that mean the portal is blocking/down → a batch
  * crawler must stop rather than fire the rest of its backlog into the block.
  */

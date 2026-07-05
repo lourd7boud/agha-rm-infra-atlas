@@ -276,4 +276,33 @@ describe('DetailCrawlerService.backfillMissing', () => {
     const kept = await repo.findById(row.id);
     expect(kept?.raw).toBeNull(); // still a target next run
   });
+
+  it('halts the backfill immediately on a portal block (429), not firing the rest', async () => {
+    const repo = new InMemoryTenderRepository();
+    for (let i = 0; i < 8; i += 1) {
+      await seed(repo, `REF/8${i}`, { sourceUrl: `https://portal/b${i}` });
+    }
+    const fetchMock = vi.fn(async () => new Response('blocked', { status: 429 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const summary = await makeService(repo).backfillMissing({ delayMs: 0 });
+
+    expect(summary.stoppedEarly).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // broke on the first block
+  });
+
+  it('halts the backfill after 5 consecutive transient (5xx) failures', async () => {
+    const repo = new InMemoryTenderRepository();
+    for (let i = 0; i < 8; i += 1) {
+      await seed(repo, `REF/9${i}`, { sourceUrl: `https://portal/c${i}` });
+    }
+    const fetchMock = vi.fn(async () => new Response('down', { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const summary = await makeService(repo).backfillMissing({ delayMs: 0 });
+
+    expect(summary.stoppedEarly).toBe(true);
+    expect(summary.errors).toBe(5);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
 });

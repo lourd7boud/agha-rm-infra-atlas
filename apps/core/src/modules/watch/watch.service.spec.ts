@@ -424,6 +424,38 @@ describe('WatchService snapshot/coverage', () => {
     }
   });
 
+  test('coordinated backoff: a stage block skips the remaining portal stages', async () => {
+    const detailCrawler = {
+      crawlOnce: vi
+        .fn()
+        .mockResolvedValue({ linksFound: 1, fetched: 0, matched: 0, enriched: 0, errors: 1, stoppedEarly: true }),
+      backfillMissing: vi
+        .fn()
+        .mockResolvedValue({ linksFound: 0, fetched: 0, matched: 0, enriched: 0, errors: 0 }),
+    };
+    const resultCrawler = {
+      crawlOnce: vi.fn().mockResolvedValue({ resultsFound: 0, notices: 0, extracted: 0, stored: 0, errors: 0 }),
+    };
+    process.env.WATCH_RESULT_LIMIT = '5';
+    try {
+      const service = new WatchService(
+        new FixturePortalSource(FIXTURE_PATH),
+        new InMemoryTenderRepository(),
+        null,
+        { maxPages: 1 },
+        detailCrawler as never,
+        resultCrawler as never,
+      );
+      await service.runOnce();
+      expect(detailCrawler.crawlOnce).toHaveBeenCalled();
+      // The detail stage reported a block → the later portal stages are skipped.
+      expect(detailCrawler.backfillMissing).not.toHaveBeenCalled();
+      expect(resultCrawler.crawlOnce).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.WATCH_RESULT_LIMIT;
+    }
+  });
+
   test('skips the PV harvest stage by default (WATCH_PV_LIMIT unset → 0)', async () => {
     const pvCrawler = { crawlOnce: vi.fn() };
     const service = new WatchService(
