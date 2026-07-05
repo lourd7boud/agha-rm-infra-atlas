@@ -19,6 +19,13 @@ import {
   parseResultNoticeJson,
 } from './result.parser';
 import { parseFormInputs } from './prado';
+import {
+  isBlockStatus,
+  jitter,
+  mergeCookieHeaders,
+  PORTAL_BLOCK_THRESHOLD,
+  PortalBlockedError,
+} from './portal-fetch';
 
 export interface ResultCrawlSummary {
   resultsFound: number;
@@ -26,11 +33,15 @@ export interface ResultCrawlSummary {
   extracted: number;
   stored: number;
   errors: number;
+  /** True when a portal block / consecutive-failure run halted the batch early. */
+  stoppedEarly?: boolean;
 }
 
 export interface ResultCrawlOptions {
   maxResults?: number;
   delayMs?: number;
+  /** Injectable RNG for delay jitter (default Math.random). */
+  random?: () => number;
   /**
    * Number of Résultats listing pages to walk (PRADO postback "next"). 1 means
    * the current behaviour (first page only — the historical bottleneck that
@@ -68,6 +79,8 @@ export interface ResultCrawlDeps {
   storeResult: (r: StoredResult) => Promise<boolean>;
   sleep: (ms: number) => Promise<void>;
   now: () => Date;
+  /** Injectable RNG for delay jitter (default Math.random). */
+  random?: () => number;
 }
 
 export const RESULT_VISION_PROMPT =
@@ -95,13 +108,31 @@ export async function crawlResults(
   const maxResults = Math.max(0, Math.floor(opts.maxResults ?? 12));
   const maxPages = Math.max(1, Math.floor(opts.maxPages ?? 1));
   const delayMs = Math.max(0, Math.floor(opts.delayMs ?? 1200));
+  const random = deps.random ?? opts.random ?? Math.random;
+
+  let notices = 0;
+  let extracted = 0;
+  let stored = 0;
+  let errors = 0;
+  // Circuit breaker: a portal block (429/403) or a run of consecutive fetch
+  // failures halts the batch instead of firing the rest into a live ban.
+  let consecutiveFailures = 0;
+  let stoppedEarly = false;
 
   // Walk pages, accumulating UNIQUE detail links until we either hit maxResults
   // or run out of pages. Dedup on detailUrl because the portal sometimes
   // surfaces the same consultation on multiple pages during a re-issue.
   const all: ReturnType<typeof extractDetailLinks> = [];
   const seen = new Set<string>();
-  const first = await deps.search();
+  let first: { listingHtml: string; baseUrl: string };
+  try {
+    first = await deps.search();
+  } catch (err) {
+    if (err instanceof PortalBlockedError) {
+      return { resultsFound: 0, notices, extracted, stored, errors: errors + 1, stoppedEarly: true };
+    }
+    throw err;
+  }
   let baseUrl = first.baseUrl;
   let pageHtml = first.listingHtml;
   for (let page = 1; page <= maxPages; page += 1) {
@@ -112,52 +143,89 @@ export async function crawlResults(
       if (all.length >= maxResults) break;
     }
     if (all.length >= maxResults || page === maxPages || !deps.nextPage) break;
-    const next = await deps.nextPage();
+    if (delayMs > 0) await deps.sleep(jitter(delayMs, random));
+    let next: { listingHtml: string; baseUrl: string } | null;
+    try {
+      next = await deps.nextPage();
+    } catch (err) {
+      if (err instanceof PortalBlockedError) {
+        stoppedEarly = true;
+        break;
+      }
+      throw err;
+    }
     if (!next) break;
     baseUrl = next.baseUrl;
     pageHtml = next.listingHtml;
   }
   const links = all;
 
-  let notices = 0;
-  let extracted = 0;
-  let stored = 0;
-  let errors = 0;
-
-  for (let i = 0; i < links.length; i += 1) {
+  for (let i = 0; i < links.length && !stoppedEarly; i += 1) {
     const link = links[i]!;
+    let detail: string;
     try {
-      const detail = await deps.fetchDetail(link.detailUrl);
-      const avisUrl = extractAvisDownloadUrl(detail, link.detailUrl);
-      if (!avisUrl) continue;
-      notices += 1;
-      const reference = parseDetailPage(detail).reference;
-      if (!reference) continue;
-
-      const bytes = await deps.fetchAvisBytes(avisUrl);
-      const noticeText = await deps.extractAvisText(bytes);
-      const notice = parseResultNoticeJson(noticeText);
-      if (!notice || !notice.lisible || !notice.attributaire) continue;
-      extracted += 1;
-
-      const ok = await deps.storeResult({
-        reference,
-        buyerName: notice.acheteur ?? UNKNOWN_BUYER_LABEL,
-        bidderName: notice.attributaire,
-        amountMad: notice.montantMad,
-        estimationMad: notice.estimationMad,
-        objet: notice.objet,
-        resultDate: deps.now(),
-        sourceUrl: link.detailUrl,
-      });
-      if (ok) stored += 1;
-    } catch {
+      detail = await deps.fetchDetail(link.detailUrl);
+      consecutiveFailures = 0;
+    } catch (err) {
       errors += 1;
+      if (err instanceof PortalBlockedError) {
+        stoppedEarly = true;
+        break;
+      }
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= PORTAL_BLOCK_THRESHOLD) {
+        stoppedEarly = true;
+        break;
+      }
+      if (delayMs > 0 && i < links.length - 1) await deps.sleep(jitter(delayMs, random));
+      continue;
     }
-    if (delayMs > 0 && i < links.length - 1) await deps.sleep(delayMs);
+
+    // detail fetched OK. A portal block on the avis download still breaks;
+    // parse/LLM/DB errors just count.
+    try {
+      const avisUrl = extractAvisDownloadUrl(detail, link.detailUrl);
+      if (avisUrl) {
+        notices += 1;
+        const reference = parseDetailPage(detail).reference;
+        if (reference) {
+          const bytes = await deps.fetchAvisBytes(avisUrl);
+          const noticeText = await deps.extractAvisText(bytes);
+          const notice = parseResultNoticeJson(noticeText);
+          if (notice && notice.lisible && notice.attributaire) {
+            extracted += 1;
+            const ok = await deps.storeResult({
+              reference,
+              buyerName: notice.acheteur ?? UNKNOWN_BUYER_LABEL,
+              bidderName: notice.attributaire,
+              amountMad: notice.montantMad,
+              estimationMad: notice.estimationMad,
+              objet: notice.objet,
+              resultDate: deps.now(),
+              sourceUrl: link.detailUrl,
+            });
+            if (ok) stored += 1;
+          }
+        }
+      }
+    } catch (err) {
+      errors += 1;
+      if (err instanceof PortalBlockedError) {
+        stoppedEarly = true;
+        break;
+      }
+    }
+    if (delayMs > 0 && i < links.length - 1) await deps.sleep(jitter(delayMs, random));
   }
 
-  return { resultsFound: links.length, notices, extracted, stored, errors };
+  return {
+    resultsFound: links.length,
+    notices,
+    extracted,
+    stored,
+    errors,
+    ...(stoppedEarly ? { stoppedEarly: true } : {}),
+  };
 }
 
 // NOTE: portal-fetch.ts is the shared successor of the helpers below
@@ -235,6 +303,7 @@ export class ResultCrawlerService {
         headers: { 'User-Agent': UA, Accept: 'text/html' },
         signal: AbortSignal.timeout(TIMEOUT),
       });
+      if (isBlockStatus(formRes.status)) throw new PortalBlockedError(formRes.status);
       cookie = cookieHeader(formRes.headers.getSetCookie());
       const body = buildResultSearchBody(await formRes.text());
       const postRes = await fetch(searchUrl, {
@@ -249,6 +318,9 @@ export class ResultCrawlerService {
         body,
         signal: AbortSignal.timeout(TIMEOUT),
       });
+      if (isBlockStatus(postRes.status)) throw new PortalBlockedError(postRes.status);
+      // Absorb any rotated PRADO/WAF cookie so the pager stays in-session.
+      cookie = mergeCookieHeaders(cookie, postRes.headers.getSetCookie());
       const html = await postRes.text();
       captureNext(html);
       return { listingHtml: html, baseUrl: searchUrl };
@@ -271,7 +343,9 @@ export class ResultCrawlerService {
         body,
         signal: AbortSignal.timeout(TIMEOUT),
       });
+      if (isBlockStatus(res.status)) throw new PortalBlockedError(res.status);
       if (!res.ok) return null;
+      cookie = mergeCookieHeaders(cookie, res.headers.getSetCookie());
       const html = await res.text();
       captureNext(html);
       return { listingHtml: html, baseUrl: searchUrl };
@@ -350,6 +424,7 @@ export class ResultCrawlerService {
       },
       signal: AbortSignal.timeout(TIMEOUT),
     });
+    if (isBlockStatus(res.status)) throw new PortalBlockedError(res.status);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.text();
   }
@@ -365,6 +440,7 @@ export class ResultCrawlerService {
       },
       signal: AbortSignal.timeout(TIMEOUT),
     });
+    if (isBlockStatus(res.status)) throw new PortalBlockedError(res.status);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return new Uint8Array(await res.arrayBuffer());
   }

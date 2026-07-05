@@ -14,7 +14,10 @@ import {
   type SnapshotRepository,
 } from './snapshot.repository';
 import { parsePmmpResults } from './watch.parser';
-import { PORTAL_SOURCE, type PortalSource } from './watch.source';
+// PortalBlockedError here is the one PradoPortalSource throws on the listing
+// walk. The result-stage crawlers throw portal-fetch's sibling class and report
+// a block to this service via their summary.stoppedEarly flag (no instanceof).
+import { PORTAL_SOURCE, PortalBlockedError, type PortalSource } from './watch.source';
 import { EnrichmentService } from '../tender/enrichment.service';
 import { DossierExtractionService } from '../tender/dossier-extraction.service';
 import { ExpertService } from '../expert/expert.service';
@@ -158,6 +161,10 @@ export class WatchService {
     let errors = 0;
     let pagesFetched = 0;
     let pagesUnchanged = 0;
+    // Coordinated backoff: once ANY portal stage is blocked (429/403), skip the
+    // remaining portal-hitting stages this sweep so we don't pile onto a live
+    // block. Each stage sets this from its own block signal.
+    let portalBlocked = false;
 
     for (let page = 1; page <= this.maxPages; page += 1) {
       let portalPage;
@@ -168,6 +175,7 @@ export class WatchService {
         // walk without discarding pages already ingested this run, and the
         // run still returns a summary (the BullMQ job is not rejected).
         errors += 1;
+        if (error instanceof PortalBlockedError) portalBlocked = true;
         this.logger.error(
           `Portal fetch failed on page ${page}: ${(error as Error).message}`,
         );
@@ -318,10 +326,14 @@ export class WatchService {
     this.logger.log(`run complete ${JSON.stringify(summary)}`);
     // Stage-2: auto-enrich the freshest consultations from their detail pages
     // (caution, category, detail URL). A failure here never fails the Sentinel.
-    if (this.detailCrawler) {
+    if (this.detailCrawler && !portalBlocked) {
       try {
         const detail = await this.detailCrawler.crawlOnce({ maxDetails: 20 });
         this.logger.log(`detail enrichment ${JSON.stringify(detail)}`);
+        if (detail.stoppedEarly) {
+          portalBlocked = true;
+          this.logger.warn('detail crawl hit a portal block — backing off the rest of this sweep');
+        }
       } catch (error) {
         this.logger.error(
           `detail enrichment failed: ${(error as Error).message}`,
@@ -333,9 +345,13 @@ export class WatchService {
       // actually guarantees "no tender stays without its caution".
       try {
         const maxDetails = envLimit('WATCH_DETAIL_BACKFILL', 40);
-        if (maxDetails > 0) {
+        if (maxDetails > 0 && !portalBlocked) {
           const backfill = await this.detailCrawler.backfillMissing({ maxDetails });
           this.logger.log(`detail backfill ${JSON.stringify(backfill)}`);
+          if (backfill.stoppedEarly) {
+            portalBlocked = true;
+            this.logger.warn('detail backfill hit a portal block — backing off the rest of this sweep');
+          }
         }
       } catch (error) {
         this.logger.error(`detail backfill failed: ${(error as Error).message}`);
@@ -343,7 +359,7 @@ export class WatchService {
     }
     // Stage-3: harvest a few published results (vision-read scanned notices →
     // competitor wins). Bounded to cap vision cost; failures never fail the run.
-    if (this.resultCrawler) {
+    if (this.resultCrawler && !portalBlocked) {
       try {
         // Was hard-coded 3 — way too low to ever reach datao's ~45k catalogue
         // of attribution notices. Env-tunable; default 25/sweep ≈ 600/day at
@@ -353,6 +369,10 @@ export class WatchService {
         if (maxResults > 0) {
           const results = await this.resultCrawler.crawlOnce({ maxResults, maxPages });
           this.logger.log(`result harvest ${JSON.stringify(results)}`);
+          if (results.stoppedEarly) {
+            portalBlocked = true;
+            this.logger.warn('result harvest hit a portal block — backing off the rest of this sweep');
+          }
         }
       } catch (error) {
         this.logger.error(`result harvest failed: ${(error as Error).message}`);
@@ -363,13 +383,17 @@ export class WatchService {
     // estimation. This is what teaches the expert agent how many competitors
     // show up per buyer and what rebates actually win. Opt-in via WATCH_PV_LIMIT;
     // failures never fail the run.
-    if (this.pvCrawler) {
+    if (this.pvCrawler && !portalBlocked) {
       try {
         const maxPv = envLimit('WATCH_PV_LIMIT', DEFAULT_PV_LIMIT);
         const maxPages = envLimit('WATCH_PV_MAX_PAGES', 3);
         if (maxPv > 0) {
           const pv = await this.pvCrawler.crawlOnce({ maxPv, maxPages });
           this.logger.log(`pv harvest ${JSON.stringify(pv)}`);
+          if (pv.stoppedEarly) {
+            portalBlocked = true;
+            this.logger.warn('pv harvest hit a portal block — backing off the rest of this sweep');
+          }
         }
       } catch (error) {
         this.logger.error(`pv harvest failed: ${(error as Error).message}`);
@@ -379,12 +403,16 @@ export class WatchService {
     // structured bidder field + amounts for past-deadline consultations, zero OCR
     // (the datao "Résultats"/concurrents source). Bounded via WATCH_SUIVI_LIMIT;
     // failures never fail the Sentinel.
-    if (this.suiviCrawler) {
+    if (this.suiviCrawler && !portalBlocked) {
       try {
         const maxSuivi = envLimit('WATCH_SUIVI_LIMIT', 0);
         if (maxSuivi > 0) {
           const suivi = await this.suiviCrawler.crawlBacklog({ maxSuivi });
           this.logger.log(`suivi harvest ${JSON.stringify(suivi)}`);
+          if (suivi.stoppedEarly) {
+            portalBlocked = true;
+            this.logger.warn('suivi harvest hit a portal block — backing off the rest of this sweep');
+          }
         }
       } catch (error) {
         this.logger.error(`suivi harvest failed: ${(error as Error).message}`);

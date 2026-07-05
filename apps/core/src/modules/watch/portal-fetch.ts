@@ -16,6 +16,38 @@ export const DEFAULT_SEARCH_URL =
 export const sleepMs = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * A hard rate-limit / block response (HTTP 429 or 403) from the portal or its
+ * WAF. Distinct from a transient error: the caller must STOP, not retry —
+ * hammering a live block deepens the ban. Shared by every result-stage crawler.
+ */
+export class PortalBlockedError extends Error {
+  constructor(readonly status: number) {
+    super(`Portal blocked the request: HTTP ${status}`);
+    this.name = 'PortalBlockedError';
+  }
+}
+
+/** 429/403 = the portal is throttling/blocking us (not a transient glitch). */
+export function isBlockStatus(status: number): boolean {
+  return status === 429 || status === 403;
+}
+
+/**
+ * Consecutive fetch failures that mean the portal is blocking/down → a batch
+ * crawler must stop rather than fire the rest of its backlog into the block.
+ */
+export const PORTAL_BLOCK_THRESHOLD = 5;
+
+/**
+ * Randomize a base delay ±40% (uniform in [0.6, 1.4]×) so a long backlog drain
+ * doesn't emit a fixed inter-request interval — the single most common
+ * behavioural bot signal a WAF scores on. `random() === 0.5` ⇒ exactly base.
+ */
+export function jitter(baseMs: number, random: () => number = Math.random): number {
+  return Math.round(baseMs * (0.6 + random() * 0.8));
+}
+
 export function cookieHeader(setCookies: readonly string[]): string {
   return setCookies
     .map((c) => c.split(';')[0])
@@ -63,6 +95,7 @@ export async function fetchText(url: string, cookie: string): Promise<string> {
     },
     signal: AbortSignal.timeout(PORTAL_TIMEOUT),
   });
+  if (isBlockStatus(res.status)) throw new PortalBlockedError(res.status);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();
 }
@@ -75,6 +108,7 @@ export async function fetchImage(
     headers: { 'User-Agent': PORTAL_UA, ...(cookie ? { Cookie: cookie } : {}) },
     signal: AbortSignal.timeout(PORTAL_TIMEOUT),
   });
+  if (isBlockStatus(res.status)) throw new PortalBlockedError(res.status);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const buf = Buffer.from(await res.arrayBuffer());
   return {
@@ -97,6 +131,7 @@ export async function fetchAvisBytes(url: string, cookie: string): Promise<Uint8
     },
     signal: AbortSignal.timeout(PORTAL_TIMEOUT),
   });
+  if (isBlockStatus(res.status)) throw new PortalBlockedError(res.status);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return new Uint8Array(await res.arrayBuffer());
 }
@@ -121,6 +156,7 @@ export async function pradoResultSearch(
     headers: { 'User-Agent': PORTAL_UA, Accept: 'text/html' },
     signal: AbortSignal.timeout(PORTAL_TIMEOUT),
   });
+  if (isBlockStatus(formRes.status)) throw new PortalBlockedError(formRes.status);
   const cookie = cookieHeader(formRes.headers.getSetCookie());
   const body = buildResultSearchBody(await formRes.text(), annonceType);
   const postRes = await fetch(searchUrl, {
@@ -135,5 +171,6 @@ export async function pradoResultSearch(
     body,
     signal: AbortSignal.timeout(PORTAL_TIMEOUT),
   });
+  if (isBlockStatus(postRes.status)) throw new PortalBlockedError(postRes.status);
   return { listingHtml: await postRes.text(), baseUrl: searchUrl, cookie };
 }

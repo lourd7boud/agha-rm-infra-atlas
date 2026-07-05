@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { crawlResults, type ResultCrawlDeps, type StoredResult } from './result.crawler';
+import { PortalBlockedError } from './portal-fetch';
 
 const PREFIX = 'ctl0_CONTENU_PAGE_idEntrepriseConsultationSummary';
 const LISTING =
@@ -131,5 +132,35 @@ describe('crawlResults', () => {
     expect(seen[0]?.[1]).toBe(0x50); // P
     expect(seen[0]?.[2]).toBe(0x44); // D
     expect(seen[0]?.[3]).toBe(0x46); // F
+  });
+});
+
+describe('crawlResults circuit breaker', () => {
+  it('returns stoppedEarly when the search request is blocked', async () => {
+    const s = await crawlResults(
+      deps({
+        search: async () => {
+          throw new PortalBlockedError(403);
+        },
+      }),
+      { delayMs: 0 },
+    );
+    expect(s.stoppedEarly).toBe(true);
+    expect(s.resultsFound).toBe(0);
+  });
+
+  it('stops the per-link loop immediately on a portal block', async () => {
+    let calls = 0;
+    const s = await crawlResults(
+      deps({
+        fetchDetail: async () => {
+          calls += 1;
+          throw new PortalBlockedError(429);
+        },
+      }),
+      { delayMs: 0 },
+    );
+    expect(s.stoppedEarly).toBe(true);
+    expect(calls).toBe(1); // did not fire the second link into the block
   });
 });

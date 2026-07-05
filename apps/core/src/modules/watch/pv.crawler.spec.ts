@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { crawlExtraitsPv, type PvCrawlDeps, type StoredPvBid } from './pv.crawler';
+import { PortalBlockedError } from './portal-fetch';
 
 const PREFIX = 'ctl0_CONTENU_PAGE_idEntrepriseConsultationSummary';
 const LISTING =
@@ -106,5 +107,35 @@ describe('crawlExtraitsPv', () => {
     );
     expect(s.errors).toBe(1);
     expect(s.bidsStored).toBe(2); // the surviving PV still stored its 2 bidders
+  });
+});
+
+describe('crawlExtraitsPv circuit breaker', () => {
+  it('returns stoppedEarly when the search request is blocked', async () => {
+    const s = await crawlExtraitsPv(
+      deps({
+        search: async () => {
+          throw new PortalBlockedError(403);
+        },
+      }),
+      { delayMs: 0 },
+    );
+    expect(s.stoppedEarly).toBe(true);
+    expect(s.pvFound).toBe(0);
+  });
+
+  it('stops the per-item loop immediately on a portal block', async () => {
+    let calls = 0;
+    const s = await crawlExtraitsPv(
+      deps({
+        fetchDetail: async () => {
+          calls += 1;
+          throw new PortalBlockedError(429);
+        },
+      }),
+      { delayMs: 0 },
+    );
+    expect(s.stoppedEarly).toBe(true);
+    expect(calls).toBe(1); // did not fire the second item into the block
   });
 });

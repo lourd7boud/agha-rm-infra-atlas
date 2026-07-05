@@ -7,6 +7,15 @@ import {
   type CrawlDeps,
 } from './detail.crawler';
 import { FixturePortalSource } from './watch.source';
+import { PortalBlockedError } from './portal-fetch';
+
+/** A listing with `n` distinct detail links, for exercising the batch breaker. */
+const listingOf = (n: number): string =>
+  Array.from(
+    { length: n },
+    (_, i) =>
+      `<a href="x?page=entreprise.EntrepriseDetailsConsultation&refConsultation=${1000 + i}&orgAcronyme=o${i}&depots">l${i}</a>`,
+  ).join('');
 
 const PREFIX = 'ctl0_CONTENU_PAGE_idEntrepriseConsultationSummary';
 const detailHtml = (reference: string, caution: string): string =>
@@ -122,6 +131,66 @@ describe('crawlDetails', () => {
     );
     expect(summary.linksFound).toBe(1);
     expect(summary.fetched).toBe(1);
+  });
+});
+
+describe('crawlDetails circuit breaker', () => {
+  it('stops immediately on a portal block (429/403), not firing the rest', async () => {
+    let calls = 0;
+    const summary = await crawlDetails(
+      listingOf(8),
+      BASE,
+      deps({
+        tenders: [],
+        fetchDetail: async () => {
+          calls += 1;
+          throw new PortalBlockedError(429);
+        },
+      }),
+      { delayMs: 0 },
+    );
+    expect(summary.stoppedEarly).toBe(true);
+    expect(summary.fetched).toBe(0);
+    expect(calls).toBe(1); // broke on the first block; the other 7 never fire
+  });
+
+  it('stops after 5 consecutive fetch failures', async () => {
+    let calls = 0;
+    const summary = await crawlDetails(
+      listingOf(8),
+      BASE,
+      deps({
+        tenders: [],
+        fetchDetail: async () => {
+          calls += 1;
+          throw new Error('timeout');
+        },
+      }),
+      { delayMs: 0 },
+    );
+    expect(summary.stoppedEarly).toBe(true);
+    expect(summary.errors).toBe(5);
+    expect(calls).toBe(5);
+  });
+
+  it('a success resets the consecutive-failure counter (no early stop)', async () => {
+    let calls = 0;
+    const summary = await crawlDetails(
+      listingOf(8),
+      BASE,
+      deps({
+        tenders: [],
+        fetchDetail: async () => {
+          calls += 1;
+          // one success on the 5th breaks the streak before it reaches 5.
+          if (calls === 5) return detailHtml('REF/NONE', '1 000,00 MAD');
+          throw new Error('timeout');
+        },
+      }),
+      { delayMs: 0 },
+    );
+    expect(summary.stoppedEarly).toBeUndefined();
+    expect(calls).toBe(8); // walked the whole listing
   });
 });
 
