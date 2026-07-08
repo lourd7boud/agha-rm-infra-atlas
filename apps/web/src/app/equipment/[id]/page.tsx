@@ -25,12 +25,14 @@ import {
   WORK_ORDER_TYPE_LABELS,
   type CurrentMeter,
   type DepreciationResult,
+  type EmployeeOption,
   type EquipmentDetail,
   type EquipmentDocumentRecord,
   type EquipmentMeterReadingRecord,
   type EquipmentWorkOrderRecord,
   type InspectionWithItems,
   type MaintenancePlanWithStatus,
+  type Paged,
 } from '@/lib/equipment';
 import { isRedirectError } from '@/lib/next-redirect';
 
@@ -124,6 +126,7 @@ export default async function EquipmentDetailPage({
     inspections,
     depreciation,
     projects,
+    employeesPage,
   ] = await Promise.all([
     apiGet<EquipmentDocumentRecord[]>(`/equipment/${id}/documents`),
     apiGet<EquipmentMeterReadingRecord[]>(`/equipment/${id}/meter-readings`),
@@ -134,11 +137,21 @@ export default async function EquipmentDetailPage({
     apiGet<InspectionWithItems[]>(`/equipment/${id}/inspections`),
     apiGet<DepreciationResult>(`/equipment/${id}/depreciation`),
     apiGet<ProjectSummary[]>('/project/projects'),
+    // Degrade gracefully if the viewer can't read the workforce register (e.g.
+    // 'terrain', absent from /people/employees roles): show the page without
+    // operator names. Only a 403 is swallowed; auth/5xx propagate.
+    apiGet<Paged<EmployeeOption>>('/people/employees?limit=100').catch((e) => {
+      if (e instanceof AtlasApiError && e.status === 403) {
+        return { items: [], total: 0 } as Paged<EmployeeOption>;
+      }
+      throw e;
+    }),
   ]);
 
   const { equipment } = detail;
   const badge = EQUIPMENT_STATUS_BADGES[equipment.status];
   const projectById = new Map(projects.map((p) => [p.id, p]));
+  const operatorById = new Map(employeesPage.items.map((e) => [e.id, e]));
 
   // ── server actions ──────────────────────────────────────────────────────────
 
@@ -1000,6 +1013,9 @@ export default async function EquipmentDetailPage({
           <ul className="divide-y divide-line text-sm">
             {detail.history.map((a) => {
               const project = projectById.get(a.projectId);
+              const operator = a.operatorId
+                ? operatorById.get(a.operatorId)
+                : undefined;
               return (
                 <li
                   key={a.id}
@@ -1011,6 +1027,11 @@ export default async function EquipmentDetailPage({
                   >
                     {project?.reference ?? a.projectId}
                   </Link>
+                  {operator && (
+                    <span className="text-xs text-faint">
+                      👤 {operator.fullName}
+                    </span>
+                  )}
                   <span className="font-mono text-xs tabular-nums text-muted">
                     {fmtDate(a.assignedAt)} →{' '}
                     {a.returnedAt ? fmtDate(a.returnedAt) : 'en cours'}

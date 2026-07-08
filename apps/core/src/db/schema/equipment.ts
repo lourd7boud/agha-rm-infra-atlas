@@ -14,6 +14,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { employees } from './people';
 import { projects } from './project';
 
 // ── Matériel & engins — equipment register + chantier assignment ─────────────
@@ -86,6 +87,11 @@ export const equipmentAssignments = equipment.table(
     projectId: uuid('project_id')
       .notNull()
       .references(() => projects.id),
+    // The driver/operator running the machine on this posting (people.employee).
+    // ON DELETE SET NULL: removing an employee detaches, keeps the assignment.
+    operatorId: uuid('operator_id').references(() => employees.id, {
+      onDelete: 'set null',
+    }),
     assignedAt: date('assigned_at', { mode: 'date' }).notNull(),
     // Date de retour prévue — when the machine is expected back; null if open-ended.
     expectedReturnAt: date('expected_return_at', { mode: 'date' }),
@@ -99,6 +105,7 @@ export const equipmentAssignments = equipment.table(
     // current fleet. Plain btree indexes keep both off a seq scan as the log grows.
     index('equipment_assignment_equipment_id_idx').on(table.equipmentId),
     index('equipment_assignment_project_id_idx').on(table.projectId),
+    index('equipment_assignment_operator_id_idx').on(table.operatorId),
     // Finding a machine's CURRENT (open) assignment is the assign/return hot
     // path — a partial index over just the open rows keeps it tiny and off a
     // seq scan no matter how long the historical assignment log grows.

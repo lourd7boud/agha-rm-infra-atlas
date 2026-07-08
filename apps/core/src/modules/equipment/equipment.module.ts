@@ -59,6 +59,7 @@ const equipmentSchema = z.object({
 
 const assignSchema = z.object({
   projectId: z.string().uuid(),
+  operatorId: z.string().uuid().optional(),
   assignedAt: z.coerce.date().optional(),
   expectedReturnAt: z.coerce.date().optional(),
   notes: z.string().max(2000).optional(),
@@ -256,6 +257,7 @@ export class EquipmentController {
       return await this.repository.assignEquipment({
         equipmentId: id,
         projectId: parsed.data.projectId,
+        operatorId: parsed.data.operatorId,
         assignedAt: parsed.data.assignedAt ?? new Date(),
         expectedReturnAt: parsed.data.expectedReturnAt,
         notes: parsed.data.notes,

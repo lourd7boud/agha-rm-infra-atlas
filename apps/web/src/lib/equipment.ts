@@ -31,11 +31,23 @@ export interface EquipmentAssignmentRecord {
   id: string;
   equipmentId: string;
   projectId: string;
+  operatorId?: string;
   assignedAt: string;
   expectedReturnAt?: string;
   returnedAt?: string;
   notes?: string;
   createdAt: string;
+}
+
+/**
+ * A workforce member for the operator (driver) dropdown — mirrors the people
+ * module's EmployeeListItem (GET /people/employees).
+ */
+export interface EmployeeOption {
+  id: string;
+  fullName: string;
+  metier: string;
+  status: string;
 }
 
 /** GET /equipment/:id envelope — machine + open assignment + full history. */

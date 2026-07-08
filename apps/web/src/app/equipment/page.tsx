@@ -13,6 +13,7 @@ import {
   MAINTENANCE_TRIGGER_LABELS,
   PLAN_DUE_BADGES,
   type DuePlan,
+  type EmployeeOption,
   type EquipmentDetail,
   type EquipmentRecord,
   type EquipmentStatus,
@@ -84,16 +85,29 @@ export default async function EquipmentPage({
   // One bounded DB page for the table + a DB-side summary for the KPI tiles
   // (status counts correct over the WHOLE parc, not just this page) + projects
   // for the chantier name map.
-  const [equipmentPage, summary, projects, documentAlerts, maintenanceDue] =
-    await Promise.all([
-      apiGet<Paged<EquipmentRecord>>(
-        `/equipment?page=${page}&limit=${PAGE_SIZE}`,
-      ),
-      apiGet<EquipmentSummary>('/equipment/summary'),
-      apiGet<ProjectSummary[]>('/project/projects'),
-      apiGet<ExpiringDocument[]>('/equipment/documents/alerts?withinDays=30'),
-      apiGet<DuePlan[]>('/equipment/maintenance/due'),
-    ]);
+  const [
+    equipmentPage,
+    summary,
+    projects,
+    documentAlerts,
+    maintenanceDue,
+    employeesPage,
+  ] = await Promise.all([
+    apiGet<Paged<EquipmentRecord>>(`/equipment?page=${page}&limit=${PAGE_SIZE}`),
+    apiGet<EquipmentSummary>('/equipment/summary'),
+    apiGet<ProjectSummary[]>('/project/projects'),
+    apiGet<ExpiringDocument[]>('/equipment/documents/alerts?withinDays=30'),
+    apiGet<DuePlan[]>('/equipment/maintenance/due'),
+    // A user who can read /equipment but not the workforce register (e.g.
+    // 'terrain', absent from /people/employees roles) still gets the page —
+    // just without operator options. Only a 403 degrades; auth/5xx propagate.
+    apiGet<Paged<EmployeeOption>>('/people/employees?limit=100').catch((e) => {
+      if (e instanceof AtlasApiError && e.status === 403) {
+        return { items: [], total: 0 } as Paged<EmployeeOption>;
+      }
+      throw e;
+    }),
+  ]);
   const equipment = equipmentPage.items;
   const counts = summary.counts;
 
@@ -114,6 +128,9 @@ export default async function EquipmentPage({
       .map((d) => [d.equipment.id, d.openAssignment!]),
   );
   const projectById = new Map(projects.map((p) => [p.id, p]));
+  const employees = employeesPage.items;
+  const operatorById = new Map(employees.map((e) => [e.id, e]));
+  const activeOperators = employees.filter((e) => e.status === 'actif');
 
   async function createEquipment(formData: FormData) {
     'use server';
@@ -160,8 +177,10 @@ export default async function EquipmentPage({
       const assignedAt = String(formData.get('assignedAt') ?? '');
       const expectedReturnAt = String(formData.get('expectedReturnAt') ?? '');
       const notes = String(formData.get('notes') ?? '').trim();
+      const operatorId = String(formData.get('operatorId') ?? '');
       await apiPost(`/equipment/${equipmentId}/assign`, {
         projectId,
+        operatorId: operatorId || undefined,
         assignedAt: assignedAt || undefined,
         expectedReturnAt: expectedReturnAt || undefined,
         notes: notes || undefined,
@@ -352,6 +371,7 @@ export default async function EquipmentPage({
               <th className="px-4 py-3">Catégorie</th>
               <th className="px-4 py-3">Statut</th>
               <th className="px-4 py-3">Chantier</th>
+              <th className="px-4 py-3">Opérateur</th>
               <th className="px-4 py-3">Retour prévu</th>
               <th className="px-4 py-3 text-right">Actions</th>
             </tr>
@@ -397,6 +417,11 @@ export default async function EquipmentPage({
                     ) : (
                       '—'
                     )}
+                  </td>
+                  <td className="px-4 py-3 text-muted">
+                    {open?.operatorId
+                      ? (operatorById.get(open.operatorId)?.fullName ?? '—')
+                      : '—'}
                   </td>
                   <td
                     className={`px-4 py-3 font-mono text-xs tabular-nums ${
@@ -621,6 +646,22 @@ export default async function EquipmentPage({
                 {projects.map((project) => (
                   <option key={project.id} value={project.id}>
                     {project.reference}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="min-w-40 flex-1 text-sm">
+              <span className="mb-1 block text-xs text-muted">
+                Opérateur (optionnel)
+              </span>
+              <select
+                name="operatorId"
+                className="w-full rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+              >
+                <option value="">— Aucun —</option>
+                {activeOperators.map((op) => (
+                  <option key={op.id} value={op.id}>
+                    {op.fullName} · {op.metier}
                   </option>
                 ))}
               </select>

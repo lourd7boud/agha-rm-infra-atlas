@@ -101,6 +101,8 @@ export interface EquipmentRecord {
 export interface AssignEquipmentInput {
   equipmentId: string;
   projectId: string;
+  /** Optional driver/operator (people.employee id) running the machine. */
+  operatorId?: string;
   assignedAt: Date;
   expectedReturnAt?: Date;
   notes?: string;
@@ -115,6 +117,7 @@ export interface EquipmentAssignmentRecord {
   id: string;
   equipmentId: string;
   projectId: string;
+  operatorId?: string;
   assignedAt: Date;
   expectedReturnAt?: Date;
   returnedAt?: Date;
@@ -622,6 +625,7 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
       id: randomUUID(),
       equipmentId: input.equipmentId,
       projectId: input.projectId,
+      operatorId: input.operatorId,
       assignedAt: input.assignedAt,
       expectedReturnAt: input.expectedReturnAt,
       returnedAt: undefined,
@@ -1284,6 +1288,7 @@ export class DrizzleEquipmentRepository implements EquipmentRepository {
         .values({
           equipmentId: input.equipmentId,
           projectId: input.projectId,
+          operatorId: input.operatorId,
           assignedAt: input.assignedAt,
           expectedReturnAt: input.expectedReturnAt,
           notes: input.notes,
@@ -2008,6 +2013,7 @@ function toAssignment(row: AssignmentRow): EquipmentAssignmentRecord {
     id: row.id,
     equipmentId: row.equipmentId,
     projectId: row.projectId,
+    operatorId: row.operatorId ?? undefined,
     assignedAt: row.assignedAt,
     expectedReturnAt: row.expectedReturnAt ?? undefined,
     returnedAt: row.returnedAt ?? undefined,
