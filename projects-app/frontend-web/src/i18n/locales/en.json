@@ -1,0 +1,179 @@
+{
+  "app": {
+    "title": "Project Management",
+    "subtitle": "Offline-first project management application"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "create": "Create",
+    "search": "Search",
+    "filter": "Filter",
+    "export": "Export",
+    "import": "Import",
+    "back": "Back",
+    "next": "Next",
+    "previous": "Previous",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "warning": "Warning",
+    "info": "Information",
+    "confirm": "Confirm",
+    "close": "Close"
+  },
+  "auth": {
+    "login": "Login",
+    "register": "Register",
+    "logout": "Logout",
+    "email": "Email",
+    "password": "Password",
+    "firstName": "First Name",
+    "lastName": "Last Name",
+    "forgotPassword": "Forgot password?",
+    "loginSuccess": "Login successful",
+    "loginError": "Login error",
+    "registerSuccess": "Registration successful",
+    "registerError": "Registration error"
+  },
+  "sync": {
+    "status": {
+      "offline": "Offline",
+      "syncing": "Syncing...",
+      "synced": "Up to date",
+      "error": "Sync error",
+      "idle": "Idle"
+    },
+    "lastSync": "Last sync: {{time}}",
+    "pendingOperations": "{{count}} pending operations",
+    "syncNow": "Sync now",
+    "autoSync": "Auto sync",
+    "conflicts": "Conflicts detected",
+    "resolveConflict": "Resolve conflict"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "totalProjects": "Total Projects",
+    "activeProjects": "Active Projects",
+    "completedProjects": "Completed Projects",
+    "totalBudget": "Total Budget",
+    "recentProjects": "Recent Projects",
+    "recentActivities": "Recent Activities",
+    "upcomingDeadlines": "Upcoming Deadlines",
+    "statistics": "Statistics"
+  },
+  "project": {
+    "title": "Project",
+    "projects": "Projects",
+    "newProject": "New Project",
+    "editProject": "Edit Project",
+    "deleteProject": "Delete Project",
+    "projectDetails": "Project Details",
+    "objet": "Object",
+    "marcheNo": "Contract No.",
+    "annee": "Year",
+    "dateOuverture": "Opening Date",
+    "montant": "Amount (MAD)",
+    "snss": "SNSS",
+    "cbn": "C.B.No.",
+    "rcn": "R.C.No.",
+    "societe": "Company",
+    "patente": "License",
+    "delaisEntreeService": "Service Entry Deadline",
+    "osc": "OSC",
+    "status": {
+      "draft": "Draft",
+      "active": "Active",
+      "completed": "Completed",
+      "archived": "Archived"
+    },
+    "progress": "Progress",
+    "folderPath": "Folder Path"
+  },
+  "bordereau": {
+    "title": "Price Schedule",
+    "bordereaux": "Price Schedules",
+    "newBordereau": "New Price Schedule",
+    "reference": "Reference",
+    "designation": "Designation",
+    "unite": "Unit",
+    "quantite": "Quantity",
+    "prixUnitaire": "Unit Price",
+    "montantTotal": "Total Amount"
+  },
+  "metre": {
+    "title": "Measurement",
+    "metres": "Measurements",
+    "newMetre": "New Measurement",
+    "reference": "Reference",
+    "designation": "Designation",
+    "mesures": "Measurements",
+    "longueur": "Length",
+    "largeur": "Width",
+    "hauteur": "Height",
+    "quantite": "Quantity",
+    "totalQuantite": "Total Quantity"
+  },
+  "decompt": {
+    "title": "Payment Statement",
+    "decompts": "Payment Statements",
+    "newDecompt": "New Payment Statement",
+    "periode": "Period",
+    "numero": "Number",
+    "lignes": "Lines",
+    "montantTotal": "Total Amount",
+    "statut": {
+      "draft": "Draft",
+      "submitted": "Submitted",
+      "validated": "Validated",
+      "paid": "Paid"
+    },
+    "generatePDF": "Generate PDF"
+  },
+  "photo": {
+    "title": "Photo",
+    "photos": "Photos",
+    "uploadPhoto": "Upload Photo",
+    "description": "Description",
+    "tags": "Tags",
+    "location": "Location"
+  },
+  "pv": {
+    "title": "Report",
+    "pvs": "Reports",
+    "newPV": "New Report",
+    "type": {
+      "installation": "Installation",
+      "reception": "Reception",
+      "constat": "Finding",
+      "other": "Other"
+    },
+    "numero": "Number",
+    "date": "Date",
+    "objet": "Subject",
+    "contenu": "Content",
+    "participants": "Participants",
+    "attachments": "Attachments"
+  },
+  "attachment": {
+    "title": "Attachment",
+    "attachments": "Attachments",
+    "uploadFile": "Upload File",
+    "category": {
+      "facture": "Invoice",
+      "bp": "Payment Slip",
+      "plan": "Plan",
+      "autre": "Other"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "language": "Language",
+    "theme": "Theme",
+    "notifications": "Notifications",
+    "account": "Account",
+    "sync": "Synchronization"
+  }
+}

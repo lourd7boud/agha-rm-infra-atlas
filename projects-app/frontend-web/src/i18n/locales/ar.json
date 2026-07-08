@@ -1,0 +1,179 @@
+{
+  "app": {
+    "title": "إدارة المشاريع",
+    "subtitle": "تطبيق إدارة المشاريع بدون اتصال بالإنترنت"
+  },
+  "common": {
+    "save": "حفظ",
+    "cancel": "إلغاء",
+    "delete": "حذف",
+    "edit": "تعديل",
+    "create": "إنشاء",
+    "search": "بحث",
+    "filter": "تصفية",
+    "export": "تصدير",
+    "import": "استيراد",
+    "back": "رجوع",
+    "next": "التالي",
+    "previous": "السابق",
+    "loading": "جاري التحميل...",
+    "error": "خطأ",
+    "success": "نجح",
+    "warning": "تحذير",
+    "info": "معلومات",
+    "confirm": "تأكيد",
+    "close": "إغلاق"
+  },
+  "auth": {
+    "login": "تسجيل الدخول",
+    "register": "التسجيل",
+    "logout": "تسجيل الخروج",
+    "email": "البريد الإلكتروني",
+    "password": "كلمة المرور",
+    "firstName": "الاسم الأول",
+    "lastName": "اسم العائلة",
+    "forgotPassword": "هل نسيت كلمة المرور؟",
+    "loginSuccess": "تم تسجيل الدخول بنجاح",
+    "loginError": "خطأ في تسجيل الدخول",
+    "registerSuccess": "تم التسجيل بنجاح",
+    "registerError": "خطأ في التسجيل"
+  },
+  "sync": {
+    "status": {
+      "offline": "غير متصل",
+      "syncing": "جاري المزامنة...",
+      "synced": "محدث",
+      "error": "خطأ في المزامنة",
+      "idle": "في الانتظار"
+    },
+    "lastSync": "آخر مزامنة: {{time}}",
+    "pendingOperations": "{{count}} عمليات معلقة",
+    "syncNow": "المزامنة الآن",
+    "autoSync": "مزامنة تلقائية",
+    "conflicts": "تعارضات محتملة",
+    "resolveConflict": "حل التعارض"
+  },
+  "dashboard": {
+    "title": "لوحة المعلومات",
+    "totalProjects": "إجمالي المشاريع",
+    "activeProjects": "المشاريع النشطة",
+    "completedProjects": "المشاريع المكتملة",
+    "totalBudget": "الميزانية الإجمالية",
+    "recentProjects": "المشاريع الأخيرة",
+    "recentActivities": "الأنشطة الأخيرة",
+    "upcomingDeadlines": "المواعيد النهائية القادمة",
+    "statistics": "إحصائيات"
+  },
+  "project": {
+    "title": "مشروع",
+    "projects": "المشاريع",
+    "newProject": "مشروع جديد",
+    "editProject": "تعديل المشروع",
+    "deleteProject": "حذف المشروع",
+    "projectDetails": "تفاصيل المشروع",
+    "objet": "الموضوع",
+    "marcheNo": "رقم الصفقة",
+    "annee": "السنة",
+    "dateOuverture": "تاريخ الافتتاح",
+    "montant": "المبلغ (درهم)",
+    "snss": "SNSS",
+    "cbn": "C.B.N°",
+    "rcn": "R.C.N°",
+    "societe": "الشركة",
+    "patente": "الترخيص",
+    "delaisEntreeService": "مهلة الدخول في الخدمة",
+    "osc": "OSC",
+    "status": {
+      "draft": "مسودة",
+      "active": "نشط",
+      "completed": "مكتمل",
+      "archived": "مؤرشف"
+    },
+    "progress": "التقدم",
+    "folderPath": "مسار المجلد"
+  },
+  "bordereau": {
+    "title": "جدول الأسعار",
+    "bordereaux": "جداول الأسعار",
+    "newBordereau": "جدول أسعار جديد",
+    "reference": "المرجع",
+    "designation": "التسمية",
+    "unite": "الوحدة",
+    "quantite": "الكمية",
+    "prixUnitaire": "السعر الوحدوي",
+    "montantTotal": "المبلغ الإجمالي"
+  },
+  "metre": {
+    "title": "القياس",
+    "metres": "القياسات",
+    "newMetre": "قياس جديد",
+    "reference": "المرجع",
+    "designation": "التسمية",
+    "mesures": "القياسات",
+    "longueur": "الطول",
+    "largeur": "العرض",
+    "hauteur": "الارتفاع",
+    "quantite": "الكمية",
+    "totalQuantite": "الكمية الإجمالية"
+  },
+  "decompt": {
+    "title": "التسوية",
+    "decompts": "التسويات",
+    "newDecompt": "تسوية جديدة",
+    "periode": "الفترة",
+    "numero": "الرقم",
+    "lignes": "الأسطر",
+    "montantTotal": "المبلغ الإجمالي",
+    "statut": {
+      "draft": "مسودة",
+      "submitted": "مقدم",
+      "validated": "مصادق عليه",
+      "paid": "مدفوع"
+    },
+    "generatePDF": "إنشاء PDF"
+  },
+  "photo": {
+    "title": "صورة",
+    "photos": "الصور",
+    "uploadPhoto": "تحميل صورة",
+    "description": "الوصف",
+    "tags": "العلامات",
+    "location": "الموقع"
+  },
+  "pv": {
+    "title": "محضر",
+    "pvs": "المحاضر",
+    "newPV": "محضر جديد",
+    "type": {
+      "installation": "تركيب",
+      "reception": "استلام",
+      "constat": "معاينة",
+      "other": "آخر"
+    },
+    "numero": "الرقم",
+    "date": "التاريخ",
+    "objet": "الموضوع",
+    "contenu": "المحتوى",
+    "participants": "المشاركون",
+    "attachments": "المرفقات"
+  },
+  "attachment": {
+    "title": "مرفق",
+    "attachments": "المرفقات",
+    "uploadFile": "تحميل ملف",
+    "category": {
+      "facture": "فاتورة",
+      "bp": "سند دفع",
+      "plan": "مخطط",
+      "autre": "آخر"
+    }
+  },
+  "settings": {
+    "title": "الإعدادات",
+    "language": "اللغة",
+    "theme": "المظهر",
+    "notifications": "الإشعارات",
+    "account": "الحساب",
+    "sync": "المزامنة"
+  }
+}

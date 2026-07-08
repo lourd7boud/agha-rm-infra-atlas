@@ -1,0 +1,7 @@
+{
+  "views": {
+    "by_email": {
+      "map": "function(doc) { if (doc.type === 'user' && doc.email) { emit(doc.email, doc); } }"
+    }
+  }
+}

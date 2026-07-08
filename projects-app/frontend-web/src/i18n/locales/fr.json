@@ -1,0 +1,183 @@
+{
+  "app": {
+    "title": "Gestion de Projets",
+    "subtitle": "Application de gestion de projets offline-first"
+  },
+  "common": {
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "delete": "Supprimer",
+    "edit": "Modifier",
+    "create": "Créer",
+    "search": "Rechercher",
+    "filter": "Filtrer",
+    "export": "Exporter",
+    "import": "Importer",
+    "back": "Retour",
+    "next": "Suivant",
+    "previous": "Précédent",
+    "loading": "Chargement...",
+    "error": "Erreur",
+    "success": "Succès",
+    "warning": "Avertissement",
+    "info": "Information",
+    "confirm": "Confirmer",
+    "close": "Fermer",
+    "viewAll": "Voir tout"
+  },
+  "auth": {
+    "login": "Connexion",
+    "register": "Inscription",
+    "logout": "Déconnexion",
+    "email": "Email",
+    "password": "Mot de passe",
+    "firstName": "Prénom",
+    "lastName": "Nom",
+    "forgotPassword": "Mot de passe oublié?",
+    "loginSuccess": "Connexion réussie",
+    "loginError": "Erreur de connexion",
+    "registerSuccess": "Inscription réussie",
+    "registerError": "Erreur lors de l'inscription"
+  },
+  "sync": {
+    "status": {
+      "offline": "Hors ligne",
+      "syncing": "Synchronisation...",
+      "synced": "À jour",
+      "error": "Erreur de synchronisation",
+      "idle": "En attente"
+    },
+    "lastSync": "Dernière sync: {{time}}",
+    "pendingOperations": "{{count}} opérations en attente",
+    "syncNow": "Synchroniser maintenant",
+    "autoSync": "Synchronisation automatique",
+    "conflicts": "Conflits détectés",
+    "resolveConflict": "Résoudre le conflit"
+  },
+  "dashboard": {
+    "title": "Tableau de bord",
+    "totalProjects": "Projets totaux",
+    "activeProjects": "Projets actifs",
+    "completedProjects": "Projets terminés",
+    "totalBudget": "Budget total",
+    "recentProjects": "Projets récents",
+    "recentActivities": "Activités récentes",
+    "upcomingDeadlines": "Échéances à venir",
+    "statistics": "Statistiques"
+  },
+  "project": {
+    "title": "Projet",
+    "projects": "Projets",
+    "new": "Nouveau projet",
+    "newProject": "Nouveau projet",
+    "createDescription": "Créez un nouveau projet en remplissant les informations ci-dessous",
+    "editProject": "Modifier le projet",
+    "deleteProject": "Supprimer le projet",
+    "projectDetails": "Détails du projet",
+    "noProjects": "Aucun projet pour le moment",
+    "objet": "Objet",
+    "marcheNo": "Marché N°",
+    "annee": "Année",
+    "dateOuverture": "Date d'ouverture",
+    "montant": "Montant (MAD)",
+    "snss": "SNSS",
+    "cbn": "C.B.N°",
+    "rcn": "R.C.N°",
+    "societe": "Société",
+    "patente": "Patente",
+    "delaisEntreeService": "Délais d'entrée en service",
+    "osc": "OSC",
+    "status": {
+      "draft": "Brouillon",
+      "active": "Actif",
+      "completed": "Terminé",
+      "archived": "Archivé"
+    },
+    "progress": "Avancement",
+    "folderPath": "Chemin du dossier"
+  },
+  "bordereau": {
+    "title": "Bordereau",
+    "bordereaux": "Bordereaux",
+    "newBordereau": "Nouveau bordereau",
+    "reference": "Référence",
+    "designation": "Désignation",
+    "unite": "Unité",
+    "quantite": "Quantité",
+    "prixUnitaire": "Prix unitaire",
+    "montantTotal": "Montant total"
+  },
+  "metre": {
+    "title": "Métré",
+    "metres": "Métrés",
+    "newMetre": "Nouveau métré",
+    "reference": "Référence",
+    "designation": "Désignation",
+    "mesures": "Mesures",
+    "longueur": "Longueur",
+    "largeur": "Largeur",
+    "hauteur": "Hauteur",
+    "quantite": "Quantité",
+    "totalQuantite": "Quantité totale"
+  },
+  "decompt": {
+    "title": "Décompte",
+    "decompts": "Décomptes",
+    "newDecompt": "Nouveau décompte",
+    "periode": "Période",
+    "numero": "Numéro",
+    "lignes": "Lignes",
+    "montantTotal": "Montant total",
+    "statut": {
+      "draft": "Brouillon",
+      "submitted": "Soumis",
+      "validated": "Validé",
+      "paid": "Payé"
+    },
+    "generatePDF": "Générer PDF"
+  },
+  "photo": {
+    "title": "Photo",
+    "photos": "Photos",
+    "uploadPhoto": "Télécharger une photo",
+    "description": "Description",
+    "tags": "Étiquettes",
+    "location": "Localisation"
+  },
+  "pv": {
+    "title": "Procès-Verbal",
+    "pvs": "Procès-Verbaux",
+    "newPV": "Nouveau PV",
+    "type": {
+      "installation": "Installation",
+      "reception": "Réception",
+      "constat": "Constat",
+      "other": "Autre"
+    },
+    "numero": "Numéro",
+    "date": "Date",
+    "objet": "Objet",
+    "contenu": "Contenu",
+    "participants": "Participants",
+    "attachments": "Pièces jointes"
+  },
+  "attachment": {
+    "title": "Pièce jointe",
+    "attachments": "Pièces jointes",
+    "uploadFile": "Télécharger un fichier",
+    "category": {
+      "facture": "Facture",
+      "bp": "Bon de paiement",
+      "plan": "Plan",
+      "autre": "Autre"
+    }
+  },
+  "settings": {
+    "title": "Paramètres",
+    "language": "Langue",
+    "theme": "Thème",
+    "notifications": "Notifications",
+    "account": "Compte",
+    "sync": "Synchronisation"
+  }
+}

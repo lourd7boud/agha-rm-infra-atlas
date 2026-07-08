@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  couchdb:
+    image: couchdb:3.3
+    container_name: projet-couchdb
+    restart: always
+    ports:
+      - "5984:5984"
+    environment:
+      - COUCHDB_USER=admin
+      - COUCHDB_PASSWORD=password
+    volumes:
+      - couchdb_data:/opt/couchdb/data
+    networks:
+      - projet-network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: projet-postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=projet_gestion
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - projet-network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: projet-api
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - COUCHDB_URL=http://admin:password@couchdb:5984
+      - POSTGRES_URL=postgresql://admin:password@postgres:5432/projet_gestion
+      - CORS_ORIGIN=*
+      - JWT_SECRET=super_secret_jwt_key_minimum_32_caracteres_pour_securite
+      - JWT_EXPIRES_IN=7d
+    depends_on:
+      - couchdb
+      - postgres
+    volumes:
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    networks:
+      - projet-network
+
+volumes:
+  couchdb_data:
+  postgres_data:
+
+networks:
+  projet-network:
+    driver: bridge

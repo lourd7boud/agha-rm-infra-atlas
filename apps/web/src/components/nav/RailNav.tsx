@@ -8,6 +8,10 @@ interface NavItem {
   href: string;
   label: string;
   icon: IconName;
+  /** Render as a plain full-page anchor instead of a Next client-side link.
+   *  Used for surfaces served outside the Next app (e.g. /projects/ — the ported
+   *  BTP construction-management SPA proxied by nginx, not a Next route). */
+  external?: boolean;
 }
 
 const ITEMS: readonly NavItem[] = [
@@ -17,7 +21,7 @@ const ITEMS: readonly NavItem[] = [
   { href: '/tenders/searches', label: 'Recherches sauvegardées', icon: 'search' },
   { href: '/tenders/ai', label: 'Assistant IA', icon: 'agents' },
   { href: '/expert', label: 'Agent AGHA', icon: 'intel' },
-  { href: '/projects', label: 'Projets & Chantiers', icon: 'chantiers' },
+  { href: '/projects/', label: 'Projets & Chantiers', icon: 'chantiers', external: true },
   { href: '/stock', label: 'Stock & Matériaux', icon: 'boxes' },
   { href: '/equipment', label: 'Matériel & Équipements', icon: 'equipment' },
   { href: '/supply', label: 'Approvisionnements', icon: 'supply' },
@@ -75,19 +79,13 @@ export function RailNav({
 
   function renderItem(item: NavItem) {
     const active = isActive(path, item.href, allHrefs);
-    return (
-      <Link
-        key={item.href}
-        href={item.href}
-        aria-current={active ? 'page' : undefined}
-        className={`group relative flex items-center gap-2.5 rounded-md text-sm transition ${
-          horizontal ? 'shrink-0 px-3 py-1.5' : 'px-3 py-2'
-        } ${
-          active
-            ? 'bg-cyan-soft/60 text-ink'
-            : 'text-muted hover:bg-rail-2 hover:text-ink'
-        }`}
-      >
+    const className = `group relative flex items-center gap-2.5 rounded-md text-sm transition ${
+      horizontal ? 'shrink-0 px-3 py-1.5' : 'px-3 py-2'
+    } ${
+      active ? 'bg-cyan-soft/60 text-ink' : 'text-muted hover:bg-rail-2 hover:text-ink'
+    }`;
+    const inner = (
+      <>
         {!horizontal && (
           <span
             className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-r-full bg-cyan transition-all ${
@@ -101,6 +99,26 @@ export function RailNav({
           className={active ? 'text-cyan' : 'text-faint group-hover:text-muted'}
         />
         <span className="whitespace-nowrap font-medium">{item.label}</span>
+      </>
+    );
+    // External surfaces (e.g. the /projects BTP SPA served by nginx, not Next)
+    // need a real document navigation, so Next's client router doesn't intercept
+    // and render a (now non-existent) internal route.
+    if (item.external) {
+      return (
+        <a key={item.href} href={item.href} className={className}>
+          {inner}
+        </a>
+      );
+    }
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        aria-current={active ? 'page' : undefined}
+        className={className}
+      >
+        {inner}
       </Link>
     );
   }

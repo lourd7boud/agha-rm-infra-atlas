@@ -1,0 +1,87 @@
+# ATLAS "Projets & Chantiers" module — the ported BTP construction-management app.
+#
+# This is a lift-and-shift of the standalone BTP app (formerly marocinfra.com)
+# into the ATLAS platform, served at atlas.marocinfra.com/projects/. The backend
+# is the original Express + raw-`pg` API (source in ../projects-app/backend); the
+# React SPA (../projects-app/frontend-web) is built to static assets served by the
+# host nginx under /projects/ (see platform/nginx/atlas.marocinfra.com.conf).
+#
+# The backend's only real dependencies are Postgres + a local uploads dir — the
+# CouchDB/Redis/MinIO references in the original repo are vestigial (unused by the
+# running code), so they are intentionally omitted here.
+#
+# Secrets live in platform/.env.projects on the VPS (git-ignored). Bring the stack
+# up with:
+#   docker compose -f docker-compose.projects.yml --env-file .env.projects up -d
+services:
+  projects-postgres:
+    image: postgres:16-alpine
+    container_name: atlas-projects-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${PROJECTS_DB_USER:-btpuser}
+      POSTGRES_PASSWORD: ${PROJECTS_DB_PASSWORD:?set PROJECTS_DB_PASSWORD in .env.projects}
+      POSTGRES_DB: ${PROJECTS_DB_NAME:-btpdb}
+    volumes:
+      - projects_pg_data:/var/lib/postgresql/data
+    networks:
+      - projects-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PROJECTS_DB_USER:-btpuser} -d ${PROJECTS_DB_NAME:-btpdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+
+  projects-api:
+    build:
+      context: ../projects-app/backend
+    image: atlas-projects-api:latest
+    container_name: atlas-projects-api
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      POSTGRES_HOST: projects-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${PROJECTS_DB_NAME:-btpdb}
+      POSTGRES_USER: ${PROJECTS_DB_USER:-btpuser}
+      POSTGRES_PASSWORD: ${PROJECTS_DB_PASSWORD:?set PROJECTS_DB_PASSWORD in .env.projects}
+      POSTGRES_SSL: "false"
+      JWT_SECRET: ${PROJECTS_JWT_SECRET:?set PROJECTS_JWT_SECRET in .env.projects}
+      JWT_EXPIRES_IN: 7d
+      JWT_REFRESH_SECRET: ${PROJECTS_JWT_REFRESH_SECRET:?set PROJECTS_JWT_REFRESH_SECRET in .env.projects}
+      JWT_REFRESH_EXPIRES_IN: 30d
+      # Same-origin under atlas.marocinfra.com, but keep an explicit allowlist for
+      # the socket.io/polling handshake and any non-simple requests.
+      CORS_ORIGIN: https://atlas.marocinfra.com,https://marocinfra.com
+      LOG_LEVEL: info
+    volumes:
+      # Migrated file store (photos, PVs, documents) from the old box.
+      - /opt/atlas/projects-data/uploads:/app/uploads
+      - /opt/atlas/projects-data/logs:/app/logs
+    depends_on:
+      projects-postgres:
+        condition: service_healthy
+    networks:
+      - projects-net
+    ports:
+      # Loopback only — host nginx proxies /projects/api, /projects/socket.io,
+      # /projects/uploads to this port.
+      - "127.0.0.1:13010:5000"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024m
+
+volumes:
+  projects_pg_data:
+
+networks:
+  projects-net:
+    driver: bridge
