@@ -13,6 +13,7 @@ import {
   InMemoryTenderRepository,
   type CreateTender,
 } from './tender.repository';
+import { buildBuyerProfiles } from './buyer-observatory.domain';
 
 const NOW = new Date('2026-06-13T00:00:00Z');
 
@@ -549,5 +550,29 @@ describe('NULL-column fallback (pre-backfill correctness)', () => {
     expect(item.category).toBe('Services');
     expect(item.secteur).toBe('Génie civil');
     expect(item.lotCount).toBe(3);
+  });
+});
+
+describe('buyer-observatory light projection (findBuyerObservationRows)', () => {
+  test('carries only the six base fields the observatory folds over (no raw)', async () => {
+    const repo = await seed();
+    const rows = await repo.findBuyerObservationRows();
+    expect(rows).toHaveLength(4);
+    // Shape is exactly the observatory Pick — no jsonb-derived fields leak in.
+    expect(Object.keys(rows[0]!).sort()).toEqual(
+      ['buyerName', 'deadlineAt', 'estimationMad', 'objet', 'pipelineState', 'procedure'].sort(),
+    );
+  });
+
+  test('yields the SAME profiles as folding the full inventory rows (faithful substitute)', async () => {
+    const repo = await seed();
+    const light = await repo.findBuyerObservationRows();
+    const full = await repo.findAllInventoryRows();
+    // The observatory only ever reads base fields, so the light projection must
+    // produce byte-identical profiles to the heavy (raw-detoasting) row set.
+    expect(buildBuyerProfiles(light)).toEqual(buildBuyerProfiles(full));
+    // And it actually groups: Commune de Rabat has 2 tenders, the others 1 each.
+    const rabat = buildBuyerProfiles(light).find((p) => p.buyerName === 'Commune de Rabat')!;
+    expect(rabat.tenderCount).toBe(2);
   });
 });

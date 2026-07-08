@@ -39,6 +39,7 @@ import {
   type TenderCategory,
 } from './inventory.domain';
 import type { CompetitorBidRecord } from '../intel/intel.repository';
+import type { BuyerObservationRow } from './buyer-observatory.domain';
 import { readAiEnrichment } from './ai-enrichment';
 import { readDossierExtraction } from './dossier-extraction';
 
@@ -262,6 +263,15 @@ export interface TenderRepository {
    */
   findAllInventoryRows(): Promise<InventoryRow[]>;
   /**
+   * Buyer-observatory projection: ONLY the six base columns the observatory folds
+   * over (buyerName/objet/procedure/estimation/deadline/pipelineState). Unlike
+   * findAllInventoryRows it never touches `raw`, so Postgres does NOT detoast the
+   * 90k+ jsonb blobs just to discard them — the /buyers + /buyers/:name reads become
+   * a light base-column scan (no jsonb, no competitor_bid) instead of a whole-catalogue
+   * detoast + a 550k-row bid load. Aggregation stays in JS (one row per buyer).
+   */
+  findBuyerObservationRows(): Promise<BuyerObservationRow[]>;
+  /**
    * DB-side inventory read (P2 scalable-read): pushes filtering, sort, pagination
    * and the column-based facets to Postgres so per-request cost is O(page) instead
    * of O(catalogue). Returns the SAME `{ total, filteredCount, returnedCount,
@@ -449,6 +459,17 @@ export class InMemoryTenderRepository implements TenderRepository {
         lotCount: r.lotCount ?? null,
       };
     });
+  }
+
+  async findBuyerObservationRows(): Promise<BuyerObservationRow[]> {
+    return this.records.map((r) => ({
+      buyerName: r.buyerName,
+      objet: r.objet,
+      procedure: r.procedure,
+      estimationMad: r.estimationMad,
+      deadlineAt: r.deadlineAt,
+      pipelineState: r.pipelineState,
+    }));
   }
 
   async findInventoryPage(
@@ -998,6 +1019,31 @@ export class DrizzleTenderRepository implements TenderRepository {
       category: row.category,
       secteur: row.secteur,
       lotCount: row.lotCount,
+    }));
+  }
+
+  async findBuyerObservationRows(): Promise<BuyerObservationRow[]> {
+    // Base columns ONLY — no reference to `raw`, so Postgres never detoasts the
+    // 90k+ jsonb blobs (the whole-catalogue detoast that made /buyers heavy). A
+    // plain seq-scan of six small columns; aggregation into one row per buyer stays
+    // in JS. The list is unordered — buildBuyerProfiles groups + sorts.
+    const rows = await this.db
+      .select({
+        buyerName: tenders.buyerName,
+        objet: tenders.objet,
+        procedure: tenders.procedure,
+        estimationMad: tenders.estimationMad,
+        deadlineAt: tenders.deadlineAt,
+        pipelineState: tenders.pipelineState,
+      })
+      .from(tenders);
+    return rows.map((row) => ({
+      buyerName: row.buyerName,
+      objet: row.objet,
+      procedure: row.procedure as TenderProcedure,
+      estimationMad: row.estimationMad != null ? Number(row.estimationMad) : undefined,
+      deadlineAt: row.deadlineAt,
+      pipelineState: row.pipelineState as PipelineState,
     }));
   }
 

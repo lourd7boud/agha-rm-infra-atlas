@@ -125,5 +125,15 @@ export const competitorBids = intel.table(
     // Per-competitor rollup (all bids by concurrent X) must not seq-scan the bid
     // archive as it grows — back the competitor-scoped read with a btree index.
     index('competitor_bid_competitor_id_idx').on(table.competitorId),
+    // Canonical (accent-STRIPPING) buyer fold — backs findBidsForBuyer (the
+    // competitor-intel drawer's one-buyer read) so it is O(log n + matches), never a
+    // whole-table scan. The expression MUST stay byte-identical to the query's WHERE
+    // (intel.repository.ts) for the planner to use it. Uses the IMMUTABLE unaccent
+    // wrapper (plain unaccent() is only STABLE, rejected in index expressions). The
+    // hand-authored migration 0042 is the source of truth (drizzle-kit generate is
+    // blocked by the 0026 snapshot collision); declared here for schema parity.
+    index('competitor_bid_buyer_canon_idx').on(
+      sql`btrim(regexp_replace(lower(intel.immutable_unaccent(${table.buyerName})), '[^a-z0-9]+', ' ', 'g'))`,
+    ),
   ],
 );

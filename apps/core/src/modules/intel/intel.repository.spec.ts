@@ -530,4 +530,32 @@ describe('InMemoryIntelRepository.listResultMarkets (deduped, OOM-safe lifecycle
       expect(fm.winner?.amountMad).toBe(fb.winner?.amountMad);
     }
   });
+
+  it('findBidsForBuyer scopes to ONE buyer under the canonical fold (accent/case/punctuation-insensitive)', async () => {
+    const repo = new InMemoryIntelRepository();
+    const alpha = await repo.upsertCompetitor('STE ALPHA');
+    const beta = await repo.upsertCompetitor('STE BETA');
+    // Two bids for the SAME buyer, spelled with drift (accent + punctuation) — both
+    // must be returned when we ask for the accent-stripped/space-collapsed spelling.
+    await repo.insertResult(
+      { reference: 'AO/1', buyerName: 'Préfecture d’Oujda', bidderName: 'STE ALPHA', amountMad: 800_000, isWinner: true },
+      alpha.id,
+    );
+    await repo.insertResult(
+      { reference: 'AO/2', buyerName: 'PREFECTURE D OUJDA', bidderName: 'STE BETA', amountMad: 500_000, isWinner: false },
+      beta.id,
+    );
+    // A bid for a DIFFERENT buyer that must NOT leak in.
+    await repo.insertResult(
+      { reference: 'AO/9', buyerName: 'Commune de Rabat', bidderName: 'STE ALPHA', amountMad: 100_000, isWinner: true },
+      alpha.id,
+    );
+
+    const scoped = await repo.findBidsForBuyer('Prefecture d Oujda');
+    expect(scoped.map((b) => b.reference).sort()).toEqual(['AO/1', 'AO/2']);
+    // Both drift spellings match; the other buyer is excluded.
+    expect(scoped.every((b) => b.reference !== 'AO/9')).toBe(true);
+    // Empty/whitespace buyer never scans the table.
+    expect(await repo.findBidsForBuyer('')).toEqual([]);
+  });
 });

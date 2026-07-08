@@ -90,6 +90,15 @@ export interface IntelRepository {
    */
   listResultMarkets(): Promise<CompetitorBidRecord[]>;
   /**
+   * Every bid for ONE buyer (matched on the canonical, accent-stripped buyer key —
+   * the same fold buildTenderCompetitorIntel uses). The per-tender competitor-intel
+   * view only ever needs this buyer's history + this tender's result, so it loads a
+   * few dozen rows instead of the whole 550k competitor_bid table via listAllBids()
+   * (which — with the raw-catalogue findAll of loadCatalogSnapshot — OOM-crashed the
+   * core when a drawer's "Concurrents" tab was opened). Empty buyer ⇒ [].
+   */
+  findBidsForBuyer(buyerName: string): Promise<CompetitorBidRecord[]>;
+  /**
    * Returns only the WINNER bids (`isWinner`) whose reference matches one of the
    * given canonical reference keys (folded with {@link canonicalReferenceKey}:
    * lowercased, every non-alphanumeric run collapsed to a single space, trimmed).
@@ -357,6 +366,12 @@ export class InMemoryIntelRepository implements IntelRepository {
     return markets;
   }
 
+  async findBidsForBuyer(buyerName: string): Promise<CompetitorBidRecord[]> {
+    const key = canonicalReferenceKey(buyerName);
+    if (!key) return [];
+    return this.bids.filter((b) => canonicalReferenceKey(b.buyerName) === key);
+  }
+
   async findWinnersByReferences(
     canonicalKeys: readonly string[],
   ): Promise<CompetitorBidRecord[]> {
@@ -568,6 +583,27 @@ export class DrizzleIntelRepository implements IntelRepository {
         createdAt: resultDate ?? new Date(0),
       } satisfies CompetitorBidRecord;
     });
+  }
+
+  async findBidsForBuyer(buyerName: string): Promise<CompetitorBidRecord[]> {
+    // The competitor-intel drawer needs only ONE buyer's bids, so we filter in the
+    // DB instead of dragging the whole 550k-row table into the core (which OOM-killed
+    // it via loadCatalogSnapshot). Fold buyer_name the SAME way canonicalReferenceKey
+    // does in TS — lowercase + unaccent, collapse every non-alphanumeric run to one
+    // space, trim — so spelling/accent/punctuation drift between our tender's buyer and
+    // the stored bid buyer still matches. This expression is byte-identical to the
+    // functional index competitor_bid_buyer_canon_idx (migration 0042), so the equality
+    // is index-backed — O(log n + matches), never a whole-table scan even as the bid
+    // archive grows past 300k rows. intel.immutable_unaccent is the IMMUTABLE unaccent
+    // wrapper the index requires (plain unaccent() is only STABLE).
+    const key = canonicalReferenceKey(buyerName);
+    if (!key) return [];
+    const canonical = sql`btrim(regexp_replace(lower(intel.immutable_unaccent(${competitorBids.buyerName})), '[^a-z0-9]+', ' ', 'g'))`;
+    const rows = await this.db
+      .select()
+      .from(competitorBids)
+      .where(eq(canonical, key));
+    return rows.map(mapBidRow);
   }
 
   async findWinnersByReferences(

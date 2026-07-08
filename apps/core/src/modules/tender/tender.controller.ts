@@ -69,13 +69,11 @@ const chatBodySchema = z.object({
 });
 import {
   type Inventory,
-  type InventoryRow,
   type InventoryFilters,
 } from './inventory.domain';
 import { readPortalDetail } from './portal-detail';
 import {
   INTEL_REPOSITORY,
-  type CompetitorBidRecord,
   type IntelRepository,
 } from '../intel/intel.repository';
 
@@ -229,27 +227,6 @@ const liveParticipantsCache = new TtlCache<unknown>();
 // of drawer opens collapses to one scan. Keyed by tenderId.
 const COMPETITOR_INTEL_CACHE_TTL_MS = 60_000;
 const competitorIntelCache = new TtlCache<unknown>();
-// The ?since= delta poll and the buyer observatory need the FULL catalogue
-// (facets/totals span everything), so they can't be bounded in SQL without
-// breaking the client contract. Instead every consumer shares one short-lived
-// snapshot of the two scans: N concurrent pollers/pages → at most one
-// findAll + listAllBids per window, single-flighted by TtlCache. 10 s keeps
-// the live refresh honest (client polls are slower than that).
-const CATALOG_SNAPSHOT_TTL_MS = 10_000;
-interface CatalogSnapshot {
-  records: TenderRecord[];
-  bids: CompetitorBidRecord[];
-}
-const catalogSnapshotCache = new TtlCache<CatalogSnapshot>();
-// Light snapshot for the buyer observatory — projected rows (NO raw jsonb) + the
-// bid scan. The INVENTORY read no longer uses this: it computes its page + facets
-// in Postgres (findInventoryPageRows / findInventoryFacets) and needs only the tiny
-// bid set below, so it never triggers the whole-catalogue row scan. Buyers keep it.
-interface InventoryLightSnapshot {
-  rows: InventoryRow[];
-  bids: CompetitorBidRecord[];
-}
-const inventoryLightSnapshotCache = new TtlCache<InventoryLightSnapshot>();
 // The ?since= delta poll's PAGE must read fresher than the 30 s window; a 2 s
 // single-flighted cache coalesces concurrent pollers (every open tab) into one tiny
 // `updated_at > since` page query. Facets/total are shared from the 30 s cache — a
@@ -629,7 +606,11 @@ export class TenderController {
   @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
   @Get('tenders')
   async list() {
-    const { records } = await this.loadCatalogSnapshot();
+    // Records only — the deadline wall never needs competitor_bid, so it must not
+    // ride loadCatalogSnapshot's listAllBids (550k rows). This was the last consumer
+    // keeping that scan alive; with the competitor-intel drawer now scoped, the
+    // whole-bid-table load is gone from the read path entirely.
+    const records = await this.repository.findAll();
     return [...records]
       .sort((a, b) => a.deadlineAt.getTime() - b.deadlineAt.getTime())
       .map(present);
@@ -675,11 +656,11 @@ export class TenderController {
   @Roles('marches', 'direction', 'admin-si')
   @Get('buyers')
   async buyers() {
-    // Light projected rows (NO raw): the observatory only reads base fields
-    // (buyerName/objet/procedure/estimation/deadline/state), so it must not drag
-    // the whole raw catalogue over the wire + block the event loop like the old
-    // loadCatalogSnapshot path did.
-    const { rows } = await this.loadInventoryLight();
+    // Base-column projection (NO raw jsonb, NO competitor_bid): the observatory reads
+    // only buyerName/objet/procedure/estimation/deadline/state, so it must never
+    // detoast the whole raw catalogue or load the 550k-row bid table (the old
+    // loadInventoryLight did both). findBuyerObservationRows is a light seq-scan.
+    const rows = await this.repository.findBuyerObservationRows();
     return buildBuyerProfiles(rows);
   }
 
@@ -687,7 +668,7 @@ export class TenderController {
   @Roles('marches', 'direction', 'admin-si')
   @Get('buyers/:name')
   async buyer(@Param('name') name: string) {
-    const { rows } = await this.loadInventoryLight();
+    const rows = await this.repository.findBuyerObservationRows();
     const profile = buildBuyerProfile(rows, name);
     if (!profile) throw new NotFoundException(`Buyer not found: ${name}`);
     return profile;
@@ -846,7 +827,12 @@ export class TenderController {
       id,
       COMPETITOR_INTEL_CACHE_TTL_MS,
       async () => {
-        const { bids } = await this.loadCatalogSnapshot();
+        // Scoped read: only THIS buyer's bids, filtered in Postgres — never the
+        // whole 550k-row competitor_bid table (loadCatalogSnapshot's listAllBids,
+        // which OOM-crashed the core). The drawer needs one buyer's history, and
+        // buildTenderCompetitorIntel re-folds precisely (closed by ref+buyer, open
+        // by buyer); findBidsForBuyer returns the correct superset for both.
+        const bids = await this.intel.findBidsForBuyer(tender.buyerName);
         return buildTenderCompetitorIntel(
           {
             reference: tender.reference,
@@ -872,39 +858,6 @@ export class TenderController {
     const record = await this.repository.findById(id);
     if (!record) throw new NotFoundException(`Tender not found: ${id}`);
     return record;
-  }
-
-  /** Shared 10 s snapshot of the tender catalogue + competitor bids — every
-   *  full-scan consumer funnels through here (see CATALOG_SNAPSHOT_TTL_MS). */
-  private loadCatalogSnapshot(): Promise<CatalogSnapshot> {
-    return catalogSnapshotCache.getOrCompute(
-      'snapshot',
-      CATALOG_SNAPSHOT_TTL_MS,
-      async () => {
-        const [records, bids] = await Promise.all([
-          this.repository.findAll(),
-          this.intel.listAllBids(),
-        ]);
-        return { records, bids };
-      },
-    );
-  }
-
-  /** Light 10 s snapshot for the list path — projected rows (NO raw) + the bid
-   *  scan. Shared by every inventory cache-miss so concurrent filters trigger at
-   *  most one projected findAll + listAllBids per window. */
-  private loadInventoryLight(): Promise<InventoryLightSnapshot> {
-    return inventoryLightSnapshotCache.getOrCompute(
-      'snapshot',
-      CATALOG_SNAPSHOT_TTL_MS,
-      async () => {
-        const [rows, bids] = await Promise.all([
-          this.repository.findAllInventoryRows(),
-          this.intel.listAllBids(),
-        ]);
-        return { rows, bids };
-      },
-    );
   }
 
   /** Whole-catalogue facets + total (filter-INDEPENDENT), computed ONCE per 30 s
