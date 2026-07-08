@@ -21,6 +21,7 @@ import {
 } from '../intel/rebate-selector.domain';
 import {
   TENDER_REPOSITORY,
+  type ReferenceBpuPrice,
   type TenderRecord,
   type TenderRepository,
 } from '../tender/tender.repository';
@@ -57,6 +58,14 @@ import {
   buildAdminFinancialDossier,
   type AdminFinancialDossier,
 } from './dossier-admin.domain';
+import {
+  buildPriceBook,
+  buildReferenceHints,
+  resolveReferencePrices,
+  summarizeBasis,
+  type PriceBookEntry,
+  type PricingBasis,
+} from './pricing-reference.domain';
 
 /**
  * Agent AGHA-RM-INFRA — the company's in-house public-procurement expert.
@@ -83,6 +92,12 @@ export const EXPERT_LLM_CLIENT = Symbol('EXPERT_LLM_CLIENT');
 const DEFAULT_COMPETITOR_ASSUMPTION = 5;
 /** Hard cap on BPU lines sent to the LLM for unit-price suggestions. */
 const MAX_LLM_BPU_LINES = 200;
+/** Price-book size cap — learned reference lines pulled from past estimatifs. */
+const MAX_REFERENCE_LINES = 4000;
+/** Reference-price cache TTL — spares pg on bursts of BPU proposals. */
+const PRICE_BOOK_TTL_MS = 5 * 60_000;
+/** Max resolved reference prices injected into the LLM prompt as anchors. */
+const MAX_PRICING_HINTS = 40;
 
 const AVIS_RESPONSE_SCHEMA: Record<string, unknown> = {
   type: 'object',
@@ -165,6 +180,9 @@ export interface ExpertAnalysis {
 interface StoredBpu extends BpuProposal {
   generatedAt: string;
   model: string | null;
+  /** Where each unit price came from (dce / historique / ia / aucune). Optional:
+   *  BPU proposals stored before the reference-pricing engine landed omit it. */
+  pricingBasis?: PricingBasis;
 }
 
 function readStoredBpu(raw: Record<string, unknown> | null): StoredBpu | null {
@@ -188,6 +206,7 @@ export class ExpertService {
   private readonly logger = new Logger('AghaExpert');
   private knowledgeCache: { value: ExpertKnowledge; at: number } | null = null;
   private knowledgeInflight: Promise<ExpertKnowledge> | null = null;
+  private priceBookCache: { value: PriceBookEntry[]; at: number } | null = null;
 
   constructor(
     @Inject(TENDER_REPOSITORY) private readonly tenders: TenderRepository,
@@ -398,7 +417,11 @@ export class ExpertService {
       rabais = this.recommendedRabais(scenarios, benchmark).recommandePct;
     }
 
-    const { prices, model } = await this.suggestUnitPrices(tender, lines, segment);
+    const { prices, model, basis } = await this.suggestUnitPrices(
+      tender,
+      lines,
+      segment,
+    );
 
     let proposal: BpuProposal;
     try {
@@ -414,6 +437,7 @@ export class ExpertService {
       ...proposal,
       generatedAt: now.toISOString(),
       model,
+      pricingBasis: basis,
     };
     await this.tenders
       .updateEnrichment(id, {}, { aghaBpu: stored })
@@ -542,9 +566,7 @@ export class ExpertService {
   }): Promise<ExpertAvis | null> {
     // Strongest engine first, default client as fallback — the avis must
     // survive a 503 on the premium route.
-    const engines = [this.expertLlm, this.llm].filter(
-      (e): e is LlmClient => e !== null,
-    );
+    const engines = this.llmEngines();
     if (engines.length === 0) return null;
     let lastError: unknown = null;
     for (const engine of engines) {
@@ -613,51 +635,175 @@ export class ExpertService {
     return { ...result.data, model: completion.model };
   }
 
+  /** Strongest engine first (the dedicated top-tier expert model), default
+   *  extraction client as fallback — pricing + avis must survive a 503 on the
+   *  premium route rather than silently drop to no answer. */
+  private llmEngines(): LlmClient[] {
+    return [this.expertLlm, this.llm].filter((e): e is LlmClient => e !== null);
+  }
+
+  /**
+   * The learned price book — priced lines pulled from every détail estimatif the
+   * platform has already extracted, tokenized for similarity matching. Cached
+   * briefly so a burst of BPU proposals doesn't re-scan the recent tail each time.
+   */
+  private async getPriceBook(now = Date.now()): Promise<PriceBookEntry[]> {
+    if (this.priceBookCache && now - this.priceBookCache.at < PRICE_BOOK_TTL_MS) {
+      return this.priceBookCache.value;
+    }
+    const refs = await this.tenders
+      .findReferenceBpuPrices(MAX_REFERENCE_LINES)
+      .catch((error: unknown) => {
+        this.logger.warn(`price book read failed: ${(error as Error).message}`);
+        return [] as ReferenceBpuPrice[];
+      });
+    const book = buildPriceBook(refs);
+    this.priceBookCache = { value: book, at: Date.now() };
+    return book;
+  }
+
+  /**
+   * Suggests one unit price per BPU line, best-first: the DCE's OWN estimatif
+   * price, then the learned historical price book, then — only for the lines
+   * neither could price — the top-tier LLM (handed the resolved anchors so its
+   * numbers stay coherent). Returns the price vector, the model that priced the
+   * IA lines (null if none), and the provenance tally. Every number is still
+   * recalibrated onto the target downstream by buildBpuProposal.
+   */
   private async suggestUnitPrices(
     tender: TenderRecord,
     lines: ReadonlyArray<{
       designation: string;
       quantite?: number | null;
       unite?: string | null;
+      prixUnitaireMad?: number | null;
     }>,
     segment: string,
-  ): Promise<{ prices: Array<number | null>; model: string | null }> {
-    if (!this.llm) {
-      return { prices: lines.map(() => null), model: null };
+  ): Promise<{
+    prices: Array<number | null>;
+    model: string | null;
+    basis: PricingBasis;
+  }> {
+    const designations = lines.map((line) => line.designation);
+    const unites = lines.map((line) => line.unite ?? null);
+    const dcePrices = lines.map((line) => line.prixUnitaireMad ?? null);
+    const priceBook = await this.getPriceBook();
+    const resolved = resolveReferencePrices({
+      dcePrices,
+      designations,
+      unites,
+      priceBook,
+    });
+
+    // Only the lines no reference could price fall through to the LLM.
+    const unresolved = resolved.flatMap((line, i) =>
+      line.prixUnitaireMad === null ? [i] : [],
+    );
+    let model: string | null = null;
+    const iaPrices = new Map<number, number>();
+    const engines = this.llmEngines();
+    if (unresolved.length > 0 && engines.length > 0) {
+      const sent = unresolved.slice(0, MAX_LLM_BPU_LINES);
+      const hints = buildReferenceHints(designations, resolved, MAX_PRICING_HINTS);
+      const result = await this.completeUnitPrices(
+        engines,
+        tender,
+        segment,
+        sent.map((i) => ({
+          designation: designations[i] as string,
+          quantite: lines[i]?.quantite ?? 1,
+          unite: unites[i] ?? null,
+        })),
+        hints,
+      ).catch((error: unknown) => {
+        this.logger.warn(
+          `BPU price suggestion failed: ${(error as Error).message}`,
+        );
+        return { prices: [] as Array<number | null>, model: null };
+      });
+      model = result.model;
+      sent.forEach((lineIndex, k) => {
+        const price = result.prices[k];
+        if (typeof price === 'number' && Number.isFinite(price) && price > 0) {
+          iaPrices.set(lineIndex, price);
+        }
+      });
     }
-    const sent = lines.slice(0, MAX_LLM_BPU_LINES);
-    const listing = sent
+
+    // Fold the IA prices back in without mutating the resolved objects.
+    const finalResolved = resolved.map((line, i) => {
+      const ia = iaPrices.get(i);
+      return ia !== undefined
+        ? { prixUnitaireMad: ia, source: 'ia' as const, score: 0 }
+        : line;
+    });
+
+    return {
+      prices: finalResolved.map((line) => line.prixUnitaireMad),
+      model,
+      basis: summarizeBasis(finalResolved),
+    };
+  }
+
+  /**
+   * Runs the unit-price completion across the engine list (top-tier first), with
+   * the resolved reference prices injected as anchors so the model stays coherent
+   * with the real numbers. Falls through to the next engine on a 503 or an
+   * invalid response; throws only when every engine fails.
+   */
+  private async completeUnitPrices(
+    engines: readonly LlmClient[],
+    tender: TenderRecord,
+    segment: string,
+    lines: ReadonlyArray<{
+      designation: string;
+      quantite: number;
+      unite: string | null;
+    }>,
+    hints: string,
+  ): Promise<{ prices: Array<number | null>; model: string | null }> {
+    const listing = lines
       .map(
         (line, i) =>
-          `${i + 1}. ${line.designation} — quantité ${line.quantite ?? 1} ${line.unite ?? 'u'}`,
+          `${i + 1}. ${line.designation} — quantité ${line.quantite} ${line.unite ?? 'u'}`,
       )
       .join('\n');
-    try {
-      const completion = await this.llm.complete({
-        tier: 'T2',
-        system:
-          'Tu es un métreur-économiste marocain (BTP/hydraulique). Propose des prix unitaires HT réalistes en dirhams (MAD) pour chaque ligne du bordereau. ' +
-          'Ces prix servent de PONDÉRATION RELATIVE (ils seront recalés sur le montant cible) : la cohérence entre lignes prime. ' +
-          'Réponds en JSON strict {"prix": [...]} — un nombre par ligne, dans le MÊME ordre, null si tu n’as aucune base.',
-        prompt:
-          `Consultation : ${tender.objet}\nAcheteur : ${tender.buyerName}\nSegment : ${segment}\n\nBORDEREAU (${sent.length} lignes):\n${listing}`,
-        maxTokens: 8000,
-        responseSchema: BPU_PRICES_RESPONSE_SCHEMA,
-      });
-      const parsed = bpuPricesSchema.safeParse(parseModelJson(completion.text));
-      if (!parsed.success) {
-        this.logger.warn('BPU price suggestion invalid — falling back');
-        return { prices: lines.map(() => null), model: completion.model };
+    const anchors = hints
+      ? `\n\nPRIX DE RÉFÉRENCE DÉJÀ ÉTABLIS (marché réel — cale ta cohérence dessus):\n${hints}`
+      : '';
+    let lastError: unknown = null;
+    for (const engine of engines) {
+      try {
+        const completion = await engine.complete({
+          tier: 'T3',
+          system:
+            'Tu es un métreur-économiste marocain expert (BTP, hydraulique, infrastructures agricoles). ' +
+            'Propose un prix unitaire HT réaliste en dirhams (MAD) pour chaque ligne du bordereau, cohérent avec les prix de référence fournis. ' +
+            'Ces prix servent de PONDÉRATION RELATIVE (ils seront recalés sur le montant cible) : la cohérence entre lignes prime. ' +
+            'Réponds en JSON strict {"prix": [...]} — un nombre par ligne, dans le MÊME ordre, null si tu n’as aucune base.',
+          prompt:
+            `Consultation : ${tender.objet}\nAcheteur : ${tender.buyerName}\nSegment : ${segment}${anchors}\n\n` +
+            `BORDEREAU À CHIFFRER (${lines.length} lignes):\n${listing}`,
+          maxTokens: 8000,
+          responseSchema: BPU_PRICES_RESPONSE_SCHEMA,
+        });
+        const parsed = bpuPricesSchema.safeParse(parseModelJson(completion.text));
+        if (!parsed.success) {
+          lastError = new Error('Réponse IA de prix invalide');
+          this.logger.warn('BPU price suggestion invalid — trying next engine');
+          continue;
+        }
+        const prices = lines.map((_, i) => parsed.data.prix[i] ?? null);
+        return { prices, model: completion.model };
+      } catch (error) {
+        lastError = error;
+        this.logger.warn(
+          `BPU price engine failed, trying next: ${(error as Error).message}`,
+        );
       }
-      // Align to the full line list: truncate extras, pad the tail (and any
-      // lines beyond MAX_LLM_BPU_LINES) with null.
-      const prices = lines.map((_, i) => parsed.data.prix[i] ?? null);
-      return { prices, model: completion.model };
-    } catch (error) {
-      this.logger.warn(
-        `BPU price suggestion failed: ${(error as Error).message}`,
-      );
-      return { prices: lines.map(() => null), model: null };
     }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('Suggestion de prix indisponible');
   }
 }

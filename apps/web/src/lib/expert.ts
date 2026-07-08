@@ -130,6 +130,14 @@ export interface BpuPricedLine {
   montantMad: number;
 }
 
+/** Where each unit price came from — the transparency behind the proposal. */
+export interface PricingBasis {
+  dce: number;
+  historique: number;
+  ia: number;
+  aucune: number;
+}
+
 export interface BpuProposal {
   lines: BpuPricedLine[];
   totalMad: number;
@@ -140,6 +148,8 @@ export interface BpuProposal {
   avertissements: string[];
   generatedAt: string;
   model: string | null;
+  /** Absent on proposals generated before the reference-pricing engine landed. */
+  pricingBasis?: PricingBasis;
 }
 
 export type PieceStatut =

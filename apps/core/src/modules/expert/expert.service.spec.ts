@@ -26,11 +26,23 @@ class FakeLlm implements LlmClient {
 
   async complete(request: LlmRequest): Promise<LlmCompletion> {
     this.calls.push(request);
-    const text =
-      request.tier === 'T3'
-        ? AVIS_JSON
-        : JSON.stringify({ prix: this.bpuPrices });
+    // Pricing + avis both run at tier T3 now, so branch on the response schema:
+    // the BPU-pricing call carries a `prix` property, the avis call a `goNoGo`.
+    const props = (
+      request.responseSchema as { properties?: Record<string, unknown> } | undefined
+    )?.properties;
+    const isBpu = props ? 'prix' in props : false;
+    const text = isBpu ? JSON.stringify({ prix: this.bpuPrices }) : AVIS_JSON;
     return { text, model: 'fake-model', inputTokens: 10, outputTokens: 10 };
+  }
+
+  /** BPU unit-price completions the fake received (vs avis completions). */
+  get bpuCalls(): LlmRequest[] {
+    return this.calls.filter((c) => {
+      const props = (c.responseSchema as { properties?: Record<string, unknown> } | undefined)
+        ?.properties;
+      return props ? 'prix' in props : false;
+    });
   }
 
   async completeVision(): Promise<LlmCompletion> {
@@ -190,6 +202,71 @@ describe('ExpertService.proposeBpu', () => {
 
     expect(proposal.methode).toBe('repartition_uniforme');
     expect(Math.abs(proposal.totalMad - 600_000)).toBeLessThanOrEqual(1);
+  });
+
+  test('prices from the DCE estimatif itself, without consulting the LLM', async () => {
+    const tenders = new InMemoryTenderRepository();
+    const created = await tenders.create({
+      reference: 'AO 10/2026',
+      buyerName: 'ORMVA DE TEST',
+      procedure: 'AOO',
+      objet: 'Travaux hydrauliques',
+      deadlineAt: new Date('2026-09-01T10:00:00Z'),
+      estimationMad: 1_000_000,
+      cautionProvisoireMad: 10_000,
+    });
+    await tenders.updateEnrichment(created.id, {}, {
+      dossierExtraction: {
+        model: 'test',
+        extractedAt: '2026-07-01T00:00:00.000Z',
+        bpu: [
+          { designation: 'Terrassement en masse', quantite: 100, unite: 'm3', prixUnitaireMad: 50 },
+          { designation: 'Béton dosé à 350', quantite: 20, unite: 'm3', prixUnitaireMad: 1200 },
+        ],
+        qualifications: [],
+      },
+    });
+    const llm = new FakeLlm();
+    const service = makeService({ tenders, llm });
+
+    const proposal = await service.proposeBpu(created.id, { rabaisPct: 0 });
+
+    expect(proposal.pricingBasis).toEqual({ dce: 2, historique: 0, ia: 0, aucune: 0 });
+    expect(llm.bpuCalls).toHaveLength(0); // priced from the DCE — LLM not consulted
+    expect(proposal.model).toBeNull();
+    expect(proposal.methode).toBe('calibre_estimation');
+  });
+
+  test('learns a unit price from a past estimatif when the DCE has none', async () => {
+    const tenders = new InMemoryTenderRepository();
+    // A past dossier whose estimatif carried a real unit price → seeds the book.
+    const past = await tenders.create({
+      reference: 'AO 3/2025',
+      buyerName: 'ORMVA HISTORIQUE',
+      procedure: 'AOO',
+      objet: 'Travaux antérieurs',
+      deadlineAt: new Date('2025-06-01T10:00:00Z'),
+    });
+    await tenders.updateEnrichment(past.id, {}, {
+      dossierExtraction: {
+        model: 'test',
+        extractedAt: '2025-06-01T00:00:00.000Z',
+        bpu: [
+          { designation: 'Terrassement en masse', quantite: 1, unite: 'm3', prixUnitaireMad: 55 },
+        ],
+        qualifications: [],
+      },
+    });
+    // Target: same work but the DCE published no unit price (bpu:true = unpriced).
+    const target = await seedTender(tenders, { estimation: 500_000, bpu: true });
+    const llm = new FakeLlm([999, 999]);
+    const service = makeService({ tenders, llm });
+
+    const proposal = await service.proposeBpu(target.id, { rabaisPct: 0 });
+
+    // "Terrassement en masse" priced from history; "Conduite PVC DN200" from IA.
+    expect(proposal.pricingBasis!.historique).toBe(1);
+    expect(proposal.pricingBasis!.ia).toBe(1);
   });
 });
 

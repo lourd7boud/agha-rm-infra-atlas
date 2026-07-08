@@ -182,6 +182,17 @@ export interface EnrichmentAmounts {
   cautionProvisoireMad?: number;
 }
 
+/**
+ * One priced line harvested from a real détail estimatif — the reference corpus
+ * the expert's pricing engine learns from. Structurally a `ReferenceBpuLine`
+ * (expert/pricing-reference.domain), so it feeds the price book directly.
+ */
+export interface ReferenceBpuPrice {
+  designation: string;
+  unite: string | null;
+  prixUnitaireMad: number;
+}
+
 export class DuplicateTenderError extends Error {
   constructor(reference: string, buyerName: string) {
     super(`Tender already registered: ${reference} (${buyerName})`);
@@ -196,6 +207,13 @@ export interface TenderRepository {
   findAll(): Promise<TenderRecord[]>;
   /** Slim full-catalogue read for knowledge aggregation — never ships raw. */
   findAllForKnowledge(): Promise<KnowledgeTenderRow[]>;
+  /**
+   * Priced BPU lines harvested from the détail estimatifs already extracted —
+   * the reference corpus the expert's pricing engine learns from. Newest tenders
+   * first, bounded by `limit`; only lines carrying a real unit price come back.
+   * The bpu sub-arrays of the recent tail are read (not the whole raw catalogue).
+   */
+  findReferenceBpuPrices(limit: number): Promise<ReferenceBpuPrice[]>;
   /**
    * Projected, terminal-filtered read for the Chef d'Orchestre dashboard: only
    * the fields the compliance checklist + next-action dispatcher need, with the
@@ -473,6 +491,31 @@ export class InMemoryTenderRepository implements TenderRepository {
         hasBpu: Array.isArray(extraction?.bpu) && extraction.bpu.length > 0,
       };
     });
+  }
+
+  async findReferenceBpuPrices(limit: number): Promise<ReferenceBpuPrice[]> {
+    if (limit <= 0) return [];
+    const out: ReferenceBpuPrice[] = [];
+    const recent = [...this.records].sort(
+      (a, b) => b.updatedAt.getTime() - a.updatedAt.getTime(),
+    );
+    for (const r of recent) {
+      const dossier = readDossierExtraction(r.raw);
+      if (!dossier) continue;
+      for (const line of dossier.bpu) {
+        const price = line.prixUnitaireMad;
+        if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) {
+          continue;
+        }
+        out.push({
+          designation: line.designation,
+          unite: line.unite ?? null,
+          prixUnitaireMad: price,
+        });
+        if (out.length >= limit) return out;
+      }
+    }
+    return out;
   }
 
   async findForOrchestrator(): Promise<OrchestratorRow[]> {
@@ -1116,6 +1159,44 @@ export class DrizzleTenderRepository implements TenderRepository {
       pipelineState: row.pipelineState as PipelineState,
       hasBpu: row.hasBpu,
     }));
+  }
+
+  async findReferenceBpuPrices(limit: number): Promise<ReferenceBpuPrice[]> {
+    if (limit <= 0) return [];
+    // Read only the bpu sub-array of the most-recently-updated tenders that carry
+    // one (never the whole raw catalogue): ORDER BY updated_at DESC + LIMIT rides
+    // the tender_updated_at_idx (migration 0036) and stops after the recent tail,
+    // so cost stays bounded no matter how large the catalogue grows. We over-scan
+    // tenders because many carry an unpriced estimatif; the line LIMIT caps output.
+    const RECENT_TENDER_SCAN = 1500;
+    const rows = await this.db
+      .select({
+        bpu: sql<
+          Array<Record<string, unknown>> | null
+        >`${tenders.raw}->'dossierExtraction'->'bpu'`,
+      })
+      .from(tenders)
+      .where(sql`jsonb_typeof(${tenders.raw}->'dossierExtraction'->'bpu') = 'array'`)
+      .orderBy(desc(tenders.updatedAt))
+      .limit(RECENT_TENDER_SCAN);
+
+    const out: ReferenceBpuPrice[] = [];
+    for (const row of rows) {
+      if (!Array.isArray(row.bpu)) continue;
+      for (const raw of row.bpu) {
+        const line = raw as Record<string, unknown>;
+        const designation = typeof line.designation === 'string' ? line.designation : null;
+        const price = Number(line.prixUnitaireMad);
+        if (!designation || !Number.isFinite(price) || price <= 0) continue;
+        out.push({
+          designation,
+          unite: typeof line.unite === 'string' ? line.unite : null,
+          prixUnitaireMad: price,
+        });
+        if (out.length >= limit) return out;
+      }
+    }
+    return out;
   }
 
   async findDetailBackfillTargets(limit: number): Promise<DetailBackfillTarget[]> {

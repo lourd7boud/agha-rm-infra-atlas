@@ -589,6 +589,32 @@ export default function ExpertPage() {
                     </button>
                   </div>
 
+                  {bpu.pricingBasis ? (
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="text-faint">Provenance des prix :</span>
+                      {bpu.pricingBasis.dce > 0 ? (
+                        <span className="rounded-full bg-emerald-soft px-2.5 py-0.5 font-semibold text-emerald">
+                          Estimatif DCE · {bpu.pricingBasis.dce}
+                        </span>
+                      ) : null}
+                      {bpu.pricingBasis.historique > 0 ? (
+                        <span className="rounded-full bg-cyan-soft px-2.5 py-0.5 font-semibold text-cyan">
+                          Historique marché · {bpu.pricingBasis.historique}
+                        </span>
+                      ) : null}
+                      {bpu.pricingBasis.ia > 0 ? (
+                        <span className="rounded-full bg-sand px-2.5 py-0.5 text-ink-2">
+                          IA · {bpu.pricingBasis.ia}
+                        </span>
+                      ) : null}
+                      {bpu.pricingBasis.aucune > 0 ? (
+                        <span className="rounded-full bg-ochre-soft px-2.5 py-0.5 text-ochre-deep">
+                          Réparti · {bpu.pricingBasis.aucune}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+
                   <div className="max-h-96 overflow-auto rounded-md border border-line">
                     <table className="w-full text-sm">
                       <thead className="sticky top-0 bg-paper-2">

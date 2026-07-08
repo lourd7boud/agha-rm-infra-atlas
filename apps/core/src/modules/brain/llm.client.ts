@@ -770,6 +770,83 @@ export function createLlmClientFromEnv(): LlmClient | null {
   return null;
 }
 
+/** Claude-family model ids speak the Anthropic Messages protocol, NOT the Gemini
+ *  generateContent path — a claude-* model sent to GoogleLlmClient 404s. */
+const CLAUDE_MODEL_RE = /^(claude|fable|opus|sonnet|haiku)/i;
+export function isClaudeModel(model: string): boolean {
+  return CLAUDE_MODEL_RE.test(model);
+}
+
+type ExpertProvider = 'anthropic' | 'google' | 'openrouter';
+
+function expertProvider(model: string, env: NodeJS.ProcessEnv): ExpertProvider {
+  const explicit = env.EXPERT_LLM_PROVIDER?.toLowerCase();
+  if (explicit === 'anthropic' || explicit === 'google' || explicit === 'openrouter') {
+    return explicit;
+  }
+  // Route by MODEL FAMILY first — this is the whole point: a Claude model must
+  // go over the Anthropic path even when the default provider is Google.
+  if (isClaudeModel(model)) return 'anthropic';
+  if (/gemini/i.test(model)) return 'google';
+  // Unknown family → mirror the default provider selection.
+  if (env.LLM_PROVIDER?.toLowerCase() === 'google' && env.OPENROUTER_API_KEY) {
+    return 'google';
+  }
+  if (env.OPENROUTER_API_KEY) return 'openrouter';
+  return 'anthropic';
+}
+
+/**
+ * Selects the EXPERT agent's dedicated TOP-TIER client from env. The model is
+ * explicit (EXPERT_LLM_MODEL) and forced onto T2+T3 — the tiers the expert uses.
+ * Unlike the default client, the provider is inferred from the MODEL FAMILY, so
+ * EXPERT_LLM_MODEL=claude-fable-5 / claude-opus-4-8 always speaks the Anthropic
+ * Messages protocol (LLM_API_KEY + LLM_API_BASE, e.g. the qcode gateway) even
+ * when LLM_PROVIDER=google — otherwise a claude-* model hits /gemini/... and 404s.
+ * Overridable via EXPERT_LLM_PROVIDER / EXPERT_LLM_API_KEY / EXPERT_LLM_API_BASE.
+ * Returns null when EXPERT_LLM_MODEL is unset (the service uses the default client).
+ */
+export function createExpertLlmClientFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): LlmClient | null {
+  const model = env.EXPERT_LLM_MODEL;
+  if (!model) return null;
+  const tierModels: Partial<Record<LlmTier, string>> = { T2: model, T3: model };
+  const provider = expertProvider(model, env);
+
+  if (provider === 'anthropic') {
+    const apiKey = env.EXPERT_LLM_API_KEY ?? env.LLM_API_KEY ?? env.OPENROUTER_API_KEY;
+    if (!apiKey) return null;
+    return new AnthropicLlmClient({
+      apiKey,
+      baseUrl: env.EXPERT_LLM_API_BASE ?? env.LLM_API_BASE,
+      tierModels,
+    });
+  }
+  if (provider === 'openrouter') {
+    const apiKey = env.EXPERT_LLM_API_KEY ?? env.OPENROUTER_API_KEY;
+    if (!apiKey) return null;
+    return new OpenRouterLlmClient({
+      apiKey,
+      baseUrl: env.EXPERT_LLM_API_BASE ?? env.OPENROUTER_API_BASE,
+      tierModels,
+      appUrl: env.PUBLIC_WEB_URL ?? 'https://atlas.marocinfra.com',
+      appTitle: 'ATLAS - AGHA RM INFRA (expert)',
+    });
+  }
+  // google
+  const apiKey = env.EXPERT_LLM_API_KEY ?? env.OPENROUTER_API_KEY ?? env.LLM_API_KEY;
+  if (!apiKey) return null;
+  return new GoogleLlmClient({
+    apiKey,
+    baseUrl:
+      env.EXPERT_LLM_API_BASE ??
+      env.OPENROUTER_API_BASE ??
+      'https://generativelanguage.googleapis.com',
+    tierModels,
+  });
+}
+
 /** Test double returning queued canned responses and recording requests. */
 export class FakeLlmClient implements LlmClient {
   readonly requests: LlmRequest[] = [];
