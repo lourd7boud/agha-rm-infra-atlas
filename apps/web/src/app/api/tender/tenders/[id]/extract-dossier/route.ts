@@ -25,6 +25,10 @@ export async function POST(
       method: 'POST',
       headers: { Authorization: `Bearer ${session.accessToken}` },
       cache: 'no-store',
+      // Deep extraction can download a multi-MB DCE + run a vision OCR call. Bound
+      // it just under nginx's 180s proxy_read_timeout so the client gets a clean
+      // error instead of a bare 504 while core keeps running in the background.
+      signal: AbortSignal.timeout(170_000),
     },
   );
   return new Response(await upstream.text(), {

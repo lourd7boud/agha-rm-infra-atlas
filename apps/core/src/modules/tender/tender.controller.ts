@@ -381,12 +381,18 @@ export class TenderController {
     };
   }
 
-  /** Extracts the REAL budget/caution/qualifications/BPU from the DCE dossier. */
+  /** Extracts the REAL budget/caution/qualifications/BPU from the DCE dossier.
+   *  deep+force: the deliberate single-tender "Extraire le DCE" click (never the
+   *  97k batch sweep). `force` re-runs even when a prior BPU-empty extraction is
+   *  cached (else the cache short-circuit returns the stale empty result); `deep`
+   *  runs the vision OCR supplement when the BPU is still empty and no XLSX
+   *  bordereau exists — e.g. a bordereau embedded in a SCANNED CPS.pdf. Safe:
+   *  mergeExtractions() lets a re-run only improve, never regress. */
   @Roles('marches', 'direction', 'admin-si')
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('tenders/:id/extract-dossier')
   async extractDossier(@Param('id') id: string) {
-    return this.dossierExtraction.extractTender(id);
+    return this.dossierExtraction.extractTender(id, { deep: true, force: true });
   }
 
   /** Per-tender AI chat (datao "agent IA va parcourir le dossier"). Stateless:

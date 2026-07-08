@@ -44,6 +44,11 @@ const KIND_ICON: Record<FileKind, IconName> = {
 };
 
 const BORDEREAU_NAME_RE = /bordereau|bpu|estimatif|bpde|d[ée]tail/i;
+/** Many DCE ship the bordereau des prix ONLY as an in-document table inside the
+ *  CPS (no standalone Bordereau.xlsx/PDF). When no dedicated file exists we fall
+ *  back to the CPS so the user still reaches the prices. Mirrors the CPS tier in
+ *  api/tenders/[id]/files/route.ts's priority(). */
+const CPS_NAME_RE = /\bcps\b|cahier des prescriptions|\bcct\b|\bccap\b/i;
 
 function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} o`;
@@ -54,7 +59,11 @@ function fmtSize(bytes: number): string {
 function pickBordereau(files: ReadonlyArray<DceFile>): DceFile | null {
   const byName = files.find((f) => BORDEREAU_NAME_RE.test(f.name));
   if (byName) return byName;
-  return files.find((f) => f.kind === 'excel') ?? files[0] ?? null;
+  const excel = files.find((f) => f.kind === 'excel');
+  if (excel) return excel;
+  const cps = files.find((f) => CPS_NAME_RE.test(f.name));
+  if (cps) return cps;
+  return files[0] ?? null;
 }
 
 export function SourceFileViewer({
@@ -66,6 +75,9 @@ export function SourceFileViewer({
   const [files, setFiles] = useState<DceFile[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [active, setActive] = useState<DceFile | null>(null);
+  // true when no standalone bordereau/BPU/Excel file exists and we fell back to
+  // the CPS (which embeds the bordereau des prix as an in-document table).
+  const [bordereauInCps, setBordereauInCps] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,13 +87,24 @@ export function SourceFileViewer({
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = (await res.json()) as { files: DceFile[] };
         if (cancelled) return;
-        const visible = bordereauOnly
-          ? data.files.filter(
-              (f) => BORDEREAU_NAME_RE.test(f.name) || f.kind === 'excel',
-            )
-          : data.files;
+        if (!bordereauOnly) {
+          setFiles(data.files);
+          setActive(data.files[0] ?? null);
+          setBordereauInCps(false);
+          return;
+        }
+        const standalone = data.files.filter(
+          (f) => BORDEREAU_NAME_RE.test(f.name) || f.kind === 'excel',
+        );
+        // No dedicated bordereau/BPU/Excel file — publish the CPS itself as the
+        // bordereau (it contains the price table) instead of showing nothing.
+        const visible =
+          standalone.length > 0
+            ? standalone
+            : data.files.filter((f) => CPS_NAME_RE.test(f.name));
         setFiles(visible);
-        setActive(bordereauOnly ? pickBordereau(visible) : visible[0] ?? null);
+        setActive(pickBordereau(visible));
+        setBordereauInCps(standalone.length === 0 && visible.length > 0);
       } catch (e) {
         if (!cancelled) setListError((e as Error).message);
       }
@@ -112,7 +135,13 @@ export function SourceFileViewer({
       >
         <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
           <p className="truncate text-sm font-semibold text-ink">
-            {active?.label ?? (listError ? 'Indisponible' : 'Chargement…')}
+            {active
+              ? bordereauInCps
+                ? `Bordereau (dans le CPS) — ${active.label}`
+                : active.label
+              : listError
+                ? 'Indisponible'
+                : 'Chargement…'}
           </p>
           <div className="flex shrink-0 items-center gap-2">
             {active && (
@@ -142,10 +171,19 @@ export function SourceFileViewer({
             <p className="p-4 text-sm text-muted">Chargement des fichiers…</p>
           ) : files.length === 0 ? (
             <p className="p-4 text-sm text-muted">
-              Bordereau non trouvé dans le dossier de consultation.
+              Bordereau non trouvé dans le dossier de consultation (ni fichier
+              dédié, ni CPS).
             </p>
           ) : active ? (
-            <FileRender tenderId={tenderId} file={active} />
+            <>
+              {bordereauInCps && (
+                <p className="border-b border-line bg-cyan/10 px-4 py-2 text-xs text-ink-2">
+                  Ce dossier ne fournit pas de bordereau séparé — le CPS contient
+                  le bordereau des prix.
+                </p>
+              )}
+              <FileRender tenderId={tenderId} file={active} />
+            </>
           ) : null}
         </div>
       </div>

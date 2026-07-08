@@ -154,7 +154,13 @@ export class DossierExtractionService {
 
   async extractTender(
     id: string,
-    opts: { force?: boolean } = {},
+    // `deep` is set ONLY by the deliberate single-tender "Extraire le DCE"
+    // endpoint (never by extractBatch). It also runs the vision OCR supplement
+    // when the BPU is still empty and no XLSX/DOCX bordereau was found — e.g. a
+    // bordereau embedded as a TABLE INSIDE A SCANNED CPS.pdf, which the cheap
+    // text pass (pdf-parse) cannot read at all. Left false in the batch sweep so
+    // the 97k-catalogue cost profile is unchanged.
+    opts: { force?: boolean; deep?: boolean } = {},
   ): Promise<DossierExtractionResult> {
     const llm = this.requireLlm();
     const tender = await this.repository.findById(id);
@@ -228,7 +234,15 @@ export class DossierExtractionService {
           fresh.estimationMad == null && tender.estimationMad == null;
         const needCaution =
           fresh.cautionProvisoireMad == null && tender.cautionProvisoireMad == null;
-        if (needEstimation || needCaution) {
+        // Deep mode only: also run vision when the BPU is STILL empty and no
+        // XLSX/DOCX bordereau was found — the bordereau is often a table inside a
+        // SCANNED CPS.pdf that pdf-parse (text mode) can't read. extractBordereauFromDce
+        // only ever returns null or a non-empty list, so this is "no structured bordereau".
+        const needBpu =
+          !!opts.deep &&
+          fresh.bpu.length === 0 &&
+          !(bordereau && bordereau.items.length > 0);
+        if (needEstimation || needCaution || needBpu) {
           try {
             const vis = await buildVisionInput(dossier.bytes);
             if (vis.images.length > 0) {
@@ -254,6 +268,17 @@ export class DossierExtractionService {
                   fresh.delaiExecutionMois ?? visFresh.delaiExecutionMois,
                 chiffreAffairesMinMad:
                   fresh.chiffreAffairesMinMad ?? visFresh.chiffreAffairesMinMad,
+                // BPU/qualifications are taken from vision ONLY under needBpu
+                // (deep + text-mode found none + no XLSX bordereau). Gating on
+                // needBpu — not the money conditions — keeps the batch sweep AND
+                // the XLSX-"bordereau wins" override (below) byte-for-byte
+                // unchanged: when needBpu holds, `bordereau` is null by
+                // construction, so that override stays a no-op here.
+                bpu: needBpu && visFresh.bpu.length > 0 ? visFresh.bpu : fresh.bpu,
+                qualifications:
+                  needBpu && fresh.qualifications.length === 0
+                    ? visFresh.qualifications
+                    : fresh.qualifications,
               };
               mode = 'text+vision';
               sourceNames = [
@@ -434,6 +459,9 @@ export class DossierExtractionService {
       const failedIds: string[] = [];
       await runPool(pending, EXTRACT_CONCURRENCY, async (t) => {
         try {
+          // NEVER pass deep:true here — deep runs an extra vision OCR call per
+          // BPU-empty dossier, which over the 97k-catalogue sweep would blow the
+          // LLM budget. Deep is reserved for the deliberate single-tender endpoint.
           await this.extractTender(t.id, { force: forceLike });
           succeeded += 1;
         } catch (error) {
