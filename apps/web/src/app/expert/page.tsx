@@ -6,6 +6,7 @@ import { fmtMad } from '@/lib/projects';
 import { fmtDateTime, type TenderInventory, type TenderItem } from '@/lib/tenders';
 import {
   bpuToCsv,
+  buildExpertSearchQuery,
   METHODE_LABELS,
   STATUT_LABELS,
   STATUT_TONES,
@@ -82,6 +83,10 @@ export default function ExpertPage() {
   const [pending, setPending] = useState<Tab | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rabaisInput, setRabaisInput] = useState('');
+  const [extracting, setExtracting] = useState(false);
+  // BPU line count from a just-run extraction — the inventory list only ships the
+  // `hasBpu` flag (not the heavy array), so this fills the count once we have it.
+  const [extractCount, setExtractCount] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,7 +116,7 @@ export default function ExpertPage() {
     }
     searchTimer.current = setTimeout(() => {
       setSearching(true);
-      fetch(`/api/tender/inventory?q=${encodeURIComponent(q)}&limit=8`)
+      fetch(`/api/tender/inventory?${buildExpertSearchQuery(q).toString()}`)
         .then(async (res) => {
           if (!res.ok) throw new Error(await readError(res));
           return (await res.json()) as TenderInventory;
@@ -133,6 +138,7 @@ export default function ExpertPage() {
     setBpu(null);
     setDossier(null);
     setError(null);
+    setExtractCount(null);
     setTab('analyse');
     // Silently prefill from previously-persisted agent work (404 = none yet).
     fetch(`/api/tender/expert/${item.id}/analyze`)
@@ -149,8 +155,46 @@ export default function ExpertPage() {
       .catch(() => undefined);
   }
 
+  /**
+   * Reads the REAL DCE dossier for the selected consultation — downloads it from
+   * the portal, extracts budget/caution/qualifications and the bordereau (BPU),
+   * and persists it on the tender. This is the prerequisite the agent needs to
+   * analyse precisely and to fill the BPU; before it runs, "Proposer les prix"
+   * returns "Bordereau des prix non extrait".
+   */
+  async function runExtract(): Promise<void> {
+    if (!selected || extracting || pending) return;
+    setExtracting(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/tender/tenders/${selected.id}/extract-dossier`,
+        { method: 'POST' },
+      );
+      if (!res.ok) throw new Error(await readError(res));
+      const result = (await res.json()) as {
+        bpuCount: number;
+        estimationMad: number | null;
+      };
+      setExtractCount(result.bpuCount);
+      setSelected((prev) =>
+        prev
+          ? {
+              ...prev,
+              hasBpu: result.bpuCount > 0,
+              estimationMad: result.estimationMad ?? prev.estimationMad,
+            }
+          : prev,
+      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Erreur inconnue');
+    } finally {
+      setExtracting(false);
+    }
+  }
+
   async function runAnalysis(): Promise<void> {
-    if (!selected || pending) return;
+    if (!selected || pending || extracting) return;
     setPending('analyse');
     setError(null);
     setTab('analyse');
@@ -168,7 +212,7 @@ export default function ExpertPage() {
   }
 
   async function runBpu(): Promise<void> {
-    if (!selected || pending) return;
+    if (!selected || pending || extracting) return;
     setPending('bpu');
     setError(null);
     setTab('bpu');
@@ -193,7 +237,7 @@ export default function ExpertPage() {
   }
 
   async function loadDossier(): Promise<void> {
-    if (!selected || pending) return;
+    if (!selected || pending || extracting) return;
     setPending('dossier');
     setError(null);
     setTab('dossier');
@@ -220,6 +264,12 @@ export default function ExpertPage() {
   }
 
   const k = knowledge;
+  // DCE state for the selected consultation. `hasBpu` is the flag the inventory
+  // list ships (SQL-computed); `extractCount` is set once we run extraction this
+  // session (even to 0 — a readable DCE with no parseable bordereau). So the DCE
+  // is "read" when either is known, but the BPU is only "available" when > 0.
+  const dceExtracted = !!selected && (selected.hasBpu || extractCount !== null);
+  const bpuAvailable = !!selected && (selected.hasBpu || (extractCount ?? 0) > 0);
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 px-4 py-6">
@@ -342,11 +392,16 @@ export default function ExpertPage() {
                   <p>Budget non publié</p>
                 )}
                 <p>
-                  BPU extrait :{' '}
-                  {selected.bpu && selected.bpu.length > 0 ? (
-                    <span className="text-emerald">{selected.bpu.length} lignes</span>
+                  DCE / BPU :{' '}
+                  {bpuAvailable ? (
+                    <span className="text-emerald">
+                      extrait
+                      {extractCount != null ? ` · ${extractCount} lignes` : ''}
+                    </span>
+                  ) : dceExtracted ? (
+                    <span className="text-ochre-deep">DCE lu · aucun BPU détecté</span>
                   ) : (
-                    <span className="text-ochre-deep">pas encore</span>
+                    <span className="text-ochre-deep">pas encore extrait</span>
                   )}
                 </p>
               </div>
@@ -355,16 +410,36 @@ export default function ExpertPage() {
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button
                 type="button"
+                onClick={runExtract}
+                disabled={extracting || pending !== null}
+                className={`rounded-md px-3 py-1.5 text-sm font-semibold disabled:opacity-50 ${
+                  dceExtracted
+                    ? 'border border-line text-ink-2 hover:bg-sand'
+                    : 'bg-cyan text-paper hover:opacity-90'
+                }`}
+              >
+                {extracting
+                  ? 'Lecture du DCE…'
+                  : dceExtracted
+                    ? 'Ré-extraire le DCE'
+                    : 'Extraire le DCE'}
+              </button>
+              <button
+                type="button"
                 onClick={runAnalysis}
-                disabled={pending !== null}
-                className="rounded-md bg-cyan px-3 py-1.5 text-sm font-semibold text-paper hover:opacity-90 disabled:opacity-50"
+                disabled={pending !== null || extracting}
+                className={`rounded-md px-3 py-1.5 text-sm font-semibold disabled:opacity-50 ${
+                  dceExtracted
+                    ? 'bg-cyan text-paper hover:opacity-90'
+                    : 'border border-cyan text-cyan hover:bg-cyan-soft'
+                }`}
               >
                 {pending === 'analyse' ? 'Analyse en cours…' : 'Analyser la consultation'}
               </button>
               <button
                 type="button"
                 onClick={runBpu}
-                disabled={pending !== null}
+                disabled={pending !== null || extracting}
                 className="rounded-md border border-cyan px-3 py-1.5 text-sm font-semibold text-cyan hover:bg-cyan-soft disabled:opacity-50"
               >
                 {pending === 'bpu' ? 'Chiffrage en cours…' : 'Proposer les prix (BPU)'}
@@ -383,12 +458,19 @@ export default function ExpertPage() {
               <button
                 type="button"
                 onClick={loadDossier}
-                disabled={pending !== null}
+                disabled={pending !== null || extracting}
                 className="rounded-md border border-line px-3 py-1.5 text-sm font-semibold text-ink-2 hover:bg-sand disabled:opacity-50"
               >
                 {pending === 'dossier' ? 'Préparation…' : 'Dossier de soumission'}
               </button>
             </div>
+            {!dceExtracted && !extracting ? (
+              <p className="mt-2 text-xs text-muted">
+                Le dossier DCE n’est pas encore lu. Lancez « Extraire le DCE » pour
+                que l’agent lise le budget, les qualifications et le bordereau des
+                prix — condition d’une analyse précise et du chiffrage du BPU.
+              </p>
+            ) : null}
             {error ? (
               <p className="mt-2 rounded-md bg-clay-soft px-3 py-2 text-sm text-clay">
                 {error}

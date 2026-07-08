@@ -211,6 +211,32 @@ export const STATUT_TONES: Record<PieceStatut, string> = {
   a_etablir: 'bg-ochre-soft text-ochre-deep',
 };
 
+/** Default rows for the expert consultation picker (one short dropdown). */
+export const EXPERT_SEARCH_LIMIT = 8;
+
+/**
+ * Builds the /api/tender/inventory query for the expert consultation picker.
+ *
+ * The expert prepares a SUBMISSION, so it must only surface consultations you can
+ * still bid on: `lifecycle=en_cours` (deadline_at >= now). Without it the endpoint
+ * falls back to `sort=publication` (= created_at DESC = DB-insertion order), and
+ * the deep-archive backfill — which re-inserted old closed 2024 tenders recently —
+ * buries the current consultations past the short result window. It also sorts by
+ * soonest deadline first (most urgent to prepare) instead of insertion time.
+ */
+export function buildExpertSearchQuery(
+  query: string,
+  limit: number = EXPERT_SEARCH_LIMIT,
+): URLSearchParams {
+  const qs = new URLSearchParams();
+  qs.set('q', query.trim());
+  qs.set('lifecycle', 'en_cours');
+  qs.set('sort', 'deadline');
+  qs.set('dir', 'asc');
+  qs.set('limit', String(limit));
+  return qs;
+}
+
 const csvEscape = (value: string): string => `"${value.replace(/"/g, '""')}"`;
 
 /** Excel-friendly CSV (UTF-8 BOM + semicolons) of the priced bordereau. */
