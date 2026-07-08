@@ -656,11 +656,11 @@ export class TenderController {
     const { limit, offset, ...filters } = parsed.data;
     const now = new Date();
 
-    // The read-time lifecycle status/facet needs ONLY the tiny competitor_bid set —
-    // load it once per window (single-flight). The old path dragged the whole
-    // catalogue's `raw` through findAllInventoryRows() just to reach these bids and
-    // threw the rows away; that O(catalogue) jsonb scan is gone.
-    const bids = await this.loadBidsSnapshot();
+    // The read-time lifecycle status/facet + the list row's winner need ONLY a
+    // deduped result-market set (one synthetic bid per consultation), loaded once
+    // per window (single-flight). NOT the full 550k-row competitor_bid table —
+    // loading that into the 1.5 GB core OOM-crashed it on every /tenders load.
+    const bids = await this.loadResultMarkets();
 
     // Whole-catalogue facets + total are filter-INDEPENDENT, so compute them ONCE
     // per window and share them across every filter/sort/page key AND the ?since=
@@ -923,12 +923,16 @@ export class TenderController {
     );
   }
 
-  /** Tiny competitor_bid set shared 10 s per window (single-flight) — the ONLY
-   *  whole-table read the inventory hot path needs, for the read-time lifecycle
-   *  status/facet. No tender-catalogue scan: the page + facets run in Postgres. */
-  private loadBidsSnapshot(): Promise<CompetitorBidRecord[]> {
-    return bidsSnapshotCache.getOrCompute('bids', CATALOG_SNAPSHOT_TTL_MS, () =>
-      this.intel.listAllBids(),
+  /** Deduped result-market set (one synthetic bid per consultation) shared per
+   *  window (single-flight) — the ONLY competitor_bid read the inventory hot path
+   *  needs, for the read-time lifecycle status/facet + the list row's winner. It
+   *  replaces listAllBids(): competitor_bid is 550k+ rows and loading them all into
+   *  the 1.5 GB core OOM-crashed it on every /tenders load; the deduped set is ~one
+   *  row per market and grows with markets, not bids. The page + column facets run
+   *  in Postgres. */
+  private loadResultMarkets(): Promise<CompetitorBidRecord[]> {
+    return bidsSnapshotCache.getOrCompute('markets', CATALOG_SNAPSHOT_TTL_MS, () =>
+      this.intel.listResultMarkets(),
     );
   }
 

@@ -77,6 +77,19 @@ export interface IntelRepository {
    */
   listAllBids(): Promise<CompetitorBidRecord[]>;
   /**
+   * Deduped RESULT MARKETS — one synthetic bid per distinct (reference, buyer_name),
+   * carrying only what the tender lifecycle read needs: whether the market has a
+   * WINNER (→ attribué), the winning bidder name + amount, a representative bidder
+   * (so a no-winner market still folds to infructueux), and the result date. This
+   * is the scalable substitute for listAllBids() on the /tender/inventory hot path:
+   * competitor_bid is 550k+ rows (many bidders per market) and loading them all into
+   * JS OOM-crashed the 1.5 GB core; the deduped set is ~one row per consultation
+   * (7×+ smaller) and grows with markets, not bids. The lifecycle STATUS/FACET and
+   * the list row's winner are byte-identical to the full-bid fold (the per-row loser
+   * list is a drawer concern loaded via GET /tender/tenders/:id, never the list).
+   */
+  listResultMarkets(): Promise<CompetitorBidRecord[]>;
+  /**
    * Returns only the WINNER bids (`isWinner`) whose reference matches one of the
    * given canonical reference keys (folded with {@link canonicalReferenceKey}:
    * lowercased, every non-alphanumeric run collapsed to a single space, trimmed).
@@ -310,6 +323,40 @@ export class InMemoryIntelRepository implements IntelRepository {
     return [...this.bids];
   }
 
+  async listResultMarkets(): Promise<CompetitorBidRecord[]> {
+    // Dev/test twin of the SQL GROUP BY: fold to ONE synthetic record per
+    // (reference, buyer_name) market — winner (if any) + representative bidder +
+    // newest result date — so the lifecycle read never handles the full bid set.
+    const byMarket = new Map<string, CompetitorBidRecord[]>();
+    for (const bid of this.bids) {
+      const key = `${bid.reference} ${bid.buyerName}`;
+      const list = byMarket.get(key);
+      if (list) list.push(bid);
+      else byMarket.set(key, [bid]);
+    }
+    const markets: CompetitorBidRecord[] = [];
+    for (const bids of byMarket.values()) {
+      const winner = bids.find((b) => b.isWinner);
+      const rep = winner ?? bids[0]!;
+      const resultDate = bids
+        .map((b) => b.resultDate)
+        .filter((d): d is Date => d instanceof Date)
+        .sort((a, b) => b.getTime() - a.getTime())[0];
+      markets.push({
+        id: `mkt:${rep.reference}|${rep.buyerName}`,
+        reference: rep.reference,
+        buyerName: rep.buyerName,
+        bidderName: rep.bidderName,
+        competitorId: '',
+        isWinner: winner != null,
+        ...(winner?.amountMad != null ? { amountMad: winner.amountMad } : {}),
+        ...(resultDate ? { resultDate } : {}),
+        createdAt: resultDate ?? rep.createdAt,
+      });
+    }
+    return markets;
+  }
+
   async findWinnersByReferences(
     canonicalKeys: readonly string[],
   ): Promise<CompetitorBidRecord[]> {
@@ -477,6 +524,50 @@ export class DrizzleIntelRepository implements IntelRepository {
   async listAllBids(): Promise<CompetitorBidRecord[]> {
     const rows = await this.db.select().from(competitorBids);
     return rows.map(mapBidRow);
+  }
+
+  async listResultMarkets(): Promise<CompetitorBidRecord[]> {
+    // One row per (reference, buyer_name) market — the DB folds the 550k+ bid rows
+    // down to ~one per consultation so the lifecycle read never drags the whole bid
+    // table into the 1.5 GB core (which OOM-crashed it). Per market we keep only what
+    // the lifecycle status/facet + the list row's winner need: has_winner, the
+    // winning bidder + amount, a representative bidder (so a bids-but-no-winner
+    // market still folds to infructueux), and the newest result date.
+    const rows = await this.db.execute<{
+      reference: string;
+      buyer_name: string;
+      has_winner: boolean;
+      winner_name: string | null;
+      winner_amount: string | null;
+      any_bidder: string | null;
+      result_date: string | null;
+    }>(sql`
+      SELECT reference,
+             buyer_name,
+             bool_or(is_winner) AS has_winner,
+             (array_agg(bidder_name ORDER BY created_at) FILTER (WHERE is_winner))[1] AS winner_name,
+             (array_agg(amount_mad ORDER BY created_at) FILTER (WHERE is_winner))[1] AS winner_amount,
+             (array_agg(bidder_name ORDER BY created_at))[1] AS any_bidder,
+             max(result_date) AS result_date
+        FROM intel.competitor_bid
+       GROUP BY reference, buyer_name
+    `);
+    return rows.rows.map((r) => {
+      const resultDate = r.result_date ? new Date(r.result_date) : undefined;
+      return {
+        id: `mkt:${r.reference}|${r.buyer_name}`,
+        reference: r.reference,
+        buyerName: r.buyer_name,
+        bidderName: (r.has_winner ? r.winner_name : r.any_bidder) ?? '',
+        competitorId: '',
+        isWinner: r.has_winner,
+        ...(r.has_winner && r.winner_amount != null
+          ? { amountMad: Number(r.winner_amount) }
+          : {}),
+        ...(resultDate ? { resultDate } : {}),
+        createdAt: resultDate ?? new Date(0),
+      } satisfies CompetitorBidRecord;
+    });
   }
 
   async findWinnersByReferences(

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Db } from '../../db/client';
 import { DrizzleIntelRepository, InMemoryIntelRepository } from './intel.repository';
 import { PARTICIPATION_TOP_LIMIT } from './participation.domain';
+import { buildInventory, type InventoryRow } from '../tender/inventory.domain';
 
 /**
  * Wiring test: an inserted winner's estimation + objet must survive into the
@@ -456,5 +457,77 @@ describe('DrizzleIntelRepository.listCompetitorStats', () => {
       { id: 'c1', canonicalName: 'SOTRAVO', wins: 2, totalMad: 1_500_000 },
       { id: 'c2', canonicalName: 'GTR', wins: 0, totalMad: 0 },
     ]);
+  });
+});
+
+describe('InMemoryIntelRepository.listResultMarkets (deduped, OOM-safe lifecycle source)', () => {
+  const NOW = new Date('2026-06-13T00:00:00Z');
+  function pastTender(reference: string, buyerName: string): InventoryRow {
+    return {
+      id: `t-${reference}`,
+      reference,
+      buyerName,
+      procedure: 'AOO',
+      objet: 'Travaux divers',
+      deadlineAt: new Date('2026-05-01T00:00:00Z'), // past NOW → lifecycle set by bids
+      pipelineState: 'detected',
+      createdAt: NOW,
+      updatedAt: NOW,
+      region: 'Rabat-Salé-Kénitra',
+      ville: null,
+      category: 'Travaux',
+      secteur: 'Génie civil',
+      lotCount: 1,
+    };
+  }
+
+  it('folds many bids to one market row and yields the SAME lifecycle facet + winner as the full bid set', async () => {
+    const repo = new InMemoryIntelRepository();
+    const alpha = await repo.upsertCompetitor('STE ALPHA');
+    const beta = await repo.upsertCompetitor('STE BETA');
+    // Market AO/1 (ORMVAH): winner ALPHA + loser BETA → attribué.
+    await repo.insertResult(
+      { reference: 'AO/1', buyerName: 'ORMVAH', bidderName: 'STE ALPHA', amountMad: 800_000, isWinner: true, resultDate: new Date('2026-05-10T00:00:00Z') },
+      alpha.id,
+    );
+    await repo.insertResult(
+      { reference: 'AO/1', buyerName: 'ORMVAH', bidderName: 'STE BETA', amountMad: 900_000, isWinner: false, resultDate: new Date('2026-05-10T00:00:00Z') },
+      beta.id,
+    );
+    // Market AO/2 (Commune X): bids but NO winner → infructueux.
+    await repo.insertResult(
+      { reference: 'AO/2', buyerName: 'Commune X', bidderName: 'STE BETA', amountMad: 500_000, isWinner: false, resultDate: new Date('2026-05-11T00:00:00Z') },
+      beta.id,
+    );
+
+    const rawBids = await repo.listAllBids();
+    const markets = await repo.listResultMarkets();
+    // 3 bids collapse to 2 markets — the whole point (no full-table load).
+    expect(rawBids).toHaveLength(3);
+    expect(markets).toHaveLength(2);
+    const m1 = markets.find((m) => m.reference === 'AO/1')!;
+    expect(m1.isWinner).toBe(true);
+    expect(m1.bidderName).toBe('STE ALPHA');
+    expect(m1.amountMad).toBe(800_000);
+    const m2 = markets.find((m) => m.reference === 'AO/2')!;
+    expect(m2.isWinner).toBe(false);
+
+    // PARITY: lifecycle facet + per-row winner/lifecycle are identical whether the
+    // fold reads the full 3-bid set or the deduped 2-market set.
+    const tenders = [pastTender('AO/1', 'ORMVAH'), pastTender('AO/2', 'Commune X')];
+    const fromBids = buildInventory(tenders, {}, NOW, {}, rawBids);
+    const fromMarkets = buildInventory(tenders, {}, NOW, {}, markets);
+    expect(fromMarkets.facets.lifecycles).toEqual(fromBids.facets.lifecycles);
+    expect(fromBids.facets.lifecycles).toEqual([
+      { key: 'attribue', label: 'Attribué', count: 1 },
+      { key: 'infructueux', label: 'Infructueux', count: 1 },
+    ]);
+    for (const ref of ['AO/1', 'AO/2']) {
+      const fb = fromBids.items.find((i) => i.reference === ref)!;
+      const fm = fromMarkets.items.find((i) => i.reference === ref)!;
+      expect(fm.lifecycleStatus).toBe(fb.lifecycleStatus);
+      expect(fm.winner?.bidderName).toBe(fb.winner?.bidderName);
+      expect(fm.winner?.amountMad).toBe(fb.winner?.amountMad);
+    }
   });
 });
