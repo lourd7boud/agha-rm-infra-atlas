@@ -20,16 +20,15 @@ import type { Db } from '../../db/client';
 import { tenders } from '../../db/schema';
 import type { QualificationResult } from './qualifier.domain';
 import {
-  BidResolver,
   buildInventory,
   buildLightItem,
   BUYER_FACET_LIMIT,
   classifyForStorage,
   clampInventoryLimit,
-  isEnCoursOnlyLifecycle,
-  isLifecycleFilterActive,
-  lifecycleFacetForRows,
+  effectiveLifecycleSet,
+  lifecycleFacetFromCounts,
   PROCEDURE_LABELS,
+  resolveStoredResult,
   type Inventory,
   type InventoryFacet,
   type InventoryFacets,
@@ -80,6 +79,13 @@ export interface TenderRecord extends CreateTender {
   secteur?: string | null;
   lotCount?: number | null;
   hasBpu?: boolean | null;
+  // ── Denormalized harvested result (migration 0041) — the Stage-2 lifecycle
+  //    columns. NULL until the ref+buyer backfill runs; the read applies the
+  //    deadline guard so a NULL past-deadline row reads as Clôturé. ──
+  resultState?: string | null;
+  resultWinnerName?: string | null;
+  resultWinnerAmount?: number | null;
+  resultDate?: Date | null;
   createdAt: Date;
   /** Last write to the row — bumped by every enrichment/extraction/state update.
    *  Powers the /tender/inventory `?since=` delta used for live silent refresh. */
@@ -299,6 +305,15 @@ export interface TenderRepository {
     bids: readonly CompetitorBidRecord[],
   ): Promise<Pick<Inventory, 'filteredCount' | 'returnedCount' | 'items' | 'filters'>>;
   /**
+   * Recomputes the denormalized lifecycle-result columns (result_state / winner /
+   * date, migration 0041) from the harvested competitor_bid, folded per canonical
+   * (reference, buyer) market — the write-time twin of the read-time BidResolver, so
+   * the Clôturés/Résultats tabs stay O(page). Idempotent (only changed rows written,
+   * updated_at untouched). Called by scripts/backfill-result-state.ts and after each
+   * result harvest. Returns the number of rows changed.
+   */
+  refreshResultState(): Promise<number>;
+  /**
    * Fills sourceUrl on an already-stored tender (matched by reference+buyer)
    * only when it is currently NULL — never overwrites a known value. Returns
    * whether a row was updated. Lets a re-crawl heal the legacy rows that were
@@ -472,6 +487,13 @@ export class InMemoryTenderRepository implements TenderRepository {
       items: inv.items,
       filters: inv.filters,
     };
+  }
+
+  async refreshResultState(): Promise<number> {
+    // Dev/test no-op: the in-memory read path folds the bids passed to
+    // findInventoryPageRows/Facets directly (buildInventory), so it never reads the
+    // denormalized result columns. Nothing to precompute.
+    return 0;
   }
 
   async findAllForKnowledge(): Promise<KnowledgeTenderRow[]> {
@@ -985,21 +1007,11 @@ export class DrizzleTenderRepository implements TenderRepository {
     now: Date,
     bids: readonly CompetitorBidRecord[],
   ): Promise<Inventory> {
-    // HYBRID (documented): the BID-DEPENDENT lifecycles (cloture/attribue/
-    // infructueux) are NOT stored columns — they depend on the deadline + harvested
-    // bids joined by canonical reference (a JS fold), which no column WHERE can
-    // express, so they fall back to the exact JS pipeline. `en_cours` is the
-    // exception: it is exactly `deadline_at >= now`, a pure column predicate pushed
-    // to SQL below (isEnCoursOnlyLifecycle), so the DEFAULT tab stays O(page).
-    if (isLifecycleFilterActive(filters) && !isEnCoursOnlyLifecycle(filters)) {
-      const rows = await this.findAllInventoryRows();
-      return buildInventory(rows, filters, now, paging, bids);
-    }
-    // Whole-catalogue facets/total and the O(page) filtered page are two
-    // INDEPENDENT reads (facets never depend on the filter). Compose them here for
-    // the single-call contract; the controller instead caches the facets half ONCE
-    // per window and reuses it across every filter/sort/page key (see the split
-    // methods below) so browsing filters costs only the page query.
+    // Stage 2: EVERY lifecycle (en_cours/cloture/attribue/infructueux) is now a pure
+    // column predicate (deadline_at + the denormalized result_state), so there is NO
+    // JS fold and NO fallback — the whole read is O(page) in the DB. Facets/total are
+    // filter-INDEPENDENT and page is O(page); compose them for the single-call
+    // contract (the controller caches the facets half once per window).
     const [{ total, facets }, page] = await Promise.all([
       this.findInventoryFacets(now, bids),
       this.findInventoryPageRows(filters, paging, now, bids),
@@ -1009,27 +1021,35 @@ export class DrizzleTenderRepository implements TenderRepository {
 
   async findInventoryFacets(
     now: Date,
-    bids: readonly CompetitorBidRecord[],
+    _bids: readonly CompetitorBidRecord[],
   ): Promise<Pick<Inventory, 'total' | 'facets'>> {
-    const [totalRow, columnFacets, lifecycleRows] = await Promise.all([
+    // Stage 2: the lifecycle facet is ONE FILTER-count aggregate over the deadline +
+    // denormalized result_state columns — no whole-catalogue (reference,buyer,
+    // deadline) projection shipped to JS, no bid fold. `_bids` is unused (kept for
+    // the interface / the InMemory JS path).
+    const [totalRow, columnFacets, lifecycleRow] = await Promise.all([
       this.db.select({ n: sql<number>`count(*)::int` }).from(tenders),
       this.inventoryColumnFacets(),
-      // Minimal whole-catalogue (reference, buyer, deadline_at) projection for the
-      // lifecycle facet — no raw/regex/Zod, so it stays cheap. buyerName scopes the
-      // bid match to the SAME buyer (generic refs like NN/2026 recur across acheteurs).
       this.db
         .select({
-          reference: tenders.reference,
-          buyerName: tenders.buyerName,
-          deadlineAt: tenders.deadlineAt,
+          en_cours: sql<number>`count(*) filter (where ${tenders.deadlineAt} >= ${now})::int`,
+          cloture: sql<number>`count(*) filter (where ${tenders.deadlineAt} < ${now} and ${tenders.resultState} is null)::int`,
+          attribue: sql<number>`count(*) filter (where ${tenders.deadlineAt} < ${now} and ${tenders.resultState} = 'attribue')::int`,
+          infructueux: sql<number>`count(*) filter (where ${tenders.deadlineAt} < ${now} and ${tenders.resultState} = 'infructueux')::int`,
         })
         .from(tenders),
     ]);
+    const lc = lifecycleRow[0];
     return {
       total: Number(totalRow[0]?.n ?? 0),
       facets: {
         ...columnFacets,
-        lifecycles: lifecycleFacetForRows(lifecycleRows, bids, now),
+        lifecycles: lifecycleFacetFromCounts({
+          en_cours: Number(lc?.en_cours ?? 0),
+          cloture: Number(lc?.cloture ?? 0),
+          attribue: Number(lc?.attribue ?? 0),
+          infructueux: Number(lc?.infructueux ?? 0),
+        }),
       },
     };
   }
@@ -1038,27 +1058,14 @@ export class DrizzleTenderRepository implements TenderRepository {
     filters: InventoryFilters,
     paging: InventoryPaging,
     now: Date,
-    bids: readonly CompetitorBidRecord[],
+    _bids: readonly CompetitorBidRecord[],
   ): Promise<Pick<Inventory, 'filteredCount' | 'returnedCount' | 'items' | 'filters'>> {
-    // A BID-DEPENDENT lifecycle filter (cloture/attribue/infructueux) degrades to
-    // the JS pipeline for the page+count (which rows match depends on harvested
-    // bids, which no column WHERE can express). `en_cours` is exempt: it is exactly
-    // `deadline_at >= now`, pushed to the SQL WHERE below — so the DEFAULT tab is
-    // O(page), not an O(catalogue) fold. Facets stay whole-catalogue (findInventoryFacets).
-    const enCoursOnly = isEnCoursOnlyLifecycle(filters);
-    if (isLifecycleFilterActive(filters) && !enCoursOnly) {
-      const rows = await this.findAllInventoryRows();
-      const inv = buildInventory(rows, filters, now, paging, bids);
-      return {
-        filteredCount: inv.filteredCount,
-        returnedCount: inv.returnedCount,
-        items: inv.items,
-        filters: inv.filters,
-      };
-    }
-
-    // en_cours ⟺ deadline_at >= now (indexed, no bid dependency).
-    const where = buildInventoryWhere(filters, enCoursOnly ? now : undefined);
+    // Stage 2: EVERY lifecycle filter is a pure column predicate (deadline_at +
+    // result_state), added to the WHERE by buildInventoryWhere(now). No JS fallback,
+    // no bid fold — the page + count are one indexed SQL query each, O(page). The
+    // page's lifecycle+winner come from the row's result columns (`_bids` unused;
+    // kept for the interface / the InMemory JS path).
+    const where = buildInventoryWhere(filters, now);
     const orderBy = inventoryOrderBy(filters);
     const limit = clampInventoryLimit(paging.limit);
     const offset = Math.max(0, Math.floor(paging.offset ?? 0));
@@ -1074,13 +1081,50 @@ export class DrizzleTenderRepository implements TenderRepository {
       this.db.select({ n: sql<number>`count(*)::int` }).from(tenders).where(where),
     ]);
 
-    const items = buildInventoryPageItems(pageRows, bids, now);
+    const items = buildInventoryPageItems(pageRows, now);
     return {
       filteredCount: Number(filteredCountRow[0]?.n ?? 0),
       returnedCount: items.length,
       items,
       filters,
     };
+  }
+
+  async refreshResultState(): Promise<number> {
+    // Fold competitor_bid to one result per canonical (reference, buyer) market and
+    // stamp the tender's result columns. Same accent-stripping canonicalization as
+    // the read-time BidResolver (lower + unaccent + collapse non-alnum + trim), so
+    // the SQL lifecycle counts equal the JS bid fold. Idempotent — only rows whose
+    // (state, winner_name, winner_amount) change are written, and updated_at is NOT
+    // bumped (so it never floods the ?since= live-refresh delta).
+    const result = await this.db.execute(sql`
+      WITH mk AS (
+        SELECT
+          btrim(regexp_replace(lower(unaccent(reference)), '[^a-z0-9]+', ' ', 'g')) || '|' ||
+          btrim(regexp_replace(lower(unaccent(buyer_name)), '[^a-z0-9]+', ' ', 'g')) AS mkey,
+          bool_or(is_winner) AS has_winner,
+          (array_agg(bidder_name ORDER BY created_at) FILTER (WHERE is_winner))[1] AS winner_name,
+          (array_agg(amount_mad ORDER BY created_at) FILTER (WHERE is_winner))[1] AS winner_amount,
+          max(result_date) AS result_date
+        FROM intel.competitor_bid
+        GROUP BY 1
+      )
+      UPDATE tender.tender AS t SET
+        result_state = CASE WHEN m.has_winner THEN 'attribue' ELSE 'infructueux' END,
+        result_winner_name = CASE WHEN m.has_winner THEN m.winner_name ELSE NULL END,
+        result_winner_amount = CASE WHEN m.has_winner THEN m.winner_amount ELSE NULL END,
+        result_date = m.result_date
+      FROM mk m
+      WHERE m.mkey =
+        btrim(regexp_replace(lower(unaccent(t.reference)), '[^a-z0-9]+', ' ', 'g')) || '|' ||
+        btrim(regexp_replace(lower(unaccent(t.buyer_name)), '[^a-z0-9]+', ' ', 'g'))
+        AND (t.result_state, t.result_winner_name, t.result_winner_amount) IS DISTINCT FROM (
+          CASE WHEN m.has_winner THEN 'attribue' ELSE 'infructueux' END,
+          CASE WHEN m.has_winner THEN m.winner_name ELSE NULL END,
+          CASE WHEN m.has_winner THEN m.winner_amount ELSE NULL END
+        )
+    `);
+    return (result as { rowCount?: number }).rowCount ?? 0;
   }
 
   /** The 6 column facets (procedures/categories/secteurs/regions/buyers/states)
@@ -1490,6 +1534,11 @@ function toRecord(row: TenderRow): TenderRecord {
     secteur: row.secteur ?? null,
     lotCount: row.lotCount ?? null,
     hasBpu: row.hasBpu ?? null,
+    resultState: row.resultState ?? null,
+    resultWinnerName: row.resultWinnerName ?? null,
+    resultWinnerAmount:
+      row.resultWinnerAmount != null ? Number(row.resultWinnerAmount) : null,
+    resultDate: row.resultDate ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -1526,6 +1575,12 @@ const INVENTORY_PAGE_COLUMNS = {
   category: tenders.category,
   secteur: tenders.secteur,
   lotCount: tenders.lotCount,
+  // Stage-2 denormalized result columns — the page builds lifecycle + winner from
+  // these (resolveStoredResult), no competitor_bid fold.
+  resultState: tenders.resultState,
+  resultWinnerName: tenders.resultWinnerName,
+  resultWinnerAmount: tenders.resultWinnerAmount,
+  resultDate: tenders.resultDate,
   hasBpu: sql<boolean>`case when jsonb_typeof(${tenders.raw}->'dossierExtraction'->'bpu') = 'array' then jsonb_array_length(${tenders.raw}->'dossierExtraction'->'bpu') > 0 else false end`,
   bpuCount: sql<number>`case when jsonb_typeof(${tenders.raw}->'dossierExtraction'->'bpu') = 'array' then jsonb_array_length(${tenders.raw}->'dossierExtraction'->'bpu') else 0 end`,
   aiResume: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'resume'`,
@@ -1554,6 +1609,10 @@ function mapInventoryPageRow(row: {
   category: string | null;
   secteur: string | null;
   lotCount: number | null;
+  resultState: string | null;
+  resultWinnerName: string | null;
+  resultWinnerAmount: string | null;
+  resultDate: Date | null;
   hasBpu: boolean;
   bpuCount: number;
   aiResume: string | null;
@@ -1587,27 +1646,36 @@ function mapInventoryPageRow(row: {
     category: row.category,
     secteur: row.secteur,
     lotCount: row.lotCount,
+    resultState: row.resultState,
+    resultWinnerName: row.resultWinnerName,
+    resultWinnerAmount:
+      row.resultWinnerAmount != null ? Number(row.resultWinnerAmount) : null,
+    resultDate: row.resultDate,
   };
 }
 
-/** Attaches read-time lifecycle/winner/competitors to the PAGE rows only, from the
- *  tiny bid set — the SAME BidResolver fold selectInventory uses (no drift) — then
- *  builds the light display items. Shared by findInventoryPage/findInventoryPageRows
- *  so the page mapping can never drift between them. NULL classification columns
- *  default to the whole-catalogue buckets (Non localisé / Travaux / Autres), matching
- *  the shipped page path. */
+/** Builds the light display items for the PAGE rows. Lifecycle/winner come from each
+ *  row's DENORMALIZED result columns (resolveStoredResult) — no competitor_bid fold,
+ *  so Clôturés/Résultats are O(page). NULL classification columns default to the
+ *  whole-catalogue buckets (Non localisé / Travaux / Autres), matching the shipped
+ *  page path. */
 function buildInventoryPageItems(
   pageRows: ReadonlyArray<Parameters<typeof mapInventoryPageRow>[0]>,
-  bids: readonly CompetitorBidRecord[],
   now: Date,
 ): InventoryItem[] {
-  const resolver = new BidResolver(bids);
   return pageRows.map((row) => {
     const record = mapInventoryPageRow(row);
-    const { competitors, lifecycle, resultDate } = resolver.resolve(
-      record.reference,
-      record.buyerName,
-      record.deadlineAt,
+    // Stage 2: lifecycle + winner come from the row's DENORMALIZED result columns
+    // (resolveStoredResult), NOT a competitor_bid fold — so the page never touches
+    // the 550k-row bid table and Clôturés/Résultats stay O(page).
+    const { competitors, lifecycle, resultDate } = resolveStoredResult(
+      {
+        deadlineAt: record.deadlineAt,
+        resultState: record.resultState ?? null,
+        resultWinnerName: record.resultWinnerName ?? null,
+        resultWinnerAmount: record.resultWinnerAmount ?? null,
+        resultDate: record.resultDate ?? null,
+      },
       now,
     );
     return buildLightItem(
@@ -1648,6 +1716,36 @@ function effectiveValues(
 }
 
 /**
+ * SQL WHERE predicate for a lifecycle filter set (Stage 2) — a pure function of
+ * deadline_at + the denormalized result_state, mirroring resolveStoredResult:
+ *   en_cours    → deadline_at >= now
+ *   cloture     → deadline_at <  now AND result_state IS NULL
+ *   attribue    → deadline_at <  now AND result_state = 'attribue'
+ *   infructueux → deadline_at <  now AND result_state = 'infructueux'
+ * A multi-value set (Résultats = {attribue, infructueux}) is the OR of its members.
+ * Empty set ⇒ undefined (no lifecycle constraint).
+ */
+function lifecycleWhereClause(
+  set: ReadonlySet<string>,
+  now: Date,
+): SQL | undefined {
+  const parts: SQL[] = [];
+  if (set.has('en_cours')) parts.push(sql`${tenders.deadlineAt} >= ${now}`);
+  if (set.has('cloture')) {
+    parts.push(sql`(${tenders.deadlineAt} < ${now} and ${tenders.resultState} is null)`);
+  }
+  if (set.has('attribue')) {
+    parts.push(sql`(${tenders.deadlineAt} < ${now} and ${tenders.resultState} = 'attribue')`);
+  }
+  if (set.has('infructueux')) {
+    parts.push(sql`(${tenders.deadlineAt} < ${now} and ${tenders.resultState} = 'infructueux')`);
+  }
+  if (parts.length === 0) return undefined;
+  if (parts.length === 1) return parts[0];
+  return or(...parts);
+}
+
+/**
  * Builds the SQL WHERE for the inventory page from the same filter semantics as
  * the JS `matches`: multi-select dimensions unioned with their single param via
  * IN, the boolean toggles, the `since` cutoff, and a `q` that combines the datao
@@ -1657,14 +1755,18 @@ function effectiveValues(
  */
 function buildInventoryWhere(
   filters: InventoryFilters,
-  enCoursNow?: Date,
+  now?: Date,
 ): SQL | undefined {
   const clauses: SQL[] = [];
 
-  // en_cours ⟺ the submission deadline has not passed. A pure column predicate,
-  // so the DEFAULT lifecycle tab filters + paginates in the DB (indexed on
-  // deadline_at) instead of the whole-catalogue JS fold. Only set for en_cours-only.
-  if (enCoursNow) clauses.push(sql`${tenders.deadlineAt} >= ${enCoursNow}`);
+  // Stage 2: the lifecycle filter is a pure column predicate (deadline_at +
+  // result_state), added here when `now` is supplied. Absent lifecycle filter ⇒ no
+  // clause. This is what makes ALL four tabs (En cours / Clôturés / Résultats) an
+  // indexed page query instead of a whole-catalogue JS fold.
+  if (now) {
+    const lifecycle = lifecycleWhereClause(effectiveLifecycleSet(filters), now);
+    if (lifecycle) clauses.push(lifecycle);
+  }
 
   const procedures = effectiveValues(filters.procedure, filters.procedures);
   if (procedures) clauses.push(inArray(tenders.procedure, procedures));

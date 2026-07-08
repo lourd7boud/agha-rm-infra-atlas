@@ -151,6 +151,70 @@ export function lifecycleFacetForRows(
   })).filter((facet) => facet.count > 0);
 }
 
+/** Per-bucket lifecycle counts (Stage 2: computed by a single SQL FILTER-count
+ *  aggregate over the denormalized result columns, not the JS bid fold). */
+export interface LifecycleCounts {
+  en_cours: number;
+  cloture: number;
+  attribue: number;
+  infructueux: number;
+}
+
+/**
+ * Builds the lifecycle facet from precomputed per-bucket counts (the Stage-2 SQL
+ * aggregate). Same order + empty-bucket drop as lifecycleFacetForRows, so the facet
+ * is byte-identical whether counted by the JS bid fold or the SQL FILTER counts.
+ */
+export function lifecycleFacetFromCounts(counts: LifecycleCounts): InventoryFacet[] {
+  return LIFECYCLE_FACET_ORDER.map((key) => ({
+    key,
+    label: LIFECYCLE_LABELS[key],
+    count: counts[key],
+  })).filter((facet) => facet.count > 0);
+}
+
+/**
+ * Read-time lifecycle/winner/competitors from the DENORMALIZED result columns +
+ * deadline (Stage 2, the O(page) path) — the column twin of BidResolver.resolve, so
+ * a page row built from stored columns is byte-identical to one folded from the raw
+ * bids. The deadline guard wins first (a future deadline is always En cours, no
+ * result can precede it — the same guard BidResolver applies), then the stored
+ * result_state splits the past-deadline rows. For the LIST this yields the exact
+ * lifecycleStatus + winner it renders; the full loser list stays a drawer concern.
+ */
+export function resolveStoredResult(
+  input: {
+    deadlineAt: Date;
+    resultState: string | null;
+    resultWinnerName: string | null;
+    resultWinnerAmount: number | null;
+    resultDate: Date | null;
+  },
+  now: Date,
+): ResolvedBidState {
+  if (input.deadlineAt.getTime() >= now.getTime()) {
+    return { competitors: [], lifecycle: 'en_cours', resultDate: null };
+  }
+  if (input.resultState === 'attribue') {
+    const competitors: TenderCompetitor[] = input.resultWinnerName
+      ? [
+          {
+            bidderName: input.resultWinnerName,
+            amountMad: input.resultWinnerAmount,
+            isWinner: true,
+          },
+        ]
+      : [];
+    return { competitors, lifecycle: 'attribue', resultDate: input.resultDate };
+  }
+  if (input.resultState === 'infructueux') {
+    // The list shows no "Fournisseur retenu" for infructueux; the loser roster is a
+    // drawer concern, so an empty competitor list here is list-equivalent.
+    return { competitors: [], lifecycle: 'infructueux', resultDate: input.resultDate };
+  }
+  return { competitors: [], lifecycle: 'cloture', resultDate: null };
+}
+
 /**
  * Tender Inventory (جرد) — turns the raw detected-tender stream into a
  * navigable catalogue. Classification is deterministic and derived from
@@ -754,6 +818,14 @@ export interface InventoryRow {
   category?: string | null;
   secteur?: string | null;
   lotCount?: number | null;
+  // ── Denormalized harvested result (migration 0041) — the Stage-2 O(page)
+  //    lifecycle columns. resultState: null | 'attribue' | 'infructueux'. Present on
+  //    the projected page rows so the DB-side path builds lifecycle+winner WITHOUT
+  //    the competitor_bid fold (resolveStoredResult). ──
+  resultState?: string | null;
+  resultWinnerName?: string | null;
+  resultWinnerAmount?: number | null;
+  resultDate?: Date | null;
   /** Present only when hydrated from the full record; omitted by the projected
    *  list query so raw never crosses the wire for the whole catalogue. */
   raw?: Record<string, unknown> | null;

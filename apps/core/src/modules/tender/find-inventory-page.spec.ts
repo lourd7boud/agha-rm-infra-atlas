@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import type { CompetitorBidRecord } from '../intel/intel.repository';
 import {
+  BidResolver,
   buildInventory,
   classifyForStorage,
   isEnCoursOnlyLifecycle,
+  lifecycleFacetFromCounts,
+  resolveStoredResult,
   type InventoryRow,
 } from './inventory.domain';
 import {
@@ -357,6 +360,70 @@ describe('split read (shared facets + per-filter page) parity with findInventory
       repo.findInventoryPageRows(filters, paging, NOW, bids),
     ]);
     expect({ ...page, total, facets }).toEqual(whole);
+  });
+});
+
+describe('resolveStoredResult — the Stage-2 column path == the BidResolver bid fold', () => {
+  const pastDeadline = new Date('2026-05-01T00:00:00Z');
+  const futureDeadline = new Date('2026-08-01T00:00:00Z');
+  const resultDate = new Date('2026-05-10T00:00:00Z');
+
+  test('future deadline → en_cours regardless of stored result (deadline guard wins)', () => {
+    const r = resolveStoredResult(
+      { deadlineAt: futureDeadline, resultState: 'attribue', resultWinnerName: 'X', resultWinnerAmount: 9, resultDate },
+      NOW,
+    );
+    expect(r.lifecycle).toBe('en_cours');
+    expect(r.competitors).toEqual([]);
+    expect(r.resultDate).toBeNull();
+  });
+
+  test('past + null → cloture; + attribue → winner; + infructueux → no winner', () => {
+    expect(
+      resolveStoredResult({ deadlineAt: pastDeadline, resultState: null, resultWinnerName: null, resultWinnerAmount: null, resultDate: null }, NOW).lifecycle,
+    ).toBe('cloture');
+    const att = resolveStoredResult(
+      { deadlineAt: pastDeadline, resultState: 'attribue', resultWinnerName: 'STE WIN', resultWinnerAmount: 800_000, resultDate },
+      NOW,
+    );
+    expect(att.lifecycle).toBe('attribue');
+    expect(att.competitors.find((c) => c.isWinner)?.bidderName).toBe('STE WIN');
+    expect(att.competitors.find((c) => c.isWinner)?.amountMad).toBe(800_000);
+    const inf = resolveStoredResult(
+      { deadlineAt: pastDeadline, resultState: 'infructueux', resultWinnerName: null, resultWinnerAmount: null, resultDate },
+      NOW,
+    );
+    expect(inf.lifecycle).toBe('infructueux');
+    expect(inf.competitors.find((c) => c.isWinner)).toBeUndefined();
+  });
+
+  test('matches BidResolver.resolve for the same market (attribué winner + amount)', () => {
+    const bids: CompetitorBidRecord[] = [
+      { id: 'b1', reference: 'A/1', buyerName: 'ORMVAH', bidderName: 'STE WIN', competitorId: 'c1', amountMad: 800_000, isWinner: true, resultDate, createdAt: resultDate },
+      { id: 'b2', reference: 'A/1', buyerName: 'ORMVAH', bidderName: 'STE LOSE', competitorId: 'c2', amountMad: 900_000, isWinner: false, resultDate, createdAt: resultDate },
+    ];
+    const viaBids = new BidResolver(bids).resolve('A/1', 'ORMVAH', pastDeadline, NOW);
+    const viaColumns = resolveStoredResult(
+      { deadlineAt: pastDeadline, resultState: 'attribue', resultWinnerName: 'STE WIN', resultWinnerAmount: 800_000, resultDate },
+      NOW,
+    );
+    expect(viaColumns.lifecycle).toBe(viaBids.lifecycle);
+    expect(viaColumns.competitors.find((c) => c.isWinner)?.bidderName).toBe(
+      viaBids.competitors.find((c) => c.isWinner)?.bidderName,
+    );
+    expect(viaColumns.competitors.find((c) => c.isWinner)?.amountMad).toBe(
+      viaBids.competitors.find((c) => c.isWinner)?.amountMad,
+    );
+  });
+
+  test('lifecycleFacetFromCounts keeps datao order + drops empty buckets', () => {
+    expect(
+      lifecycleFacetFromCounts({ en_cours: 3, cloture: 0, attribue: 5, infructueux: 2 }),
+    ).toEqual([
+      { key: 'en_cours', label: 'En cours', count: 3 },
+      { key: 'attribue', label: 'Attribué', count: 5 },
+      { key: 'infructueux', label: 'Infructueux', count: 2 },
+    ]);
   });
 });
 

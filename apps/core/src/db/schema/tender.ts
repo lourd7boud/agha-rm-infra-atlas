@@ -4,6 +4,7 @@ import {
   boolean,
   check,
   customType,
+  date,
   index,
   integer,
   jsonb,
@@ -81,6 +82,16 @@ export const tenders = tender.table('tender', {
   secteur: text('secteur'),
   lotCount: integer('lot_count'),
   hasBpu: boolean('has_bpu'),
+  // Denormalized harvested RESULT (migration 0041) — the O(page) Clôturés/Résultats
+  // read model. NULL = no result harvested (→ Clôturé once past deadline);
+  // 'attribue' = a winner was published; 'infructueux' = bids but no winner. Set by
+  // scripts/backfill-result-state.ts from the ref+buyer bid fold (the SAME match the
+  // read-time BidResolver uses). The winner name/amount let the list render
+  // "Fournisseur retenu" with zero competitor_bid access.
+  resultState: text('result_state'),
+  resultWinnerName: text('result_winner_name'),
+  resultWinnerAmount: numeric('result_winner_amount', { precision: 14, scale: 2 }),
+  resultDate: date('result_date', { mode: 'date' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -116,6 +127,10 @@ export const tenders = tender.table('tender', {
   // (pipeline_state, deadline_at) serves that filter+order in one index scan —
   // the single-column tender_pipeline_state_idx above can't order the matches.
   index('tender_pipeline_deadline_idx').on(table.pipelineState, table.deadlineAt),
+  // migration 0041: backs the Clôturés/Résultats page filter
+  // (deadline_at < now AND result_state <op>) — the lifecycle tabs are now pure
+  // column predicates (Stage 2), so paginating them is an index scan, not a JS fold.
+  index('tender_result_state_idx').on(table.resultState),
   // migration 0036: the /tender/inventory `?since=` live-refresh delta filters
   // `updated_at > :since`. This btree turns that per-poll predicate into an index
   // range scan over just the recently-changed tail, so the delta stays

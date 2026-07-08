@@ -10,6 +10,10 @@ import {
   INTEL_REPOSITORY,
   type IntelRepository,
 } from '../intel/intel.repository';
+import {
+  TENDER_REPOSITORY,
+  type TenderRepository,
+} from '../tender/tender.repository';
 import { UNKNOWN_BUYER_LABEL } from '../intel/rebate.domain';
 import { ocrBytesToText } from '../tender/pdf-ocr';
 import { extractDetailLinks, parseDetailPage } from './detail.parser';
@@ -262,6 +266,11 @@ export class ResultCrawlerService {
   constructor(
     @Optional() @Inject(LLM_CLIENT) private readonly llm: LlmClient | null,
     @Inject(INTEL_REPOSITORY) private readonly intel: IntelRepository,
+    // @Optional so a missing provider (or a direct `new` in tests) never breaks boot;
+    // used only to refresh the denormalized tender.result_state after a harvest.
+    @Optional()
+    @Inject(TENDER_REPOSITORY)
+    private readonly tender: TenderRepository | null = null,
   ) {}
 
   async crawlOnce(opts: ResultCrawlOptions = {}): Promise<ResultCrawlSummary> {
@@ -394,6 +403,21 @@ export class ResultCrawlerService {
       opts,
     );
     this.logger.log(`result crawl complete ${JSON.stringify(summary)}`);
+    // Freshness for the O(page) Clôturés/Résultats read model: newly-stored results
+    // change which tenders are attribué/infructueux, so recompute the denormalized
+    // tender.result_state now — but only when something landed (the fold is a
+    // whole-catalogue UPDATE; skip it when the harvest stored nothing). Never fatal:
+    // the read still degrades gracefully (past-deadline → Clôturé) until the next run.
+    if (this.tender && summary.stored > 0) {
+      try {
+        const changed = await this.tender.refreshResultState();
+        this.logger.log(`result_state refreshed: ${changed} tender row(s) updated`);
+      } catch (err) {
+        this.logger.warn(
+          `result_state refresh failed (non-fatal): ${(err as Error).message}`,
+        );
+      }
+    }
     return summary;
   }
 

@@ -288,6 +288,13 @@
       "when": 1783900000000,
       "tag": "0040_equipment_assignment_operator",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1784000000000,
+      "tag": "0041_tender_result_state",
+      "breakpoints": true
     }
   ]
 }
