@@ -15,7 +15,7 @@ import {
   type StockMovementRecord,
 } from '@/lib/stock';
 import { isRedirectError } from '@/lib/next-redirect';
-import { CatalogueGrid, type CatalogueStockState } from './CatalogueGrid';
+import { MarketplaceBrowse, type CatalogueStockState } from './MarketplaceBrowse';
 
 /** One enriched balance row: a (depot, material) pair resolved to names + value. */
 interface BalanceRow extends DepotBalance {
@@ -418,7 +418,7 @@ export default async function StockPage({
         )}
       </section>
 
-      <CatalogueGrid
+      <MarketplaceBrowse
         stockByCode={stockByCode}
         depots={depotOptions}
         addStock={addStock}
