@@ -116,6 +116,11 @@ export const tenders = tender.table('tender', {
   // (pipeline_state, deadline_at) serves that filter+order in one index scan —
   // the single-column tender_pipeline_state_idx above can't order the matches.
   index('tender_pipeline_deadline_idx').on(table.pipelineState, table.deadlineAt),
+  // migration 0036: the /tender/inventory `?since=` live-refresh delta filters
+  // `updated_at > :since`. This btree turns that per-poll predicate into an index
+  // range scan over just the recently-changed tail, so the delta stays
+  // O(changed-rows) instead of a full seq scan as the catalogue grows.
+  index('tender_updated_at_idx').on(table.updatedAt),
 ]);
 
 // ── Phase 0 — Socle de vérité ────────────────────────────────────────────────

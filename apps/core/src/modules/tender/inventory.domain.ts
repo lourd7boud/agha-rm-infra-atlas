@@ -794,6 +794,23 @@ export function clampInventoryLimit(limit: number | undefined): number {
   return Math.min(MAX_ITEM_LIMIT, Math.max(1, Math.floor(limit ?? DEFAULT_ITEM_LIMIT)));
 }
 
+/**
+ * True when a lifecycle filter (single or multi) is active. Lifecycle
+ * (en_cours/cloture/attribue/infructueux) is the ONE dimension that is NOT a stored
+ * column — it's a read-time fold over deadline + harvested bids — so a lifecycle
+ * filter changes which rows match in a way no column WHERE can express. Callers that
+ * push filtering to SQL must special-case it (the DB page degrades to the JS
+ * pipeline), and the controller must keep those (heavier) reads on the long cache
+ * window rather than the short live-refresh window. Shared here so the repository and
+ * the controller agree on exactly what counts as "lifecycle-active".
+ */
+export function isLifecycleFilterActive(filters: InventoryFilters): boolean {
+  return (
+    filters.lifecycle !== undefined ||
+    (filters.lifecycles !== undefined && filters.lifecycles.length > 0)
+  );
+}
+
 interface Classified {
   record: InventoryRow;
   region: string;

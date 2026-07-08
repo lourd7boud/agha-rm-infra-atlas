@@ -26,12 +26,14 @@ import {
   BUYER_FACET_LIMIT,
   classifyForStorage,
   clampInventoryLimit,
+  isLifecycleFilterActive,
   lifecycleFacetForRows,
   PROCEDURE_LABELS,
   type Inventory,
   type InventoryFacet,
   type InventoryFacets,
   type InventoryFilters,
+  type InventoryItem,
   type InventoryPaging,
   type InventoryRow,
   type TenderCategory,
@@ -251,6 +253,33 @@ export interface TenderRepository {
     bids: readonly CompetitorBidRecord[],
   ): Promise<Inventory>;
   /**
+   * Whole-catalogue, filter-INDEPENDENT half of the inventory read: the total row
+   * count + the 6 column facets + the lifecycle facet. These never change with the
+   * active filter/sort/page (facets describe the catalogue, not the query — the
+   * "stable navigation" contract), so the controller computes this ONCE per cache
+   * window and reuses it across every filter/sort/page key AND the `?since=` poll,
+   * instead of recomputing 6 GROUP BYs + a whole-catalogue lifecycle scan on every
+   * distinct request. `bids` powers the read-time lifecycle facet.
+   */
+  findInventoryFacets(
+    now: Date,
+    bids: readonly CompetitorBidRecord[],
+  ): Promise<Pick<Inventory, 'total' | 'facets'>>;
+  /**
+   * Filter-DEPENDENT half of the inventory read: the page rows + filteredCount only
+   * (NO whole-catalogue facets/total). Per-request cost is O(page) — one indexed
+   * `WHERE … ORDER BY … LIMIT/OFFSET` + one `count(*) WHERE …` — so paging/filtering
+   * never pays the catalogue-wide facet cost. Merge with findInventoryFacets to get
+   * the full Inventory. Lifecycle-filter-active still degrades to the JS pipeline for
+   * the page+count (documented hybrid), unchanged.
+   */
+  findInventoryPageRows(
+    filters: InventoryFilters,
+    paging: InventoryPaging,
+    now: Date,
+    bids: readonly CompetitorBidRecord[],
+  ): Promise<Pick<Inventory, 'filteredCount' | 'returnedCount' | 'items' | 'filters'>>;
+  /**
    * Fills sourceUrl on an already-stored tender (matched by reference+buyer)
    * only when it is currently NULL — never overwrites a known value. Returns
    * whether a row was updated. Lets a re-crawl heal the legacy rows that were
@@ -398,6 +427,32 @@ export class InMemoryTenderRepository implements TenderRepository {
     // in-memory path is behaviourally identical to selectInventory + build. The
     // Drizzle impl pushes the same semantics into Postgres.
     return buildInventory([...this.records], filters, now, paging, bids);
+  }
+
+  async findInventoryFacets(
+    now: Date,
+    bids: readonly CompetitorBidRecord[],
+  ): Promise<Pick<Inventory, 'total' | 'facets'>> {
+    // Facets/total are filter-independent (whole catalogue), so an empty filter +
+    // default paging yields exactly the same facets the full page would — the JS
+    // pipeline computes facets before filtering, so this is byte-identical.
+    const inv = buildInventory([...this.records], {}, now, {}, bids);
+    return { total: inv.total, facets: inv.facets };
+  }
+
+  async findInventoryPageRows(
+    filters: InventoryFilters,
+    paging: InventoryPaging,
+    now: Date,
+    bids: readonly CompetitorBidRecord[],
+  ): Promise<Pick<Inventory, 'filteredCount' | 'returnedCount' | 'items' | 'filters'>> {
+    const inv = buildInventory([...this.records], filters, now, paging, bids);
+    return {
+      filteredCount: inv.filteredCount,
+      returnedCount: inv.returnedCount,
+      items: inv.items,
+      filters: inv.filters,
+    };
   }
 
   async findAllForKnowledge(): Promise<KnowledgeTenderRow[]> {
@@ -892,12 +947,68 @@ export class DrizzleTenderRepository implements TenderRepository {
     // change the page + filteredCount, which no column WHERE can express, so we
     // fall back to the exact JS pipeline for that (rare) path. Everything else runs
     // in the DB (O(page)).
-    const lifecycleFilterActive =
-      filters.lifecycle !== undefined ||
-      (filters.lifecycles !== undefined && filters.lifecycles.length > 0);
-    if (lifecycleFilterActive) {
+    if (isLifecycleFilterActive(filters)) {
       const rows = await this.findAllInventoryRows();
       return buildInventory(rows, filters, now, paging, bids);
+    }
+    // Whole-catalogue facets/total and the O(page) filtered page are two
+    // INDEPENDENT reads (facets never depend on the filter). Compose them here for
+    // the single-call contract; the controller instead caches the facets half ONCE
+    // per window and reuses it across every filter/sort/page key (see the split
+    // methods below) so browsing filters costs only the page query.
+    const [{ total, facets }, page] = await Promise.all([
+      this.findInventoryFacets(now, bids),
+      this.findInventoryPageRows(filters, paging, now, bids),
+    ]);
+    return { ...page, total, facets };
+  }
+
+  async findInventoryFacets(
+    now: Date,
+    bids: readonly CompetitorBidRecord[],
+  ): Promise<Pick<Inventory, 'total' | 'facets'>> {
+    const [totalRow, columnFacets, lifecycleRows] = await Promise.all([
+      this.db.select({ n: sql<number>`count(*)::int` }).from(tenders),
+      this.inventoryColumnFacets(),
+      // Minimal whole-catalogue (reference, buyer, deadline_at) projection for the
+      // lifecycle facet — no raw/regex/Zod, so it stays cheap. buyerName scopes the
+      // bid match to the SAME buyer (generic refs like NN/2026 recur across acheteurs).
+      this.db
+        .select({
+          reference: tenders.reference,
+          buyerName: tenders.buyerName,
+          deadlineAt: tenders.deadlineAt,
+        })
+        .from(tenders),
+    ]);
+    return {
+      total: Number(totalRow[0]?.n ?? 0),
+      facets: {
+        ...columnFacets,
+        lifecycles: lifecycleFacetForRows(lifecycleRows, bids, now),
+      },
+    };
+  }
+
+  async findInventoryPageRows(
+    filters: InventoryFilters,
+    paging: InventoryPaging,
+    now: Date,
+    bids: readonly CompetitorBidRecord[],
+  ): Promise<Pick<Inventory, 'filteredCount' | 'returnedCount' | 'items' | 'filters'>> {
+    // Lifecycle-filter-active degrades to the JS pipeline for the page+count only
+    // (it changes which rows match, which no column WHERE can express). Facets stay
+    // whole-catalogue and come from findInventoryFacets, so we discard this fold's
+    // facets/total here.
+    if (isLifecycleFilterActive(filters)) {
+      const rows = await this.findAllInventoryRows();
+      const inv = buildInventory(rows, filters, now, paging, bids);
+      return {
+        filteredCount: inv.filteredCount,
+        returnedCount: inv.returnedCount,
+        items: inv.items,
+        filters: inv.filters,
+      };
     }
 
     const where = buildInventoryWhere(filters);
@@ -905,72 +1016,21 @@ export class DrizzleTenderRepository implements TenderRepository {
     const limit = clampInventoryLimit(paging.limit);
     const offset = Math.max(0, Math.floor(paging.offset ?? 0));
 
-    const [pageRows, filteredCountRow, totalRow, columnFacets, lifecycleRows] =
-      await Promise.all([
-        this.db
-          .select(INVENTORY_PAGE_COLUMNS)
-          .from(tenders)
-          .where(where)
-          .orderBy(...orderBy)
-          .limit(limit)
-          .offset(offset),
-        this.db.select({ n: sql<number>`count(*)::int` }).from(tenders).where(where),
-        this.db.select({ n: sql<number>`count(*)::int` }).from(tenders),
-        this.inventoryColumnFacets(),
-        // Minimal whole-catalogue (reference, buyer, deadline_at) projection for
-        // the lifecycle facet — no raw/regex/Zod, so it stays cheap. buyerName is
-        // needed so the bid match is scoped to the SAME buyer (generic refs like
-        // NN/2026 are reused across acheteurs).
-        this.db
-          .select({
-            reference: tenders.reference,
-            buyerName: tenders.buyerName,
-            deadlineAt: tenders.deadlineAt,
-          })
-          .from(tenders),
-      ]);
+    const [pageRows, filteredCountRow] = await Promise.all([
+      this.db
+        .select(INVENTORY_PAGE_COLUMNS)
+        .from(tenders)
+        .where(where)
+        .orderBy(...orderBy)
+        .limit(limit)
+        .offset(offset),
+      this.db.select({ n: sql<number>`count(*)::int` }).from(tenders).where(where),
+    ]);
 
-    // Attach lifecycle / winner / competitors to the PAGE rows only, from the tiny
-    // bid set — the SAME BidResolver fold selectInventory uses (no drift).
-    const resolver = new BidResolver(bids);
-    const items = pageRows.map((row) => {
-      const record = mapInventoryPageRow(row);
-      const { competitors, lifecycle, resultDate } = resolver.resolve(
-        record.reference,
-        record.buyerName,
-        record.deadlineAt,
-        now,
-      );
-      const classification = {
-        region: record.region ?? UNLOCATED_REGION,
-        ville: record.ville ?? null,
-        category: (record.category ?? 'Travaux') as TenderCategory,
-        secteur: record.secteur ?? DEFAULT_SECTEUR_LABEL,
-      };
-      return buildLightItem(
-        {
-          record,
-          region: classification.region,
-          ville: classification.ville,
-          location: record.location ?? null,
-          category: classification.category,
-          secteur: classification.secteur,
-          lifecycle,
-          competitors,
-          resultDate,
-        },
-        now,
-      );
-    });
-
+    const items = buildInventoryPageItems(pageRows, bids, now);
     return {
-      total: Number(totalRow[0]?.n ?? 0),
       filteredCount: Number(filteredCountRow[0]?.n ?? 0),
       returnedCount: items.length,
-      facets: {
-        ...columnFacets,
-        lifecycles: lifecycleFacetForRows(lifecycleRows, bids, now),
-      },
       items,
       filters,
     };
@@ -1443,6 +1503,43 @@ function mapInventoryPageRow(row: {
     secteur: row.secteur,
     lotCount: row.lotCount,
   };
+}
+
+/** Attaches read-time lifecycle/winner/competitors to the PAGE rows only, from the
+ *  tiny bid set — the SAME BidResolver fold selectInventory uses (no drift) — then
+ *  builds the light display items. Shared by findInventoryPage/findInventoryPageRows
+ *  so the page mapping can never drift between them. NULL classification columns
+ *  default to the whole-catalogue buckets (Non localisé / Travaux / Autres), matching
+ *  the shipped page path. */
+function buildInventoryPageItems(
+  pageRows: ReadonlyArray<Parameters<typeof mapInventoryPageRow>[0]>,
+  bids: readonly CompetitorBidRecord[],
+  now: Date,
+): InventoryItem[] {
+  const resolver = new BidResolver(bids);
+  return pageRows.map((row) => {
+    const record = mapInventoryPageRow(row);
+    const { competitors, lifecycle, resultDate } = resolver.resolve(
+      record.reference,
+      record.buyerName,
+      record.deadlineAt,
+      now,
+    );
+    return buildLightItem(
+      {
+        record,
+        region: record.region ?? UNLOCATED_REGION,
+        ville: record.ville ?? null,
+        location: record.location ?? null,
+        category: (record.category ?? 'Travaux') as TenderCategory,
+        secteur: record.secteur ?? DEFAULT_SECTEUR_LABEL,
+        lifecycle,
+        competitors,
+        resultDate,
+      },
+      now,
+    );
+  });
 }
 
 /** Ordered [value,count] pairs → InventoryFacet[] (key === label === value). The

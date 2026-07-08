@@ -1,0 +1,18 @@
+-- Scalable read (P2 follow-up): btree index on tender.updated_at.
+--
+-- The /tender/inventory `?since=` delta poll (live silent refresh) filters
+-- `WHERE updated_at > :since` to return ONLY the rows changed since the client's
+-- last-seen instant. With no index on updated_at that predicate was a full
+-- sequential scan of tender.tender on EVERY poll (30 s cadence × every open tab) —
+-- cheap while the catalogue was small, but O(catalogue) and growing with each
+-- ingested consultation. This index turns the delta into an index range scan over
+-- just the recently-changed tail, so the live poll stays O(changed-rows) no matter
+-- how large the catalogue grows.
+--
+-- Hand-authored (drizzle-kit generate is blocked by a pre-existing snapshot
+-- collision at 0026); applied by drizzle-kit migrate like every other migration.
+-- IF NOT EXISTS keeps it safe to re-run and safe against any manually-created index
+-- on the production box. tender.tender is small → the CREATE is sub-second and runs
+-- inside the migration transaction (no CONCURRENTLY).
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "tender_updated_at_idx" ON "tender"."tender" USING btree ("updated_at");

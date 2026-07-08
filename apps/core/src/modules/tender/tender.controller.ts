@@ -67,7 +67,12 @@ const chatBodySchema = z.object({
     .max(20)
     .optional(),
 });
-import type { InventoryRow, InventoryFilters } from './inventory.domain';
+import {
+  isLifecycleFilterActive,
+  type Inventory,
+  type InventoryRow,
+  type InventoryFilters,
+} from './inventory.domain';
 import { readPortalDetail } from './portal-detail';
 import {
   INTEL_REPOSITORY,
@@ -194,14 +199,27 @@ function present(record: TenderRecord) {
 }
 
 // Level-2 datao-parity: hot handlers coalesced through a 30 s TTL cache.
-// The home page fans out 8 SSR calls in parallel; inventory + orchestrator are
-// the two heaviest (findAll+facet over ~5 400 rows). Under Sentinel load their
-// p99 climbed past nginx's 60 s default and produced the 504 the operator saw.
-// A 30 s stale window is invisible to human users (Sentinel breather is 5 s,
-// dossier extraction takes hours) and drops both to sub-ms on the warm path.
+// The home page fans out 8 SSR calls in parallel; the orchestrator + the shared
+// inventory facets are the heaviest whole-catalogue reads. Under Sentinel load
+// their p99 climbed past nginx's 60 s default and produced the 504 the operator
+// saw. A 30 s stale window is invisible to human users (Sentinel breather is 5 s,
+// dossier extraction takes hours) and drops them to sub-ms on the warm path.
 const INVENTORY_CACHE_TTL_MS = 30_000;
 const ORCHESTRATOR_CACHE_TTL_MS = 30_000;
-const inventoryCache = new TtlCache<unknown>();
+// Split inventory caches (P2 scalable read). The whole-catalogue facets + total are
+// filter-INDEPENDENT (they describe the catalogue, not the query), so they are
+// computed ONCE per window under a single shared key and reused across EVERY
+// filter/sort/page key AND the ?since= poll — instead of recomputing 6 GROUP BYs +
+// a whole-catalogue lifecycle scan on every distinct request. Only the O(page)
+// filtered page varies per key, so browsing filters/pages costs one indexed page
+// query, never a fresh catalogue-wide facet fan-out.
+type InventoryFacetsResult = Pick<Inventory, 'total' | 'facets'>;
+type InventoryPageResult = Pick<
+  Inventory,
+  'filteredCount' | 'returnedCount' | 'items' | 'filters'
+>;
+const inventoryFacetsCache = new TtlCache<InventoryFacetsResult>();
+const inventoryPageCache = new TtlCache<InventoryPageResult>();
 const orchestratorCache = new TtlCache<unknown>();
 // Live-participants cache: 60 s is the sweet spot between UX freshness
 // (operator retries after adding a caution → sees the +1 within a minute)
@@ -224,25 +242,29 @@ interface CatalogSnapshot {
   bids: CompetitorBidRecord[];
 }
 const catalogSnapshotCache = new TtlCache<CatalogSnapshot>();
-// Light snapshot for the inventory/list path — projected rows (NO raw jsonb) +
-// the bid scan. raw is loaded only for the visible page via findByIds, so the
-// hot list read no longer drags the whole catalogue's raw over the wire. Buyers
-// and competitor-intel keep the full CatalogSnapshot above.
+// Light snapshot for the buyer observatory — projected rows (NO raw jsonb) + the
+// bid scan. The INVENTORY read no longer uses this: it computes its page + facets
+// in Postgres (findInventoryPageRows / findInventoryFacets) and needs only the tiny
+// bid set below, so it never triggers the whole-catalogue row scan. Buyers keep it.
 interface InventoryLightSnapshot {
   rows: InventoryRow[];
   bids: CompetitorBidRecord[];
 }
 const inventoryLightSnapshotCache = new TtlCache<InventoryLightSnapshot>();
-// The ?since= delta poll needs to be fresher than the 10 s catalogue snapshot
-// (see the `since` branch below), but a direct uncached findAll+listAllBids on
-// every request let concurrent/duplicate pollers each trigger a full scan +
-// classification of the whole catalogue on the same event loop — a
-// thundering herd that pegged the core process and took the site down in
-// production. A dedicated, single-flighted, short-TTL cache still beats the
-// 10 s snapshot on freshness (a write is visible within ~2 s, not up to 10 s)
-// while coalescing simultaneous pollers into one compute.
+// The tiny competitor_bid set drives the read-time lifecycle status/facet. It is
+// loaded ONCE per window (single-flight) for the inventory read — which needs ONLY
+// bids, NOT the whole-catalogue row scan. The old path loaded bids via
+// findAllInventoryRows()+listAllBids and discarded the rows: a full jsonb-detoasting
+// scan of every tender's `raw` that fed nothing here and grew with each ingested
+// dossier, pushing the SSR call past its 15 s deadline → "Catalogue momentanément
+// indisponible". Loading bids alone removes that O(catalogue) cost from the hot path.
+const bidsSnapshotCache = new TtlCache<CompetitorBidRecord[]>();
+// The ?since= delta poll's PAGE must read fresher than the 30 s window; a 2 s
+// single-flighted cache coalesces concurrent pollers (every open tab) into one tiny
+// `updated_at > since` page query. Facets/total are shared from the 30 s cache — a
+// <30 s trailing count is invisible next to the row merge the client actually applies.
 const FRESH_SINCE_CACHE_TTL_MS = 2_000;
-const freshSinceLightCache = new TtlCache<InventoryLightSnapshot>();
+const freshSincePageCache = new TtlCache<InventoryPageResult>();
 
 function presentOutcome(outcome: OutcomeRecord, estimationMad?: number) {
   return {
@@ -628,43 +650,41 @@ export class TenderController {
    */
   @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
   @Get('inventory')
-  async inventory(@Query() query: unknown) {
+  async inventory(@Query() query: unknown): Promise<Inventory> {
     const parsed = inventoryQuerySchema.safeParse(query);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const { limit, offset, ...filters } = parsed.data;
-    // The `since` delta powers live silent refresh, so it MUST read fresher
-    // than the 10 s catalogue snapshot: that snapshot freezes each row's
-    // updatedAt for up to its TTL, which would make a change written after the
-    // snapshot invisible to `?since=` until the snapshot expired (rows whose
-    // stale updatedAt <= since get filtered out). It must NOT be a fully
-    // uncached read either — every poller (30 s cadence × every open tab)
-    // hitting a bare findAll+listAllBids+classify concurrently is a thundering
-    // herd that pegged the core event loop and took prod down. This
-    // single-flighted, 2 s-TTL cache is fresh enough for a 30 s poll while
-    // coalescing simultaneous requests into one compute.
-    if (filters.since) {
-      const { bids } = await freshSinceLightCache.getOrCompute(
-        'all',
-        FRESH_SINCE_CACHE_TTL_MS,
-        async () => {
-          const [rows, bids] = await Promise.all([
-            this.repository.findAllInventoryRows(),
-            this.intel.listAllBids(),
-          ]);
-          return { rows, bids };
-        },
-      );
-      return this.assembleInventory(bids, filters, { limit, offset });
-    }
+    const now = new Date();
+
+    // The read-time lifecycle status/facet needs ONLY the tiny competitor_bid set —
+    // load it once per window (single-flight). The old path dragged the whole
+    // catalogue's `raw` through findAllInventoryRows() just to reach these bids and
+    // threw the rows away; that O(catalogue) jsonb scan is gone.
+    const bids = await this.loadBidsSnapshot();
+
+    // Whole-catalogue facets + total are filter-INDEPENDENT, so compute them ONCE
+    // per window and share them across every filter/sort/page key AND the ?since=
+    // poll. This is what keeps per-request cost O(page) as the catalogue grows.
+    const facetsPromise = this.loadInventoryFacets(bids, now);
+
     const key = JSON.stringify({ ...filters, limit, offset });
-    return inventoryCache.getOrCompute(key, INVENTORY_CACHE_TTL_MS, async () => {
-      // P2: the page/facets/counts are computed IN Postgres (findInventoryPage);
-      // only the tiny bid scan is loaded here to drive the read-time lifecycle
-      // status (en_cours / cloture / attribue / infructueux) and the "Résultat de
-      // l'appel d'offre" surface — it is joined to the page by canonical reference.
-      const { bids } = await this.loadInventoryLight();
-      return this.assembleInventory(bids, filters, { limit, offset });
-    });
+    // A pure-column `?since=` delta is O(page) — one indexed `updated_at > :since`
+    // WHERE…ORDER BY…LIMIT/OFFSET + one count — so it rides a 2 s single-flighted
+    // cache that coalesces concurrent pollers (every open tab) into one tiny query
+    // for live silent refresh. A LIFECYCLE-active page is the exception: lifecycle
+    // is not a stored column, so findInventoryPageRows degrades to the whole-
+    // catalogue JS fold — that heavier read MUST stay on the 30 s window (never the
+    // 2 s one), otherwise the fold could re-run every ~2 s under concurrent
+    // `?since=&lifecycle=` pollers. A normal (no-since) page is cached 30 s too.
+    const useFreshSince = filters.since !== undefined && !isLifecycleFilterActive(filters);
+    const pageCache = useFreshSince ? freshSincePageCache : inventoryPageCache;
+    const pageTtl = useFreshSince ? FRESH_SINCE_CACHE_TTL_MS : INVENTORY_CACHE_TTL_MS;
+    const pagePromise = pageCache.getOrCompute(key, pageTtl, () =>
+      this.repository.findInventoryPageRows(filters, { limit, offset }, now, bids),
+    );
+
+    const [{ total, facets }, page] = await Promise.all([facetsPromise, pagePromise]);
+    return { ...page, total, facets };
   }
 
   /** Buyer Observatory: aggregated demand-side profile of every acheteur. */
@@ -903,16 +923,32 @@ export class TenderController {
     );
   }
 
-  /** P2: the filtering, sort, pagination and column facets run in Postgres
-   *  (findInventoryPage) so per-request cost is O(page), not O(catalogue). The bid
-   *  set (tiny) is passed through for the read-time lifecycle status/facet, which
-   *  is not a stored column. Response shape is byte-for-byte the same as the old
-   *  selectInventory + buildLightItem path. */
-  private assembleInventory(
+  /** Tiny competitor_bid set shared 10 s per window (single-flight) — the ONLY
+   *  whole-table read the inventory hot path needs, for the read-time lifecycle
+   *  status/facet. No tender-catalogue scan: the page + facets run in Postgres. */
+  private loadBidsSnapshot(): Promise<CompetitorBidRecord[]> {
+    return bidsSnapshotCache.getOrCompute('bids', CATALOG_SNAPSHOT_TTL_MS, () =>
+      this.intel.listAllBids(),
+    );
+  }
+
+  /** Whole-catalogue facets + total (filter-INDEPENDENT), computed ONCE per 30 s
+   *  window under a single shared key and reused across every filter/sort/page key
+   *  and the ?since= poll. This is the O(catalogue) work of the inventory read —
+   *  amortized to once per window instead of recomputed per distinct request.
+   *
+   *  Accepted eventual-consistency tradeoff: the shared facet snapshot bakes in the
+   *  `bids`/`now` of whichever request populated it, so its `lifecycles` counts can
+   *  lag the current page's per-row lifecycle by up to one facet window after a bid
+   *  write (a row can flip to "Attribué" a few seconds before the sidebar counter
+   *  catches up). It self-heals within the window and never corrupts data — the same
+   *  bounded-staleness contract the 30 s cache already makes everywhere else. */
+  private loadInventoryFacets(
     bids: readonly CompetitorBidRecord[],
-    filters: InventoryFilters,
-    paging: { limit?: number; offset?: number },
-  ) {
-    return this.repository.findInventoryPage(filters, paging, new Date(), bids);
+    now: Date,
+  ): Promise<InventoryFacetsResult> {
+    return inventoryFacetsCache.getOrCompute('facets', INVENTORY_CACHE_TTL_MS, () =>
+      this.repository.findInventoryFacets(now, bids),
+    );
   }
 }

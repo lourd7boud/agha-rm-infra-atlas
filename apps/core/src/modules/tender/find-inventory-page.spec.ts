@@ -289,6 +289,118 @@ describe('findInventoryPage (InMemory, contract parity with the JS pipeline)', (
   });
 });
 
+describe('split read (shared facets + per-filter page) parity with findInventoryPage', () => {
+  test('findInventoryFacets returns the whole-catalogue total + facets, filter-independent', async () => {
+    const repo = await seed();
+    const whole = await repo.findInventoryPage({}, {}, NOW, []);
+    const facetsOnly = await repo.findInventoryFacets(NOW, []);
+    // The shared-facets read carries exactly total + facets, byte-identical to
+    // the full page's whole-catalogue portion — so it can be computed ONCE and
+    // reused across every filter/sort/page key.
+    expect(Object.keys(facetsOnly).sort()).toEqual(['facets', 'total']);
+    expect(facetsOnly.total).toBe(whole.total);
+    expect(facetsOnly.facets).toEqual(whole.facets);
+    // And it does NOT collapse under a filter — same facets regardless of args
+    // (facets are a property of the catalogue, not the query).
+    const underFilter = await repo.findInventoryPage({ procedure: 'AOO' }, {}, NOW, []);
+    expect(facetsOnly.facets).toEqual(underFilter.facets);
+  });
+
+  test('findInventoryPageRows returns only the filter-dependent page (no facets/total)', async () => {
+    const repo = await seed();
+    const full = await repo.findInventoryPage(
+      { categories: ['Travaux'], region: 'Souss-Massa' },
+      { limit: 24, offset: 0 },
+      NOW,
+      [],
+    );
+    const pageOnly = await repo.findInventoryPageRows(
+      { categories: ['Travaux'], region: 'Souss-Massa' },
+      { limit: 24, offset: 0 },
+      NOW,
+      [],
+    );
+    expect(Object.keys(pageOnly).sort()).toEqual(
+      ['filteredCount', 'filters', 'items', 'returnedCount'].sort(),
+    );
+    expect(pageOnly.filteredCount).toBe(full.filteredCount);
+    expect(pageOnly.returnedCount).toBe(full.returnedCount);
+    expect(pageOnly.items).toEqual(full.items);
+    expect(pageOnly.filters).toEqual(full.filters);
+  });
+
+  test('composing the two halves reproduces findInventoryPage byte-for-byte (with a bid)', async () => {
+    const repo = new InMemoryTenderRepository();
+    await repo.create(
+      input({ reference: 'W/1', deadlineAt: new Date('2026-05-01T09:00:00Z') }),
+    );
+    await repo.create(input({ reference: 'A/9', buyerName: 'ORMVA Souss' }));
+    const bids: CompetitorBidRecord[] = [
+      {
+        id: 'bid-1',
+        reference: 'W/1',
+        buyerName: 'Acheteur',
+        bidderName: 'Concurrent A',
+        competitorId: 'c1',
+        amountMad: 100,
+        isWinner: true,
+        resultDate: new Date('2026-05-10T00:00:00Z'),
+        createdAt: new Date('2026-05-10T00:00:00Z'),
+      },
+    ];
+    const filters = { sort: 'publication' as const, dir: 'desc' as const };
+    const paging = { limit: 24, offset: 0 };
+    const whole = await repo.findInventoryPage(filters, paging, NOW, bids);
+    const [{ total, facets }, page] = await Promise.all([
+      repo.findInventoryFacets(NOW, bids),
+      repo.findInventoryPageRows(filters, paging, NOW, bids),
+    ]);
+    expect({ ...page, total, facets }).toEqual(whole);
+  });
+});
+
+describe('findInventoryPageRows honors the ?since= delta cutoff', () => {
+  test('far-past since returns every row; far-future since returns none', async () => {
+    const repo = await seed(); // 4 rows, all created "now" (real time, 2026)
+    const all = await repo.findInventoryPageRows(
+      { since: new Date('2000-01-01T00:00:00Z') },
+      {},
+      NOW,
+      [],
+    );
+    expect(all.filteredCount).toBe(4);
+    const none = await repo.findInventoryPageRows(
+      { since: new Date('2100-01-01T00:00:00Z') },
+      {},
+      NOW,
+      [],
+    );
+    expect(none.filteredCount).toBe(0);
+    expect(none.items).toEqual([]);
+  });
+
+  test('since combined with a lifecycle filter still narrows via the JS-fallback branch', async () => {
+    const repo = await seed();
+    // All 4 seed rows have a future deadline (2026-08-01 > NOW) → en_cours. A far-past
+    // since keeps them; en_cours keeps them; attribue (a result cannot precede the
+    // deadline) drops all — exercising the lifecycle-active page path under ?since=.
+    const enCours = await repo.findInventoryPageRows(
+      { since: new Date('2000-01-01T00:00:00Z'), lifecycle: 'en_cours' },
+      {},
+      NOW,
+      [],
+    );
+    expect(enCours.filteredCount).toBe(4);
+    const attribue = await repo.findInventoryPageRows(
+      { since: new Date('2000-01-01T00:00:00Z'), lifecycle: 'attribue' },
+      {},
+      NOW,
+      [],
+    );
+    expect(attribue.filteredCount).toBe(0);
+  });
+});
+
 describe('NULL-column fallback (pre-backfill correctness)', () => {
   test('classify falls back to on-the-fly inference PER FIELD when a stored column is null', () => {
     // A projected row with NO stored classification (as a legacy row reads before

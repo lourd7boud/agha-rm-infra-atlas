@@ -253,6 +253,13 @@
       "when": 1783400000000,
       "tag": "0035_intel_competitor_bid_buyer_key",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1783500000000,
+      "tag": "0036_tender_updated_at_index",
+      "breakpoints": true
     }
   ]
 }
