@@ -811,6 +811,29 @@ export function isLifecycleFilterActive(filters: InventoryFilters): boolean {
   );
 }
 
+/** The effective lifecycle constraint set — the single `lifecycle` param unioned
+ *  with the `lifecycles` multi-select. Empty when no lifecycle filter is active. */
+export function effectiveLifecycleSet(filters: InventoryFilters): ReadonlySet<string> {
+  const set = new Set<string>();
+  if (filters.lifecycle) set.add(filters.lifecycle);
+  for (const value of filters.lifecycles ?? []) set.add(value);
+  return set;
+}
+
+/**
+ * True when the ONLY active lifecycle constraint is `en_cours`. Unlike the other
+ * lifecycle values (cloture/attribue/infructueux — which depend on harvested bids),
+ * `en_cours` is exactly `deadline_at >= now`: a pure column predicate with no bid
+ * dependency. So an en_cours filter can be pushed straight to SQL (an indexed
+ * `deadline_at >= now` WHERE) instead of the whole-catalogue JS fold — which makes
+ * the DEFAULT /tenders tab O(page) instead of O(catalogue). The bid-dependent
+ * lifecycles still take the JS pipeline (see isLifecycleFilterActive).
+ */
+export function isEnCoursOnlyLifecycle(filters: InventoryFilters): boolean {
+  const set = effectiveLifecycleSet(filters);
+  return set.size === 1 && set.has('en_cours');
+}
+
 interface Classified {
   record: InventoryRow;
   region: string;

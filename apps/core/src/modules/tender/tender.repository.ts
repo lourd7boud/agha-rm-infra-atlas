@@ -26,6 +26,7 @@ import {
   BUYER_FACET_LIMIT,
   classifyForStorage,
   clampInventoryLimit,
+  isEnCoursOnlyLifecycle,
   isLifecycleFilterActive,
   lifecycleFacetForRows,
   PROCEDURE_LABELS,
@@ -984,13 +985,13 @@ export class DrizzleTenderRepository implements TenderRepository {
     now: Date,
     bids: readonly CompetitorBidRecord[],
   ): Promise<Inventory> {
-    // HYBRID (documented): lifecycle (en_cours/cloture/attribue/infructueux) is NOT
-    // a stored column — it depends on the deadline + harvested bids joined by
-    // canonical reference (a JS fold). When a lifecycle filter is active it must
-    // change the page + filteredCount, which no column WHERE can express, so we
-    // fall back to the exact JS pipeline for that (rare) path. Everything else runs
-    // in the DB (O(page)).
-    if (isLifecycleFilterActive(filters)) {
+    // HYBRID (documented): the BID-DEPENDENT lifecycles (cloture/attribue/
+    // infructueux) are NOT stored columns — they depend on the deadline + harvested
+    // bids joined by canonical reference (a JS fold), which no column WHERE can
+    // express, so they fall back to the exact JS pipeline. `en_cours` is the
+    // exception: it is exactly `deadline_at >= now`, a pure column predicate pushed
+    // to SQL below (isEnCoursOnlyLifecycle), so the DEFAULT tab stays O(page).
+    if (isLifecycleFilterActive(filters) && !isEnCoursOnlyLifecycle(filters)) {
       const rows = await this.findAllInventoryRows();
       return buildInventory(rows, filters, now, paging, bids);
     }
@@ -1039,11 +1040,13 @@ export class DrizzleTenderRepository implements TenderRepository {
     now: Date,
     bids: readonly CompetitorBidRecord[],
   ): Promise<Pick<Inventory, 'filteredCount' | 'returnedCount' | 'items' | 'filters'>> {
-    // Lifecycle-filter-active degrades to the JS pipeline for the page+count only
-    // (it changes which rows match, which no column WHERE can express). Facets stay
-    // whole-catalogue and come from findInventoryFacets, so we discard this fold's
-    // facets/total here.
-    if (isLifecycleFilterActive(filters)) {
+    // A BID-DEPENDENT lifecycle filter (cloture/attribue/infructueux) degrades to
+    // the JS pipeline for the page+count (which rows match depends on harvested
+    // bids, which no column WHERE can express). `en_cours` is exempt: it is exactly
+    // `deadline_at >= now`, pushed to the SQL WHERE below — so the DEFAULT tab is
+    // O(page), not an O(catalogue) fold. Facets stay whole-catalogue (findInventoryFacets).
+    const enCoursOnly = isEnCoursOnlyLifecycle(filters);
+    if (isLifecycleFilterActive(filters) && !enCoursOnly) {
       const rows = await this.findAllInventoryRows();
       const inv = buildInventory(rows, filters, now, paging, bids);
       return {
@@ -1054,7 +1057,8 @@ export class DrizzleTenderRepository implements TenderRepository {
       };
     }
 
-    const where = buildInventoryWhere(filters);
+    // en_cours ⟺ deadline_at >= now (indexed, no bid dependency).
+    const where = buildInventoryWhere(filters, enCoursOnly ? now : undefined);
     const orderBy = inventoryOrderBy(filters);
     const limit = clampInventoryLimit(paging.limit);
     const offset = Math.max(0, Math.floor(paging.offset ?? 0));
@@ -1651,8 +1655,16 @@ function effectiveValues(
  * reference ("62/2025") still matches (FTS stems words, not codes). Lifecycle is
  * handled by the caller (not a column). Undefined dimensions add no constraint.
  */
-function buildInventoryWhere(filters: InventoryFilters): SQL | undefined {
+function buildInventoryWhere(
+  filters: InventoryFilters,
+  enCoursNow?: Date,
+): SQL | undefined {
   const clauses: SQL[] = [];
+
+  // en_cours ⟺ the submission deadline has not passed. A pure column predicate,
+  // so the DEFAULT lifecycle tab filters + paginates in the DB (indexed on
+  // deadline_at) instead of the whole-catalogue JS fold. Only set for en_cours-only.
+  if (enCoursNow) clauses.push(sql`${tenders.deadlineAt} >= ${enCoursNow}`);
 
   const procedures = effectiveValues(filters.procedure, filters.procedures);
   if (procedures) clauses.push(inArray(tenders.procedure, procedures));

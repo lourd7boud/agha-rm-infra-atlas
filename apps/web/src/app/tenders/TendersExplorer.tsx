@@ -146,18 +146,17 @@ function filtersFromUrl(url: Record<string, string>): FilterState {
   if (url.region) next.regions = [url.region];
   if (url.procedure) next.procedures = [url.procedure];
   if (url.buyer) next.buyers = [url.buyer];
-  if (
-    url.lifecycle === 'en_cours' ||
-    url.lifecycle === 'cloture' ||
-    url.lifecycle === 'attribue' ||
-    url.lifecycle === 'infructueux'
-  ) {
-    next.statut =
-      url.lifecycle === 'en_cours'
-        ? 'en_cours'
-        : url.lifecycle === 'cloture'
-          ? 'clotures'
-          : 'resultats';
+  // The URL carries the tab value directly (en_cours/clotures/resultats/tous — see
+  // the URL sync below). Absent ⇒ leave the EMPTY_FILTERS default (en_cours). Also
+  // tolerate the raw server lifecycle values (cloture/attribue/infructueux) so an
+  // older shared link still resolves to the right tab.
+  const lc = url.lifecycle;
+  if (lc === 'en_cours' || lc === 'clotures' || lc === 'resultats' || lc === 'tous') {
+    next.statut = lc;
+  } else if (lc === 'cloture') {
+    next.statut = 'clotures';
+  } else if (lc === 'attribue' || lc === 'infructueux') {
+    next.statut = 'resultats';
   }
   return next;
 }
@@ -268,7 +267,9 @@ export function TendersExplorer({
     if (filters.regions.length === 1) next.set('region', filters.regions[0]);
     if (filters.procedures.length === 1) next.set('procedure', filters.procedures[0]);
     if (filters.buyers.length === 1) next.set('buyer', filters.buyers[0]);
-    if (filters.statut !== 'tous') next.set('lifecycle', filters.statut);
+    // en_cours is the DEFAULT (no param ⇒ /tenders opens on En cours); every other
+    // tab, including an explicit "Tous", carries ?lifecycle=<tab>.
+    if (filters.statut !== 'en_cours') next.set('lifecycle', filters.statut);
     if (sort.key !== 'publication' || sort.dir !== 'desc') {
       next.set(SORT_PARAM, sort.key);
       next.set(DIR_PARAM, sort.dir);

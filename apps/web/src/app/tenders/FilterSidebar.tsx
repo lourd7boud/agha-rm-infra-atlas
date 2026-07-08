@@ -45,7 +45,10 @@ export interface FilterState {
 }
 
 export const EMPTY_FILTERS: FilterState = {
-  statut: 'tous',
+  // Default view is "En cours" (open consultations) — the actionable tab a bidder
+  // wants on entry, and a pure `deadline_at >= now` filter the server answers in
+  // O(page). "Tous" is an explicit choice (?lifecycle=tous).
+  statut: 'en_cours',
   search: '',
   procedures: [],
   categories: [],

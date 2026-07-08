@@ -3,6 +3,7 @@ import type { CompetitorBidRecord } from '../intel/intel.repository';
 import {
   buildInventory,
   classifyForStorage,
+  isEnCoursOnlyLifecycle,
   type InventoryRow,
 } from './inventory.domain';
 import {
@@ -356,6 +357,29 @@ describe('split read (shared facets + per-filter page) parity with findInventory
       repo.findInventoryPageRows(filters, paging, NOW, bids),
     ]);
     expect({ ...page, total, facets }).toEqual(whole);
+  });
+});
+
+describe('en_cours is a pure deadline predicate (SQL push-down parity)', () => {
+  test('isEnCoursOnlyLifecycle detects the en_cours-only filter', () => {
+    expect(isEnCoursOnlyLifecycle({ lifecycle: 'en_cours' })).toBe(true);
+    expect(isEnCoursOnlyLifecycle({ lifecycles: ['en_cours'] })).toBe(true);
+    expect(isEnCoursOnlyLifecycle({})).toBe(false);
+    expect(isEnCoursOnlyLifecycle({ lifecycle: 'cloture' })).toBe(false);
+    expect(isEnCoursOnlyLifecycle({ lifecycles: ['en_cours', 'cloture'] })).toBe(false);
+  });
+
+  test('en_cours returns EXACTLY the future-deadline rows (== deadline_at >= now)', async () => {
+    const repo = new InMemoryTenderRepository();
+    await repo.create(input({ reference: 'FUT/1', deadlineAt: new Date('2026-08-01T00:00:00Z') }));
+    await repo.create(input({ reference: 'FUT/2', deadlineAt: new Date('2026-07-01T00:00:00Z') }));
+    await repo.create(input({ reference: 'PAST/1', deadlineAt: new Date('2026-05-01T00:00:00Z') }));
+    // No bids: en_cours must NOT depend on results — it is purely the deadline, which
+    // is exactly what the Drizzle `deadline_at >= now` WHERE clause pushes to SQL.
+    const page = await repo.findInventoryPageRows({ lifecycle: 'en_cours' }, {}, NOW, []);
+    expect(page.filteredCount).toBe(2);
+    expect(page.items.map((i) => i.reference).sort()).toEqual(['FUT/1', 'FUT/2']);
+    expect(page.items.every((i) => i.lifecycleStatus === 'en_cours')).toBe(true);
   });
 });
 

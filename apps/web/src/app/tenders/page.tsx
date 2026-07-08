@@ -54,8 +54,9 @@ function parsePaging(sp: Record<string, string | undefined>): {
  *  `lifecycles` multi-select (attribue+infructueux both mean "Résultats"). */
 function serverLifecycles(lifecycle: string | undefined): string | undefined {
   switch (lifecycle) {
-    case 'en_cours':
-      return 'en_cours';
+    // Explicit "Tous" — the only way to see the full catalogue; no lifecycle filter.
+    case 'tous':
+      return undefined;
     case 'cloture':
     case 'clotures':
       return 'cloture';
@@ -63,8 +64,11 @@ function serverLifecycles(lifecycle: string | undefined): string | undefined {
     case 'attribue':
     case 'infructueux':
       return 'attribue,infructueux';
+    // Absent (or en_cours) ⇒ the DEFAULT view is En cours, so /tenders opens on the
+    // open consultations, and the SSR fetch matches the client's default filter.
+    case 'en_cours':
     default:
-      return undefined;
+      return 'en_cours';
   }
 }
 
