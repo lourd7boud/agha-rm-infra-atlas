@@ -30,6 +30,10 @@ import {
   WorkOrderTransitionError,
 } from './equipment.maintenance.domain';
 import {
+  INSPECTION_ITEM_STATUSES,
+  INSPECTION_TYPES,
+} from './equipment.inspection.domain';
+import {
   DrizzleEquipmentRepository,
   EQUIPMENT_REPOSITORY,
   InMemoryEquipmentRepository,
@@ -47,6 +51,9 @@ const equipmentSchema = z.object({
   numeroSerie: z.string().max(120).optional(),
   immatriculation: z.string().max(60).optional(),
   acquisitionDate: z.coerce.date().optional(),
+  acquisitionCostMad: z.coerce.number().nonnegative().optional(),
+  depreciationMonths: z.coerce.number().int().positive().optional(),
+  salvageValueMad: z.coerce.number().nonnegative().optional(),
   notes: z.string().max(2000).optional(),
 });
 
@@ -126,6 +133,18 @@ const maintenancePlanSchema = z
   });
 
 const planActiveSchema = z.object({ active: z.boolean() });
+
+const inspectionSchema = z.object({
+  type: z.enum(INSPECTION_TYPES),
+  inspectionDate: z.coerce.date().optional(),
+  inspectedBy: z.string().max(120).optional(),
+  notes: z.string().max(2000).optional(),
+});
+
+const inspectionItemStatusSchema = z.object({
+  status: z.enum(INSPECTION_ITEM_STATUSES),
+  notes: z.string().max(2000).optional(),
+});
 
 /** Maps a domain transition error to HTTP 409; rethrows anything else. */
 function toHttp(error: unknown): never {
@@ -470,6 +489,64 @@ export class EquipmentController {
   @Post('maintenance-plans/:planId/generate')
   async generateDueWorkOrder(@Param('planId') planId: string) {
     return this.repository.generateDueWorkOrder(planId, new Date());
+  }
+
+  // ── GMAO: inspections ─────────────────────────────────────────────────────
+
+  @Roles('travaux', 'direction', 'terrain', 'admin-si')
+  @Post(':id/inspections')
+  async createInspection(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = inspectionSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    await this.ensureExists(id);
+    return this.repository.createInspection({
+      equipmentId: id,
+      type: parsed.data.type,
+      inspectionDate: parsed.data.inspectionDate ?? new Date(),
+      inspectedBy: parsed.data.inspectedBy,
+      notes: parsed.data.notes,
+    });
+  }
+
+  @Roles('travaux', 'direction', 'terrain', 'finance', 'admin-si')
+  @Get(':id/inspections')
+  async listInspections(@Param('id') id: string) {
+    await this.ensureExists(id);
+    return this.repository.listInspections(id);
+  }
+
+  @Roles('travaux', 'direction', 'terrain', 'admin-si')
+  @Patch('inspections/items/:itemId')
+  async setInspectionItemStatus(
+    @Param('itemId') itemId: string,
+    @Body() body: unknown,
+  ) {
+    const parsed = inspectionItemStatusSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const updated = await this.repository.setInspectionItemStatus(
+      itemId,
+      parsed.data.status,
+      parsed.data.notes,
+    );
+    if (!updated) throw new NotFoundException('Point de contrôle introuvable');
+    return updated;
+  }
+
+  @Roles('travaux', 'direction', 'admin-si')
+  @Delete('inspections/:inspectionId')
+  async deleteInspection(@Param('inspectionId') inspectionId: string) {
+    const deleted = await this.repository.deleteInspection(inspectionId);
+    if (!deleted) throw new NotFoundException('Inspection introuvable');
+    return { deleted: true };
+  }
+
+  // ── GMAO: depreciation ────────────────────────────────────────────────────
+
+  @Roles('travaux', 'direction', 'terrain', 'finance', 'admin-si')
+  @Get(':id/depreciation')
+  async equipmentDepreciation(@Param('id') id: string) {
+    await this.ensureExists(id);
+    return this.repository.equipmentDepreciation(id, new Date());
   }
 
   // ── per-chantier fleet ────────────────────────────────────────────────────

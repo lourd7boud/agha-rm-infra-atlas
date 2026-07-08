@@ -19,6 +19,9 @@ export interface EquipmentRecord {
   immatriculation?: string;
   status: EquipmentStatus;
   acquisitionDate?: string;
+  acquisitionCostMad?: number;
+  depreciationMonths?: number;
+  salvageValueMad?: number;
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -286,6 +289,99 @@ export const MAINTENANCE_INTERVAL_LABEL: Record<MaintenanceTriggerType, string> 
     meter: 'Intervalle (heures/km)',
     temps: 'Intervalle (jours)',
   };
+
+// ── GMAO: inspections / checklists ───────────────────────────────────────────
+
+export type InspectionType =
+  | 'avant_affectation'
+  | 'retour_chantier'
+  | 'periodique'
+  | 'securite';
+export type InspectionResult = 'conforme' | 'reserves' | 'non_conforme';
+export type InspectionItemStatus = 'ok' | 'defaut' | 'na';
+
+export interface InspectionItemRecord {
+  id: string;
+  inspectionId: string;
+  label: string;
+  status: InspectionItemStatus;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface InspectionItemSummary {
+  ok: number;
+  defaut: number;
+  na: number;
+  total: number;
+}
+
+export interface InspectionRecord {
+  id: string;
+  equipmentId: string;
+  type: InspectionType;
+  inspectionDate: string;
+  inspectedBy?: string;
+  result: InspectionResult;
+  notes?: string;
+  createdAt: string;
+}
+
+/** GET /equipment/:id/inspections row — inspection + items + tally. */
+export interface InspectionWithItems extends InspectionRecord {
+  items: InspectionItemRecord[];
+  summary: InspectionItemSummary;
+}
+
+export const INSPECTION_TYPE_LABELS: Record<InspectionType, string> = {
+  avant_affectation: 'Avant affectation',
+  retour_chantier: 'Retour chantier',
+  periodique: 'Périodique',
+  securite: 'Sécurité',
+};
+
+export const INSPECTION_TYPE_ORDER: readonly InspectionType[] = [
+  'avant_affectation',
+  'retour_chantier',
+  'periodique',
+  'securite',
+];
+
+export const INSPECTION_RESULT_BADGES: Record<
+  InspectionResult,
+  { label: string; classes: string }
+> = {
+  conforme: { label: 'Conforme', classes: 'bg-emerald-soft text-emerald' },
+  reserves: { label: 'Réserves', classes: 'bg-ochre-soft text-ochre' },
+  non_conforme: { label: 'Non conforme', classes: 'bg-clay-soft text-clay' },
+};
+
+export const INSPECTION_ITEM_STATUS_BADGES: Record<
+  InspectionItemStatus,
+  { label: string; classes: string }
+> = {
+  ok: { label: 'OK', classes: 'bg-emerald-soft text-emerald' },
+  defaut: { label: 'Défaut', classes: 'bg-clay-soft text-clay' },
+  na: { label: 'N/A', classes: 'bg-sand text-muted' },
+};
+
+export const INSPECTION_ITEM_STATUS_ORDER: readonly InspectionItemStatus[] = [
+  'ok',
+  'defaut',
+  'na',
+];
+
+// ── GMAO: depreciation (amortissement linéaire) ──────────────────────────────
+
+export interface DepreciationResult {
+  applicable: boolean;
+  bookValueMad: number | null;
+  accumulatedMad: number | null;
+  monthlyMad: number | null;
+  elapsedMonths: number | null;
+  totalMonths: number | null;
+  fullyDepreciated: boolean;
+}
 
 /**
  * Presentational mirror of the core documentExpiryStatus rule (30-day window),

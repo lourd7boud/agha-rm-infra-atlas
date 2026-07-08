@@ -44,6 +44,14 @@ export const equipments = equipment.table(
     // and enforced by the equipment.domain transition guards on assign/return.
     status: text('status').notNull().default('disponible'),
     acquisitionDate: date('acquisition_date', { mode: 'date' }),
+    // Amortissement linéaire inputs — the current book value ("valeur comptable")
+    // is derived at read time from cost + duration + acquisition date.
+    acquisitionCostMad: numeric('acquisition_cost_mad', {
+      precision: 14,
+      scale: 2,
+    }),
+    depreciationMonths: integer('depreciation_months'),
+    salvageValueMad: numeric('salvage_value_mad', { precision: 14, scale: 2 }),
     notes: text('notes'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -248,6 +256,64 @@ export const equipmentMaintenancePlans = equipment.table(
     check(
       'equipment_maintenance_plan_meter_unit_check',
       sql`${table.meterUnit} IS NULL OR ${table.meterUnit} IN ('heures', 'km')`,
+    ),
+  ],
+);
+
+// ── Inspections — checklists / contrôles machine ─────────────────────────────
+// A checklist run against a machine (avant_affectation / retour_chantier /
+// periodique / securite). result is derived from the items (any défaut →
+// non_conforme) and recomputed when an item changes. type/result mirror
+// INSPECTION_TYPES / INSPECTION_RESULTS in equipment.inspection.domain.
+export const equipmentInspections = equipment.table(
+  'inspection',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    equipmentId: uuid('equipment_id')
+      .notNull()
+      .references(() => equipments.id),
+    type: text('type').notNull(),
+    inspectionDate: date('inspection_date', { mode: 'date' }).notNull(),
+    inspectedBy: text('inspected_by'),
+    result: text('result').notNull().default('conforme'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('equipment_inspection_equipment_id_idx').on(table.equipmentId),
+    check(
+      'equipment_inspection_type_check',
+      sql`${table.type} IN ('avant_affectation', 'retour_chantier', 'periodique', 'securite')`,
+    ),
+    check(
+      'equipment_inspection_result_check',
+      sql`${table.result} IN ('conforme', 'reserves', 'non_conforme')`,
+    ),
+  ],
+);
+
+// One checklist line of an inspection. ON DELETE CASCADE: items belong to their
+// inspection and are removed with it. status mirrors INSPECTION_ITEM_STATUSES.
+export const equipmentInspectionItems = equipment.table(
+  'inspection_item',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    inspectionId: uuid('inspection_id')
+      .notNull()
+      .references(() => equipmentInspections.id, { onDelete: 'cascade' }),
+    label: text('label').notNull(),
+    // Checklist order (from the template index) — stable display order that
+    // survives item-status updates (created_at ties/MVCC reorder otherwise).
+    position: integer('position').notNull().default(0),
+    status: text('status').notNull().default('ok'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('equipment_inspection_item_inspection_id_idx').on(table.inspectionId),
+    check(
+      'equipment_inspection_item_status_check',
+      sql`${table.status} IN ('ok', 'defaut', 'na')`,
     ),
   ],
 );

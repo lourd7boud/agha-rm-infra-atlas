@@ -16,16 +16,31 @@
  * and work orders (bons d'intervention) whose costs roll up per machine.
  */
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, isNull, lte, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lte, ne, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import {
   equipmentAssignments,
   equipmentDocuments,
+  equipmentInspectionItems,
+  equipmentInspections,
   equipmentMaintenancePlans,
   equipmentMeterReadings,
   equipments,
   equipmentWorkOrders,
 } from '../../db/schema';
+import {
+  straightLineDepreciation,
+  type DepreciationResult,
+} from './equipment.depreciation.domain';
+import {
+  INSPECTION_TEMPLATES,
+  inspectionItemSummary,
+  inspectionOverallResult,
+  type InspectionItemStatus,
+  type InspectionItemSummary,
+  type InspectionResult,
+  type InspectionType,
+} from './equipment.inspection.domain';
 import {
   assertAssign,
   assertReturn,
@@ -58,6 +73,9 @@ export interface UpsertEquipment {
   numeroSerie?: string;
   immatriculation?: string;
   acquisitionDate?: Date;
+  acquisitionCostMad?: number;
+  depreciationMonths?: number;
+  salvageValueMad?: number;
   notes?: string;
 }
 
@@ -72,6 +90,9 @@ export interface EquipmentRecord {
   immatriculation?: string;
   status: EquipmentStatus;
   acquisitionDate?: Date;
+  acquisitionCostMad?: number;
+  depreciationMonths?: number;
+  salvageValueMad?: number;
   notes?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -292,6 +313,44 @@ export interface DuePlan extends MaintenancePlanWithStatus {
   equipmentName: string;
 }
 
+// ── GMAO: inspections / checklists ───────────────────────────────────────────
+
+export interface CreateInspectionInput {
+  equipmentId: string;
+  type: InspectionType;
+  inspectionDate: Date;
+  inspectedBy?: string;
+  notes?: string;
+}
+
+export interface InspectionRecord {
+  id: string;
+  equipmentId: string;
+  type: InspectionType;
+  inspectionDate: Date;
+  inspectedBy?: string;
+  result: InspectionResult;
+  notes?: string;
+  createdAt: Date;
+}
+
+export interface InspectionItemRecord {
+  id: string;
+  inspectionId: string;
+  label: string;
+  /** Checklist display order (from the template index). */
+  position: number;
+  status: InspectionItemStatus;
+  notes?: string;
+  createdAt: Date;
+}
+
+/** An inspection with its checklist items + a status tally. */
+export interface InspectionWithItems extends InspectionRecord {
+  items: InspectionItemRecord[];
+  summary: InspectionItemSummary;
+}
+
 export const EQUIPMENT_REPOSITORY = Symbol('EQUIPMENT_REPOSITORY');
 
 export interface EquipmentRepository {
@@ -404,6 +463,27 @@ export interface EquipmentRepository {
     planId: string,
     today: Date,
   ): Promise<EquipmentWorkOrderRecord | null>;
+
+  // ── GMAO: inspections ──────────────────────────────────────────────────────
+  /** Creates an inspection, seeding its checklist from the type's template. */
+  createInspection(input: CreateInspectionInput): Promise<InspectionRecord>;
+  /** A machine's inspections (newest first), each with items + summary. */
+  listInspections(equipmentId: string): Promise<InspectionWithItems[]>;
+  /**
+   * Sets a checklist item's status (+ optional note) and recomputes the parent
+   * inspection's overall result. Null when the item id is unknown.
+   */
+  setInspectionItemStatus(
+    itemId: string,
+    status: InspectionItemStatus,
+    notes?: string,
+  ): Promise<InspectionItemRecord | null>;
+  /** Removes an inspection and its items (cascade); true when deleted. */
+  deleteInspection(id: string): Promise<boolean>;
+
+  // ── GMAO: depreciation ─────────────────────────────────────────────────────
+  /** Straight-line book value of a machine as of `asOf`. */
+  equipmentDepreciation(id: string, asOf: Date): Promise<DepreciationResult>;
 }
 
 // ── in-memory store (dev/test fallback) ──────────────────────────────────────
@@ -440,6 +520,8 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
   private meterReadings: readonly EquipmentMeterReadingRecord[] = [];
   private workOrders: readonly EquipmentWorkOrderRecord[] = [];
   private maintenancePlans: readonly MaintenancePlanRecord[] = [];
+  private inspections: readonly InspectionRecord[] = [];
+  private inspectionItems: readonly InspectionItemRecord[] = [];
 
   async upsertEquipment(input: UpsertEquipment): Promise<EquipmentRecord> {
     const index = this.equipment.findIndex((e) => e.name === input.name);
@@ -456,6 +538,9 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
         immatriculation: input.immatriculation,
         status: 'disponible',
         acquisitionDate: input.acquisitionDate,
+        acquisitionCostMad: input.acquisitionCostMad,
+        depreciationMonths: input.depreciationMonths,
+        salvageValueMad: input.salvageValueMad,
         notes: input.notes,
         createdAt: now,
         updatedAt: now,
@@ -474,6 +559,11 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
       numeroSerie: input.numeroSerie ?? existing.numeroSerie,
       immatriculation: input.immatriculation ?? existing.immatriculation,
       acquisitionDate: input.acquisitionDate ?? existing.acquisitionDate,
+      acquisitionCostMad:
+        input.acquisitionCostMad ?? existing.acquisitionCostMad,
+      depreciationMonths:
+        input.depreciationMonths ?? existing.depreciationMonths,
+      salvageValueMad: input.salvageValueMad ?? existing.salvageValueMad,
       notes: input.notes ?? existing.notes,
       updatedAt: new Date(),
     };
@@ -886,6 +976,118 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
     });
   }
 
+  // ── GMAO: inspections ──────────────────────────────────────────────────────
+
+  async createInspection(
+    input: CreateInspectionInput,
+  ): Promise<InspectionRecord> {
+    const now = new Date();
+    const inspection: InspectionRecord = {
+      id: randomUUID(),
+      equipmentId: input.equipmentId,
+      type: input.type,
+      inspectionDate: input.inspectionDate,
+      inspectedBy: input.inspectedBy,
+      result: 'conforme',
+      notes: input.notes,
+      createdAt: now,
+    };
+    this.inspections = [...this.inspections, inspection];
+    const items: InspectionItemRecord[] = INSPECTION_TEMPLATES[input.type].map(
+      (label, index) => ({
+        id: randomUUID(),
+        inspectionId: inspection.id,
+        label,
+        position: index,
+        status: 'ok',
+        notes: undefined,
+        createdAt: now,
+      }),
+    );
+    this.inspectionItems = [...this.inspectionItems, ...items];
+    return inspection;
+  }
+
+  async listInspections(equipmentId: string): Promise<InspectionWithItems[]> {
+    return [...this.inspections]
+      .filter((i) => i.equipmentId === equipmentId)
+      .sort((a, b) => b.inspectionDate.getTime() - a.inspectionDate.getTime())
+      .map((inspection) => {
+        const items = this.inspectionItems
+          .filter((it) => it.inspectionId === inspection.id)
+          .sort((a, b) => a.position - b.position);
+        return { ...inspection, items, summary: inspectionItemSummary(items) };
+      });
+  }
+
+  async setInspectionItemStatus(
+    itemId: string,
+    status: InspectionItemStatus,
+    notes?: string,
+  ): Promise<InspectionItemRecord | null> {
+    const idx = this.inspectionItems.findIndex((it) => it.id === itemId);
+    if (idx === -1) return null;
+    const existing = this.inspectionItems[idx]!;
+    const updated: InspectionItemRecord = {
+      ...existing,
+      status,
+      notes: notes ?? existing.notes,
+    };
+    this.inspectionItems = [
+      ...this.inspectionItems.slice(0, idx),
+      updated,
+      ...this.inspectionItems.slice(idx + 1),
+    ];
+    this.recomputeInspectionResult(existing.inspectionId);
+    return updated;
+  }
+
+  async deleteInspection(id: string): Promise<boolean> {
+    const next = this.inspections.filter((i) => i.id !== id);
+    const deleted = next.length !== this.inspections.length;
+    this.inspections = next;
+    // Cascade: drop the inspection's items (mirrors the DB FK ON DELETE CASCADE).
+    this.inspectionItems = this.inspectionItems.filter(
+      (it) => it.inspectionId !== id,
+    );
+    return deleted;
+  }
+
+  // ── GMAO: depreciation ─────────────────────────────────────────────────────
+
+  async equipmentDepreciation(
+    id: string,
+    asOf: Date,
+  ): Promise<DepreciationResult> {
+    const machine = this.equipment.find((e) => e.id === id) ?? null;
+    if (!machine) return straightLineDepreciation({}, asOf);
+    return straightLineDepreciation(
+      {
+        acquisitionCostMad: machine.acquisitionCostMad,
+        acquisitionDate: machine.acquisitionDate,
+        depreciationMonths: machine.depreciationMonths,
+        salvageValueMad: machine.salvageValueMad,
+      },
+      asOf,
+    );
+  }
+
+  /** Recompute + persist an inspection's overall result from its items. */
+  private recomputeInspectionResult(inspectionId: string): void {
+    const idx = this.inspections.findIndex((i) => i.id === inspectionId);
+    if (idx === -1) return;
+    const items = this.inspectionItems.filter(
+      (it) => it.inspectionId === inspectionId,
+    );
+    const result = inspectionOverallResult(items);
+    const updated: InspectionRecord = { ...this.inspections[idx]!, result };
+    this.inspections = [
+      ...this.inspections.slice(0, idx),
+      updated,
+      ...this.inspections.slice(idx + 1),
+    ];
+  }
+
   /** Advances a plan's last-service baseline after its WO is closed. */
   private advancePlanInPlace(
     planId: string,
@@ -955,6 +1157,15 @@ export class DrizzleEquipmentRepository implements EquipmentRepository {
         numeroSerie: input.numeroSerie,
         immatriculation: input.immatriculation,
         acquisitionDate: input.acquisitionDate,
+        acquisitionCostMad:
+          input.acquisitionCostMad != null
+            ? String(input.acquisitionCostMad)
+            : undefined,
+        depreciationMonths: input.depreciationMonths,
+        salvageValueMad:
+          input.salvageValueMad != null
+            ? String(input.salvageValueMad)
+            : undefined,
         notes: input.notes,
       })
       .onConflictDoUpdate({
@@ -967,6 +1178,9 @@ export class DrizzleEquipmentRepository implements EquipmentRepository {
           numeroSerie: sql`coalesce(excluded.numero_serie, ${equipments.numeroSerie})`,
           immatriculation: sql`coalesce(excluded.immatriculation, ${equipments.immatriculation})`,
           acquisitionDate: sql`coalesce(excluded.acquisition_date, ${equipments.acquisitionDate})`,
+          acquisitionCostMad: sql`coalesce(excluded.acquisition_cost_mad, ${equipments.acquisitionCostMad})`,
+          depreciationMonths: sql`coalesce(excluded.depreciation_months, ${equipments.depreciationMonths})`,
+          salvageValueMad: sql`coalesce(excluded.salvage_value_mad, ${equipments.salvageValueMad})`,
           notes: sql`coalesce(excluded.notes, ${equipments.notes})`,
           updatedAt: sql`now()`,
         },
@@ -1609,6 +1823,150 @@ export class DrizzleEquipmentRepository implements EquipmentRepository {
       return toWorkOrder(row);
     });
   }
+
+  // ── GMAO: inspections ──────────────────────────────────────────────────────
+
+  async createInspection(
+    input: CreateInspectionInput,
+  ): Promise<InspectionRecord> {
+    // Inspection + its seeded checklist items commit together.
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(equipmentInspections)
+        .values({
+          equipmentId: input.equipmentId,
+          type: input.type,
+          inspectionDate: input.inspectionDate,
+          inspectedBy: input.inspectedBy,
+          result: 'conforme',
+          notes: input.notes,
+        })
+        .returning();
+      if (!row) throw new Error('Inspection insert returned no row');
+      const labels = INSPECTION_TEMPLATES[input.type];
+      if (labels.length > 0) {
+        await tx.insert(equipmentInspectionItems).values(
+          labels.map((label, index) => ({
+            inspectionId: row.id,
+            label,
+            position: index,
+          })),
+        );
+      }
+      return toInspection(row);
+    });
+  }
+
+  async listInspections(equipmentId: string): Promise<InspectionWithItems[]> {
+    const inspectionRows = await this.db
+      .select()
+      .from(equipmentInspections)
+      .where(eq(equipmentInspections.equipmentId, equipmentId))
+      .orderBy(
+        desc(equipmentInspections.inspectionDate),
+        desc(equipmentInspections.createdAt),
+      );
+    if (inspectionRows.length === 0) return [];
+    const itemRows = await this.db
+      .select()
+      .from(equipmentInspectionItems)
+      .where(
+        inArray(
+          equipmentInspectionItems.inspectionId,
+          inspectionRows.map((r) => r.id),
+        ),
+      )
+      .orderBy(
+        asc(equipmentInspectionItems.position),
+        asc(equipmentInspectionItems.createdAt),
+      );
+    const itemsByInspection = new Map<string, InspectionItemRecord[]>();
+    for (const row of itemRows) {
+      const item = toInspectionItem(row);
+      const list = itemsByInspection.get(item.inspectionId) ?? [];
+      list.push(item);
+      itemsByInspection.set(item.inspectionId, list);
+    }
+    return inspectionRows.map((row) => {
+      const items = itemsByInspection.get(row.id) ?? [];
+      return {
+        ...toInspection(row),
+        items,
+        summary: inspectionItemSummary(items),
+      };
+    });
+  }
+
+  async setInspectionItemStatus(
+    itemId: string,
+    status: InspectionItemStatus,
+    notes?: string,
+  ): Promise<InspectionItemRecord | null> {
+    // Update the item, then recompute the parent inspection's result from ALL
+    // its items — in one transaction so the two never disagree.
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(equipmentInspectionItems)
+        .set({ status, ...(notes !== undefined ? { notes } : {}) })
+        .where(eq(equipmentInspectionItems.id, itemId))
+        .returning();
+      if (!row) return null;
+      // Lock the parent inspection so concurrent item edits on the SAME
+      // inspection serialise before we recompute the aggregate result — else a
+      // just-recorded défaut could be dropped by a racing recompute (TOCTOU).
+      await tx
+        .select({ id: equipmentInspections.id })
+        .from(equipmentInspections)
+        .where(eq(equipmentInspections.id, row.inspectionId))
+        .for('update')
+        .limit(1);
+      const siblings = await tx
+        .select({ status: equipmentInspectionItems.status })
+        .from(equipmentInspectionItems)
+        .where(eq(equipmentInspectionItems.inspectionId, row.inspectionId));
+      const result = inspectionOverallResult(
+        siblings.map((s) => ({ status: s.status as InspectionItemStatus })),
+      );
+      await tx
+        .update(equipmentInspections)
+        .set({ result })
+        .where(eq(equipmentInspections.id, row.inspectionId));
+      return toInspectionItem(row);
+    });
+  }
+
+  async deleteInspection(id: string): Promise<boolean> {
+    // inspection_item FK is ON DELETE CASCADE — items go with the inspection.
+    const rows = await this.db
+      .delete(equipmentInspections)
+      .where(eq(equipmentInspections.id, id))
+      .returning({ id: equipmentInspections.id });
+    return rows.length > 0;
+  }
+
+  // ── GMAO: depreciation ─────────────────────────────────────────────────────
+
+  async equipmentDepreciation(
+    id: string,
+    asOf: Date,
+  ): Promise<DepreciationResult> {
+    const [row] = await this.db
+      .select()
+      .from(equipments)
+      .where(eq(equipments.id, id))
+      .limit(1);
+    if (!row) return straightLineDepreciation({}, asOf);
+    const machine = toEquipment(row);
+    return straightLineDepreciation(
+      {
+        acquisitionCostMad: machine.acquisitionCostMad,
+        acquisitionDate: machine.acquisitionDate,
+        depreciationMonths: machine.depreciationMonths,
+        salvageValueMad: machine.salvageValueMad,
+      },
+      asOf,
+    );
+  }
 }
 
 // ── row → record mappers ─────────────────────────────────────────────────────
@@ -1619,6 +1977,8 @@ type DocumentRow = typeof equipmentDocuments.$inferSelect;
 type MeterReadingRow = typeof equipmentMeterReadings.$inferSelect;
 type WorkOrderRow = typeof equipmentWorkOrders.$inferSelect;
 type MaintenancePlanRow = typeof equipmentMaintenancePlans.$inferSelect;
+type InspectionRow = typeof equipmentInspections.$inferSelect;
+type InspectionItemRow = typeof equipmentInspectionItems.$inferSelect;
 
 function toEquipment(row: EquipmentRow): EquipmentRecord {
   return {
@@ -1632,6 +1992,11 @@ function toEquipment(row: EquipmentRow): EquipmentRecord {
     immatriculation: row.immatriculation ?? undefined,
     status: row.status as EquipmentStatus,
     acquisitionDate: row.acquisitionDate ?? undefined,
+    acquisitionCostMad:
+      row.acquisitionCostMad != null ? Number(row.acquisitionCostMad) : undefined,
+    depreciationMonths: row.depreciationMonths ?? undefined,
+    salvageValueMad:
+      row.salvageValueMad != null ? Number(row.salvageValueMad) : undefined,
     notes: row.notes ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -1711,6 +2076,31 @@ function toMaintenancePlan(row: MaintenancePlanRow): MaintenancePlanRecord {
     intervalDays: row.intervalDays ?? undefined,
     lastServiceDate: row.lastServiceDate ?? undefined,
     active: row.active,
+    notes: row.notes ?? undefined,
+    createdAt: row.createdAt,
+  };
+}
+
+function toInspection(row: InspectionRow): InspectionRecord {
+  return {
+    id: row.id,
+    equipmentId: row.equipmentId,
+    type: row.type as InspectionType,
+    inspectionDate: row.inspectionDate,
+    inspectedBy: row.inspectedBy ?? undefined,
+    result: row.result as InspectionResult,
+    notes: row.notes ?? undefined,
+    createdAt: row.createdAt,
+  };
+}
+
+function toInspectionItem(row: InspectionItemRow): InspectionItemRecord {
+  return {
+    id: row.id,
+    inspectionId: row.inspectionId,
+    label: row.label,
+    position: row.position,
+    status: row.status as InspectionItemStatus,
     notes: row.notes ?? undefined,
     createdAt: row.createdAt,
   };

@@ -123,6 +123,14 @@ export default async function EquipmentPage({
     }
     try {
       const acquisitionDate = String(formData.get('acquisitionDate') ?? '');
+      // Parse an optional numeric field, preserving a legitimate 0 (unlike
+      // `Number(x) || undefined`, which would drop it).
+      const num = (key: string): number | undefined => {
+        const raw = String(formData.get(key) ?? '').trim();
+        if (!raw) return undefined;
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : undefined;
+      };
       await apiPost('/equipment', {
         name,
         code: String(formData.get('code') ?? '') || undefined,
@@ -130,6 +138,9 @@ export default async function EquipmentPage({
         marque: String(formData.get('marque') ?? '') || undefined,
         modele: String(formData.get('modele') ?? '') || undefined,
         acquisitionDate: acquisitionDate || undefined,
+        acquisitionCostMad: num('acquisitionCostMad'),
+        depreciationMonths: num('depreciationMonths'),
+        salvageValueMad: num('salvageValueMad'),
         notes: String(formData.get('notes') ?? '') || undefined,
       });
     } catch (error) {
@@ -529,6 +540,42 @@ export default async function EquipmentPage({
               type="date"
               name="acquisitionDate"
               className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-muted">
+              Coût d&apos;acquisition DH (optionnel)
+            </span>
+            <input
+              type="number"
+              name="acquisitionCostMad"
+              min={0}
+              step="0.01"
+              className="w-36 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-muted">
+              Amortissement (mois)
+            </span>
+            <input
+              type="number"
+              name="depreciationMonths"
+              min={1}
+              step="1"
+              className="w-28 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-muted">
+              Valeur résiduelle DH (optionnel)
+            </span>
+            <input
+              type="number"
+              name="salvageValueMad"
+              min={0}
+              step="0.01"
+              className="w-32 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
             />
           </label>
           <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">

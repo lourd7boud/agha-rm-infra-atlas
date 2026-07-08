@@ -14,16 +14,22 @@ import {
   fmtMeter,
   fmtPlanNextDue,
   fmtPlanRemaining,
+  INSPECTION_ITEM_STATUS_BADGES,
+  INSPECTION_RESULT_BADGES,
+  INSPECTION_TYPE_LABELS,
+  INSPECTION_TYPE_ORDER,
   MAINTENANCE_TRIGGER_LABELS,
   METER_UNIT_LABELS,
   PLAN_DUE_BADGES,
   WORK_ORDER_STATUS_BADGES,
   WORK_ORDER_TYPE_LABELS,
   type CurrentMeter,
+  type DepreciationResult,
   type EquipmentDetail,
   type EquipmentDocumentRecord,
   type EquipmentMeterReadingRecord,
   type EquipmentWorkOrderRecord,
+  type InspectionWithItems,
   type MaintenancePlanWithStatus,
 } from '@/lib/equipment';
 import { isRedirectError } from '@/lib/next-redirect';
@@ -62,6 +68,9 @@ const ACTION_ERROR_MESSAGES: Record<string, string> = {
   'generatePlan:not-due':
     'Aucun bon généré : le plan n’est pas encore dû ou a déjà un bon ouvert.',
   'togglePlan:failed': 'Échec de la mise à jour du plan. Réessayez.',
+  'createInspection:invalid': 'Inspection refusée : choisissez un type.',
+  'createInspection:failed': 'Échec de la création de l’inspection. Réessayez.',
+  'inspectionItem:failed': 'Échec de la mise à jour du point. Réessayez.',
 };
 
 function actionErrorMessage(
@@ -105,18 +114,27 @@ export default async function EquipmentDetailPage({
     throw error;
   }
 
-  const [documents, readings, currentMeter, workOrders, cost, plans, projects] =
-    await Promise.all([
-      apiGet<EquipmentDocumentRecord[]>(`/equipment/${id}/documents`),
-      apiGet<EquipmentMeterReadingRecord[]>(`/equipment/${id}/meter-readings`),
-      apiGet<CurrentMeter | null>(`/equipment/${id}/meter`),
-      apiGet<EquipmentWorkOrderRecord[]>(`/equipment/${id}/work-orders`),
-      apiGet<{ totalMad: number }>(`/equipment/${id}/cost`),
-      apiGet<MaintenancePlanWithStatus[]>(
-        `/equipment/${id}/maintenance-plans`,
-      ),
-      apiGet<ProjectSummary[]>('/project/projects'),
-    ]);
+  const [
+    documents,
+    readings,
+    currentMeter,
+    workOrders,
+    cost,
+    plans,
+    inspections,
+    depreciation,
+    projects,
+  ] = await Promise.all([
+    apiGet<EquipmentDocumentRecord[]>(`/equipment/${id}/documents`),
+    apiGet<EquipmentMeterReadingRecord[]>(`/equipment/${id}/meter-readings`),
+    apiGet<CurrentMeter | null>(`/equipment/${id}/meter`),
+    apiGet<EquipmentWorkOrderRecord[]>(`/equipment/${id}/work-orders`),
+    apiGet<{ totalMad: number }>(`/equipment/${id}/cost`),
+    apiGet<MaintenancePlanWithStatus[]>(`/equipment/${id}/maintenance-plans`),
+    apiGet<InspectionWithItems[]>(`/equipment/${id}/inspections`),
+    apiGet<DepreciationResult>(`/equipment/${id}/depreciation`),
+    apiGet<ProjectSummary[]>('/project/projects'),
+  ]);
 
   const { equipment } = detail;
   const badge = EQUIPMENT_STATUS_BADGES[equipment.status];
@@ -263,6 +281,37 @@ export default async function EquipmentDetailPage({
     revalidatePath(`/equipment/${id}`);
   }
 
+  async function createInspection(formData: FormData) {
+    'use server';
+    const type = str(formData, 'type');
+    if (!type) redirect(`/equipment/${id}?error=createInspection&code=invalid`);
+    try {
+      await apiPost(`/equipment/${id}/inspections`, {
+        type,
+        inspectionDate: str(formData, 'inspectionDate') || undefined,
+        inspectedBy: str(formData, 'inspectedBy') || undefined,
+      });
+    } catch (error) {
+      failToDetail(id, 'createInspection', error);
+    }
+    revalidatePath(`/equipment/${id}`);
+  }
+
+  async function setInspectionItemStatus(formData: FormData) {
+    'use server';
+    const itemId = str(formData, 'itemId');
+    const status = str(formData, 'status');
+    if (!itemId || !status) {
+      redirect(`/equipment/${id}?error=inspectionItem&code=failed`);
+    }
+    try {
+      await apiPatch(`/equipment/inspections/items/${itemId}`, { status });
+    } catch (error) {
+      failToDetail(id, 'inspectionItem', error);
+    }
+    revalidatePath(`/equipment/${id}`);
+  }
+
   return (
     <div>
       <div className="mb-6">
@@ -342,6 +391,22 @@ export default async function EquipmentDetailPage({
               {fmtMad(cost.totalMad)}
             </p>
           </div>
+          {depreciation.applicable && (
+            <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
+              <p className="text-xs font-semibold uppercase tracking-widest text-faint">
+                Valeur comptable
+              </p>
+              <p className="mt-2 font-mono text-2xl font-bold tabular-nums text-emerald">
+                {depreciation.bookValueMad != null
+                  ? fmtMad(depreciation.bookValueMad)
+                  : '—'}
+              </p>
+              <p className="mt-1 text-xs text-faint">
+                {depreciation.elapsedMonths}/{depreciation.totalMonths} mois
+                {depreciation.fullyDepreciated ? ' · amorti' : ''}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -785,6 +850,141 @@ export default async function EquipmentDetailPage({
           </label>
           <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
             Ajouter le plan
+          </button>
+        </form>
+      </section>
+
+      {/* Inspections */}
+      <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
+        <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
+          Inspections &amp; contrôles ({inspections.length})
+        </h2>
+        {inspections.length === 0 ? (
+          <p className="p-6 text-center text-sm text-faint">
+            Aucune inspection — lancez un contrôle (avant affectation, retour
+            chantier, périodique, sécurité) ci-dessous.
+          </p>
+        ) : (
+          <ul className="divide-y divide-line">
+            {inspections.map((insp) => {
+              const rBadge = INSPECTION_RESULT_BADGES[insp.result];
+              return (
+                <li key={insp.id} className="px-5 py-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold">
+                        {INSPECTION_TYPE_LABELS[insp.type]}
+                      </span>
+                      <span className="font-mono text-xs tabular-nums text-muted">
+                        {fmtDate(insp.inspectionDate)}
+                      </span>
+                      {insp.inspectedBy && (
+                        <span className="text-xs text-faint">
+                          · {insp.inspectedBy}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-faint">
+                        {insp.summary.ok}/{insp.summary.total} OK
+                      </span>
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${rBadge.classes}`}
+                      >
+                        {rBadge.label}
+                      </span>
+                    </div>
+                  </div>
+                  <ul className="space-y-1.5">
+                    {insp.items.map((item) => {
+                      const iBadge = INSPECTION_ITEM_STATUS_BADGES[item.status];
+                      return (
+                        <li
+                          key={item.id}
+                          className="flex flex-wrap items-center justify-between gap-2 text-sm"
+                        >
+                          <span className="text-muted">{item.label}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-xs font-semibold ${iBadge.classes}`}
+                            >
+                              {iBadge.label}
+                            </span>
+                            <form
+                              action={setInspectionItemStatus}
+                              className="flex items-center gap-1"
+                            >
+                              <input
+                                type="hidden"
+                                name="itemId"
+                                value={item.id}
+                              />
+                              <select
+                                name="status"
+                                defaultValue={item.status}
+                                className="rounded-md border border-line-2 bg-paper px-2 py-0.5 text-xs focus:border-cyan focus:outline-none"
+                              >
+                                <option value="ok">OK</option>
+                                <option value="defaut">Défaut</option>
+                                <option value="na">N/A</option>
+                              </select>
+                              <button className="rounded-md border border-line-2 px-2 py-0.5 text-xs text-muted transition hover:bg-sand">
+                                ✓
+                              </button>
+                            </form>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <form
+          action={createInspection}
+          className="flex flex-wrap items-end gap-3 border-t border-line px-5 py-4"
+        >
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-muted">
+              Type d’inspection
+            </span>
+            <select
+              name="type"
+              required
+              className="rounded-md border border-line-2 bg-paper px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            >
+              {INSPECTION_TYPE_ORDER.map((t) => (
+                <option key={t} value={t}>
+                  {INSPECTION_TYPE_LABELS[t]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-muted">
+              Date (optionnel)
+            </span>
+            <input
+              type="date"
+              name="inspectionDate"
+              className="rounded-md border border-line-2 bg-paper px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-muted">
+              Inspecteur (optionnel)
+            </span>
+            <input
+              type="text"
+              name="inspectedBy"
+              maxLength={120}
+              className="w-40 rounded-md border border-line-2 bg-paper px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            />
+          </label>
+          <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
+            Lancer l’inspection
           </button>
         </form>
       </section>
