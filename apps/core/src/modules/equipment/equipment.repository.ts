@@ -389,6 +389,13 @@ export interface EquipmentRepository {
    * its open assignment inline — one query, no per-machine getEquipment fan-out.
    */
   projectEquipment(projectId: string): Promise<ProjectEquipmentRecord[]>;
+  /**
+   * Permanently removes a machine AND all its records (documents, meters, work
+   * orders, plans, inspections, assignment history) in one transaction. Returns
+   * false when the id is unknown; throws EquipmentTransitionError when the
+   * machine is currently assigned (it must be returned first).
+   */
+  deleteEquipment(id: string): Promise<boolean>;
 
   // ── GMAO: documents ────────────────────────────────────────────────────────
   /** Records a compliance document (assurance, carte grise…) for a machine. */
@@ -703,6 +710,33 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
     return this.equipment
       .filter((e) => openByEquipment.has(e.id))
       .map((e) => ({ ...e, openAssignment: openByEquipment.get(e.id)! }));
+  }
+
+  async deleteEquipment(id: string): Promise<boolean> {
+    const machine = this.equipment.find((e) => e.id === id) ?? null;
+    if (!machine) return false;
+    if (machine.status === 'assignee') {
+      throw new EquipmentTransitionError(
+        'Retournez la machine du chantier avant de la supprimer',
+      );
+    }
+    // Cascade: drop every record hanging off this machine, then the machine.
+    const inspectionIds = new Set(
+      this.inspections.filter((i) => i.equipmentId === id).map((i) => i.id),
+    );
+    this.inspectionItems = this.inspectionItems.filter(
+      (it) => !inspectionIds.has(it.inspectionId),
+    );
+    this.inspections = this.inspections.filter((i) => i.equipmentId !== id);
+    this.workOrders = this.workOrders.filter((w) => w.equipmentId !== id);
+    this.maintenancePlans = this.maintenancePlans.filter(
+      (p) => p.equipmentId !== id,
+    );
+    this.meterReadings = this.meterReadings.filter((r) => r.equipmentId !== id);
+    this.documents = this.documents.filter((d) => d.equipmentId !== id);
+    this.assignments = this.assignments.filter((a) => a.equipmentId !== id);
+    this.equipment = this.equipment.filter((e) => e.id !== id);
+    return true;
   }
 
   // ── GMAO: documents ────────────────────────────────────────────────────────
@@ -1419,6 +1453,47 @@ export class DrizzleEquipmentRepository implements EquipmentRepository {
       ...toEquipment(row.equipment),
       openAssignment: toAssignment(row.assignment),
     }));
+  }
+
+  async deleteEquipment(id: string): Promise<boolean> {
+    // Lock the machine, refuse if assigned, then cascade-delete every child in
+    // one transaction (child FKs are ON DELETE no action). inspection_item
+    // cascades from inspection; work_order.plan_id is SET NULL — irrelevant here
+    // since the work orders are deleted first.
+    return this.db.transaction(async (tx) => {
+      const [machine] = await tx
+        .select()
+        .from(equipments)
+        .where(eq(equipments.id, id))
+        .for('update')
+        .limit(1);
+      if (!machine) return false;
+      if (machine.status === 'assignee') {
+        throw new EquipmentTransitionError(
+          'Retournez la machine du chantier avant de la supprimer',
+        );
+      }
+      await tx
+        .delete(equipmentInspections)
+        .where(eq(equipmentInspections.equipmentId, id));
+      await tx
+        .delete(equipmentWorkOrders)
+        .where(eq(equipmentWorkOrders.equipmentId, id));
+      await tx
+        .delete(equipmentMaintenancePlans)
+        .where(eq(equipmentMaintenancePlans.equipmentId, id));
+      await tx
+        .delete(equipmentMeterReadings)
+        .where(eq(equipmentMeterReadings.equipmentId, id));
+      await tx
+        .delete(equipmentDocuments)
+        .where(eq(equipmentDocuments.equipmentId, id));
+      await tx
+        .delete(equipmentAssignments)
+        .where(eq(equipmentAssignments.equipmentId, id));
+      await tx.delete(equipments).where(eq(equipments.id, id));
+      return true;
+    });
   }
 
   // ── GMAO: documents ────────────────────────────────────────────────────────

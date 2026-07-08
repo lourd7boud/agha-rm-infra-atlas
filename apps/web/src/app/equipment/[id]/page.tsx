@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 import { notFound, redirect } from 'next/navigation';
-import { apiGet, apiPatch, apiPost, AtlasApiError } from '@/lib/api';
+import { apiDelete, apiGet, apiPatch, apiPost, AtlasApiError } from '@/lib/api';
 import type { ProjectSummary } from '@/lib/projects';
 import {
   DOCUMENT_EXPIRY_BADGES,
@@ -35,6 +35,7 @@ import {
   type Paged,
 } from '@/lib/equipment';
 import { isRedirectError } from '@/lib/next-redirect';
+import { DeleteEquipmentButton } from './DeleteEquipmentButton';
 
 // One place to turn a GMAO action failure into user-visible feedback: log the
 // real cause server-side, then redirect back to the machine detail with a stable
@@ -73,6 +74,9 @@ const ACTION_ERROR_MESSAGES: Record<string, string> = {
   'createInspection:invalid': 'Inspection refusée : choisissez un type.',
   'createInspection:failed': 'Échec de la création de l’inspection. Réessayez.',
   'inspectionItem:failed': 'Échec de la mise à jour du point. Réessayez.',
+  'deleteEquipment:conflict':
+    'Suppression impossible : retournez d’abord la machine du chantier.',
+  'deleteEquipment:failed': 'Échec de la suppression de la machine. Réessayez.',
 };
 
 function actionErrorMessage(
@@ -323,6 +327,18 @@ export default async function EquipmentDetailPage({
       failToDetail(id, 'inspectionItem', error);
     }
     revalidatePath(`/equipment/${id}`);
+  }
+
+  async function deleteEquipment() {
+    'use server';
+    try {
+      await apiDelete(`/equipment/${id}`);
+    } catch (error) {
+      failToDetail(id, 'deleteEquipment', error);
+    }
+    // Machine gone — back to the parc list.
+    revalidatePath('/equipment');
+    redirect('/equipment');
   }
 
   return (
@@ -1041,6 +1057,22 @@ export default async function EquipmentDetailPage({
             })}
           </ul>
         )}
+      </section>
+
+      {/* Danger zone */}
+      <section className="mt-6 rounded-xl border border-clay-soft bg-clay-soft/10 p-6 shadow-sm">
+        <h2 className="mb-1 text-xs font-semibold uppercase tracking-widest text-clay">
+          Zone de danger
+        </h2>
+        <p className="mb-4 text-sm text-muted">
+          Supprimer définitivement cette machine et tout son historique
+          (documents, relevés, bons d’intervention, plans, inspections,
+          affectations). Action irréversible ; impossible tant que la machine est
+          affectée à un chantier.
+        </p>
+        <form action={deleteEquipment}>
+          <DeleteEquipmentButton />
+        </form>
       </section>
     </div>
   );

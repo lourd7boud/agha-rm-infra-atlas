@@ -180,3 +180,27 @@ export async function apiPatch<T>(
   }
   return parseJsonOrNull<T>(response);
 }
+
+/** Server-side DELETE against ATLAS Core (removing a resource). */
+export async function apiDelete<T>(
+  path: string,
+  options?: { timeoutMs?: number },
+): Promise<T> {
+  const session = await auth();
+  if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
+    redirect(SIGNIN);
+  }
+  const response = await fetch(`${API_URL}${path}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${session.accessToken}` },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(options?.timeoutMs ?? API_WRITE_TIMEOUT_MS),
+  });
+  if (response.status === 401) {
+    redirect(SIGNIN);
+  }
+  if (!response.ok) {
+    throw new AtlasApiError(path, response.status);
+  }
+  return parseJsonOrNull<T>(response);
+}

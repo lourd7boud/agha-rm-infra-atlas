@@ -246,6 +246,21 @@ export class EquipmentController {
     return detail;
   }
 
+  // Permanently removes a machine + all its records (cascade). Restricted to
+  // management; blocked (409) while the machine is on a chantier.
+  @Roles('travaux', 'direction', 'admin-si')
+  @Delete(':id')
+  async deleteEquipment(@Param('id') id: string) {
+    try {
+      const deleted = await this.repository.deleteEquipment(id);
+      if (!deleted) throw new NotFoundException('Matériel introuvable');
+      return { deleted: true };
+    } catch (error: unknown) {
+      if (error instanceof NotFoundException) throw error;
+      toHttp(error);
+    }
+  }
+
   // ── assign / return ─────────────────────────────────────────────────────────
 
   @Roles('travaux', 'direction', 'terrain', 'admin-si')
