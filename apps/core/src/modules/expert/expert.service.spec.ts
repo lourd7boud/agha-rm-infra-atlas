@@ -183,9 +183,25 @@ describe('ExpertService.proposeBpu', () => {
     expect(stored.totalMad).toBe(proposal.totalMad);
   });
 
-  test('409 when the BPU was never extracted', async () => {
+  test('forfait fallback: no line-item BPU but an estimation → single objet line', async () => {
+    // A lump-sum / "article unique" consultation (e.g. one vehicle) whose DCE
+    // carries no detailed estimatif: the agent must still fill a usable bordereau
+    // — one forfait line built from the objet, calibrated on the estimation.
     const tenders = new InMemoryTenderRepository();
-    const tender = await seedTender(tenders, { estimation: 1_000_000 });
+    const tender = await seedTender(tenders, { estimation: 300_000 });
+    const service = makeService({ tenders });
+
+    const proposal = await service.proposeBpu(tender.id, { rabaisPct: 0 });
+
+    expect(proposal.lines).toHaveLength(1);
+    expect(proposal.lines[0]!.designation).toContain('aménagement');
+    expect(Math.abs(proposal.totalMad - 300_000)).toBeLessThanOrEqual(1);
+    expect(proposal.avertissements.some((w) => w.toLowerCase().includes('forfait'))).toBe(true);
+  });
+
+  test('409 only when there is neither a BPU nor an estimation to price against', async () => {
+    const tenders = new InMemoryTenderRepository();
+    const tender = await seedTender(tenders); // no estimation, no bpu
     const service = makeService({ tenders });
 
     await expect(service.proposeBpu(tender.id)).rejects.toBeInstanceOf(

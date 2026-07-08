@@ -389,14 +389,31 @@ export class ExpertService {
     if (!tender) throw new NotFoundException(`Tender not found: ${id}`);
 
     const extraction = readDossierExtraction(tender.raw);
-    const lines = extraction?.bpu ?? [];
-    if (lines.length === 0) {
+    const estimation = tender.estimationMad ?? extraction?.estimationMad ?? null;
+    const extractedLines = extraction?.bpu ?? [];
+
+    // A lump-sum / "article unique" consultation (or a scanned bordereau template
+    // the OCR could not turn into rows) has no line-item detail. Rather than
+    // dead-end, fall back to ONE forfait line built from the objet, priced on the
+    // estimation — the agent still fills a usable bordereau. This needs an
+    // estimation to price against; without it there is no honest basis.
+    const forfait = extractedLines.length === 0;
+    if (forfait && estimation === null) {
       throw new ConflictException(
-        'Bordereau des prix non extrait pour cette consultation — lancer l’extraction DCE d’abord.',
+        'Bordereau des prix non extrait et estimation inconnue — lancer l’extraction DCE d’abord.',
       );
     }
+    const lines = forfait
+      ? [
+          {
+            designation: tender.objet.trim().slice(0, 300),
+            quantite: 1,
+            unite: 'Forfait',
+            prixUnitaireMad: null,
+          },
+        ]
+      : extractedLines;
 
-    const estimation = tender.estimationMad ?? extraction?.estimationMad ?? null;
     const segment = inferSegment(tender.objet, tender.buyerName);
 
     let rabais = opts.rabaisPct ?? null;
@@ -435,6 +452,12 @@ export class ExpertService {
 
     const stored: StoredBpu = {
       ...proposal,
+      avertissements: forfait
+        ? [
+            'Aucun détail estimatif ligne-à-ligne dans le DCE — bordereau forfaitaire (1 ligne) calé sur l’estimation. Relancer « Extraire le DCE » si un bordereau détaillé existe.',
+            ...proposal.avertissements,
+          ]
+        : proposal.avertissements,
       generatedAt: now.toISOString(),
       model,
       pricingBasis: basis,
