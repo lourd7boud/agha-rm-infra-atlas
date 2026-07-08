@@ -70,6 +70,17 @@ function recordReadFailure(now: number): void {
   }
 }
 
+/**
+ * Parse a JSON response body, tolerating an EMPTY body. A Nest handler that
+ * returns null/undefined (e.g. GET /equipment/:id/meter with no readings, or
+ * POST …/generate when nothing is due) produces a 200 with no content, and
+ * response.json() would throw "Unexpected end of JSON input". Treat empty as null.
+ */
+async function parseJsonOrNull<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  return (text ? JSON.parse(text) : null) as T;
+}
+
 /** Server-side fetch against ATLAS Core with the session's bearer token. */
 export async function apiGet<T>(
   path: string,
@@ -109,7 +120,7 @@ export async function apiGet<T>(
     throw new AtlasApiError(path, response.status);
   }
   recordReadSuccess();
-  return (await response.json()) as T;
+  return parseJsonOrNull<T>(response);
 }
 
 /** Server-side POST against ATLAS Core (gate actions, agent triggers). */
@@ -138,7 +149,7 @@ export async function apiPost<T>(
   if (!response.ok) {
     throw new AtlasApiError(path, response.status);
   }
-  return (await response.json()) as T;
+  return parseJsonOrNull<T>(response);
 }
 
 /** Server-side PATCH against ATLAS Core (partial updates, e.g. task progress). */
@@ -167,5 +178,5 @@ export async function apiPatch<T>(
   if (!response.ok) {
     throw new AtlasApiError(path, response.status);
   }
-  return (await response.json()) as T;
+  return parseJsonOrNull<T>(response);
 }
