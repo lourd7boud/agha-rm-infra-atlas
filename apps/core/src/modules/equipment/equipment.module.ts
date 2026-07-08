@@ -23,6 +23,7 @@ import {
 } from './equipment.domain';
 import {
   EQUIPMENT_DOCUMENT_TYPES,
+  MAINTENANCE_TRIGGER_TYPES,
   METER_UNITS,
   WORK_ORDER_STATUSES,
   WORK_ORDER_TYPES,
@@ -103,6 +104,28 @@ const workOrderStatusSchema = z.object({
   resolution: z.string().max(4000).optional(),
   meterAtService: z.coerce.number().nonnegative().optional(),
 });
+
+const maintenancePlanSchema = z
+  .object({
+    name: z.string().min(2).max(200),
+    triggerType: z.enum(MAINTENANCE_TRIGGER_TYPES),
+    meterUnit: z.enum(METER_UNITS).optional(),
+    intervalMeter: z.coerce.number().positive().optional(),
+    lastServiceMeter: z.coerce.number().nonnegative().optional(),
+    intervalDays: z.coerce.number().int().positive().optional(),
+    lastServiceDate: z.coerce.date().optional(),
+    notes: z.string().max(2000).optional(),
+  })
+  .refine((d) => d.triggerType !== 'meter' || d.intervalMeter != null, {
+    message: 'intervalMeter requis pour un plan à déclencheur compteur',
+    path: ['intervalMeter'],
+  })
+  .refine((d) => d.triggerType !== 'temps' || d.intervalDays != null, {
+    message: 'intervalDays requis pour un plan à déclencheur temps',
+    path: ['intervalDays'],
+  });
+
+const planActiveSchema = z.object({ active: z.boolean() });
 
 /** Maps a domain transition error to HTTP 409; rethrows anything else. */
 function toHttp(error: unknown): never {
@@ -186,6 +209,13 @@ export class EquipmentController {
       parsed.data.withinDays,
       new Date(),
     );
+  }
+
+  // Fleet-wide maintenance-due — declared before ':id' (static path wins).
+  @Roles('travaux', 'direction', 'terrain', 'finance', 'admin-si')
+  @Get('maintenance/due')
+  async maintenanceDue() {
+    return this.repository.duePlans(new Date());
   }
 
   @Roles('travaux', 'direction', 'terrain', 'finance', 'admin-si')
@@ -371,6 +401,75 @@ export class EquipmentController {
       if (error instanceof NotFoundException) throw error;
       toHttp(error);
     }
+  }
+
+  // ── GMAO: maintenance plans ─────────────────────────────────────────────────
+
+  @Roles('travaux', 'direction', 'terrain', 'admin-si')
+  @Post(':id/maintenance-plans')
+  async createMaintenancePlan(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = maintenancePlanSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    await this.ensureExists(id);
+    // Give the plan a sane baseline so it isn't due immediately: a meter plan
+    // starts from the machine's current meter, a time plan from today.
+    let lastServiceMeter = parsed.data.lastServiceMeter;
+    let lastServiceDate = parsed.data.lastServiceDate;
+    if (parsed.data.triggerType === 'meter' && lastServiceMeter == null) {
+      const current = await this.repository.currentMeter(id);
+      lastServiceMeter = current?.value ?? 0;
+    }
+    if (parsed.data.triggerType === 'temps' && lastServiceDate == null) {
+      lastServiceDate = new Date();
+    }
+    return this.repository.createMaintenancePlan({
+      equipmentId: id,
+      name: parsed.data.name,
+      triggerType: parsed.data.triggerType,
+      meterUnit: parsed.data.meterUnit,
+      intervalMeter: parsed.data.intervalMeter,
+      lastServiceMeter,
+      intervalDays: parsed.data.intervalDays,
+      lastServiceDate,
+      notes: parsed.data.notes,
+    });
+  }
+
+  @Roles('travaux', 'direction', 'terrain', 'finance', 'admin-si')
+  @Get(':id/maintenance-plans')
+  async listMaintenancePlans(@Param('id') id: string) {
+    await this.ensureExists(id);
+    return this.repository.listMaintenancePlans(id, new Date());
+  }
+
+  @Roles('travaux', 'direction', 'admin-si')
+  @Patch('maintenance-plans/:planId')
+  async setMaintenancePlanActive(
+    @Param('planId') planId: string,
+    @Body() body: unknown,
+  ) {
+    const parsed = planActiveSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const updated = await this.repository.setMaintenancePlanActive(
+      planId,
+      parsed.data.active,
+    );
+    if (!updated) throw new NotFoundException("Plan d'entretien introuvable");
+    return updated;
+  }
+
+  @Roles('travaux', 'direction', 'admin-si')
+  @Delete('maintenance-plans/:planId')
+  async deleteMaintenancePlan(@Param('planId') planId: string) {
+    const deleted = await this.repository.deleteMaintenancePlan(planId);
+    if (!deleted) throw new NotFoundException("Plan d'entretien introuvable");
+    return { deleted: true };
+  }
+
+  @Roles('travaux', 'direction', 'terrain', 'admin-si')
+  @Post('maintenance-plans/:planId/generate')
+  async generateDueWorkOrder(@Param('planId') planId: string) {
+    return this.repository.generateDueWorkOrder(planId, new Date());
   }
 
   // ── per-chantier fleet ────────────────────────────────────────────────────

@@ -12,7 +12,11 @@ import {
   fmtDate,
   fmtMad,
   fmtMeter,
+  fmtPlanNextDue,
+  fmtPlanRemaining,
+  MAINTENANCE_TRIGGER_LABELS,
   METER_UNIT_LABELS,
+  PLAN_DUE_BADGES,
   WORK_ORDER_STATUS_BADGES,
   WORK_ORDER_TYPE_LABELS,
   type CurrentMeter,
@@ -20,6 +24,7 @@ import {
   type EquipmentDocumentRecord,
   type EquipmentMeterReadingRecord,
   type EquipmentWorkOrderRecord,
+  type MaintenancePlanWithStatus,
 } from '@/lib/equipment';
 import { isRedirectError } from '@/lib/next-redirect';
 
@@ -50,6 +55,13 @@ const ACTION_ERROR_MESSAGES: Record<string, string> = {
   'advanceWorkOrder:conflict':
     'Changement refusé : transition de statut interdite.',
   'advanceWorkOrder:failed': 'Échec du changement de statut. Réessayez.',
+  'createPlan:invalid':
+    'Plan refusé : renseignez un nom, un déclencheur et un intervalle.',
+  'createPlan:failed': 'Échec de la création du plan. Réessayez.',
+  'generatePlan:failed': 'Échec de la génération du bon. Réessayez.',
+  'generatePlan:not-due':
+    'Aucun bon généré : le plan n’est pas encore dû ou a déjà un bon ouvert.',
+  'togglePlan:failed': 'Échec de la mise à jour du plan. Réessayez.',
 };
 
 function actionErrorMessage(
@@ -93,13 +105,16 @@ export default async function EquipmentDetailPage({
     throw error;
   }
 
-  const [documents, readings, currentMeter, workOrders, cost, projects] =
+  const [documents, readings, currentMeter, workOrders, cost, plans, projects] =
     await Promise.all([
       apiGet<EquipmentDocumentRecord[]>(`/equipment/${id}/documents`),
       apiGet<EquipmentMeterReadingRecord[]>(`/equipment/${id}/meter-readings`),
       apiGet<CurrentMeter | null>(`/equipment/${id}/meter`),
       apiGet<EquipmentWorkOrderRecord[]>(`/equipment/${id}/work-orders`),
       apiGet<{ totalMad: number }>(`/equipment/${id}/cost`),
+      apiGet<MaintenancePlanWithStatus[]>(
+        `/equipment/${id}/maintenance-plans`,
+      ),
       apiGet<ProjectSummary[]>('/project/projects'),
     ]);
 
@@ -186,6 +201,64 @@ export default async function EquipmentDetailPage({
       });
     } catch (error) {
       failToDetail(id, 'advanceWorkOrder', error);
+    }
+    revalidatePath(`/equipment/${id}`);
+  }
+
+  async function createMaintenancePlan(formData: FormData) {
+    'use server';
+    const name = str(formData, 'name');
+    const triggerType = str(formData, 'triggerType');
+    const intervalle = optionalNumber(formData, 'intervalle');
+    if (name.length < 2 || !triggerType || intervalle === undefined) {
+      redirect(`/equipment/${id}?error=createPlan&code=invalid`);
+    }
+    try {
+      await apiPost(`/equipment/${id}/maintenance-plans`, {
+        name,
+        triggerType,
+        meterUnit:
+          triggerType === 'meter'
+            ? str(formData, 'meterUnit') || 'heures'
+            : undefined,
+        intervalMeter: triggerType === 'meter' ? intervalle : undefined,
+        intervalDays: triggerType === 'temps' ? intervalle : undefined,
+      });
+    } catch (error) {
+      failToDetail(id, 'createPlan', error);
+    }
+    revalidatePath(`/equipment/${id}`);
+  }
+
+  async function generatePlanWorkOrder(formData: FormData) {
+    'use server';
+    const planId = str(formData, 'planId');
+    if (!planId) redirect(`/equipment/${id}?error=generatePlan&code=failed`);
+    let created: unknown;
+    try {
+      created = await apiPost<unknown>(
+        `/equipment/maintenance-plans/${planId}/generate`,
+        {},
+      );
+    } catch (error) {
+      failToDetail(id, 'generatePlan', error);
+    }
+    // The API returns null when the plan is not due or already has an open bon.
+    if (created === null) {
+      redirect(`/equipment/${id}?error=generatePlan&code=not-due`);
+    }
+    revalidatePath(`/equipment/${id}`);
+  }
+
+  async function togglePlanActive(formData: FormData) {
+    'use server';
+    const planId = str(formData, 'planId');
+    const active = str(formData, 'active') === 'true';
+    if (!planId) redirect(`/equipment/${id}?error=togglePlan&code=failed`);
+    try {
+      await apiPatch(`/equipment/maintenance-plans/${planId}`, { active });
+    } catch (error) {
+      failToDetail(id, 'togglePlan', error);
     }
     revalidatePath(`/equipment/${id}`);
   }
@@ -579,6 +652,139 @@ export default async function EquipmentDetailPage({
           </label>
           <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
             Créer le bon
+          </button>
+        </form>
+      </section>
+
+      {/* Maintenance plans */}
+      <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">
+        <h2 className="border-b border-line px-5 py-4 text-xs font-semibold uppercase tracking-widest text-faint">
+          Plans d’entretien préventif ({plans.length})
+        </h2>
+        <table className="w-full text-left text-sm">
+          <thead className="border-b border-line bg-sand text-xs uppercase tracking-wider text-muted">
+            <tr>
+              <th className="px-4 py-3">Plan</th>
+              <th className="px-4 py-3">Déclencheur</th>
+              <th className="px-4 py-3">Prochaine échéance</th>
+              <th className="px-4 py-3">Reste</th>
+              <th className="px-4 py-3">État</th>
+              <th className="px-4 py-3 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {plans.map((plan) => {
+              const badge = PLAN_DUE_BADGES[plan.due.status];
+              return (
+                <tr key={plan.id} className={plan.active ? '' : 'opacity-50'}>
+                  <td className="px-4 py-3 font-semibold">{plan.name}</td>
+                  <td className="px-4 py-3 text-muted">
+                    {MAINTENANCE_TRIGGER_LABELS[plan.triggerType]}
+                    {plan.triggerType === 'meter' && plan.intervalMeter
+                      ? ` · ${plan.intervalMeter.toLocaleString('fr-MA')}${plan.meterUnit ? ` ${METER_UNIT_LABELS[plan.meterUnit]}` : ''}`
+                      : plan.triggerType === 'temps' && plan.intervalDays
+                        ? ` · ${plan.intervalDays} j`
+                        : ''}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs tabular-nums text-muted">
+                    {fmtPlanNextDue(plan)}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs tabular-nums text-muted">
+                    {fmtPlanRemaining(plan)}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${badge.classes}`}
+                    >
+                      {badge.label}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      {plan.active && plan.due.status === 'en_retard' && (
+                        <form action={generatePlanWorkOrder}>
+                          <input type="hidden" name="planId" value={plan.id} />
+                          <button className="rounded-md border border-line-2 px-2.5 py-1 text-xs font-medium text-ochre transition hover:bg-ochre-soft/40">
+                            Générer le bon
+                          </button>
+                        </form>
+                      )}
+                      <form action={togglePlanActive}>
+                        <input type="hidden" name="planId" value={plan.id} />
+                        <input
+                          type="hidden"
+                          name="active"
+                          value={plan.active ? 'false' : 'true'}
+                        />
+                        <button className="rounded-md border border-line-2 px-2.5 py-1 text-xs font-medium text-muted transition hover:bg-sand">
+                          {plan.active ? 'Désactiver' : 'Activer'}
+                        </button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {plans.length === 0 && (
+          <p className="p-6 text-center text-sm text-faint">
+            Aucun plan — définissez un entretien récurrent (ex. vidange toutes
+            les 250 heures).
+          </p>
+        )}
+        <form
+          action={createMaintenancePlan}
+          className="flex flex-wrap items-end gap-3 border-t border-line px-5 py-4"
+        >
+          <label className="min-w-40 flex-1 text-sm">
+            <span className="mb-1 block text-xs text-muted">Nom du plan</span>
+            <input
+              type="text"
+              name="name"
+              required
+              minLength={2}
+              maxLength={200}
+              placeholder="Vidange moteur"
+              className="w-full rounded-md border border-line-2 bg-paper px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-muted">Déclencheur</span>
+            <select
+              name="triggerType"
+              required
+              className="rounded-md border border-line-2 bg-paper px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            >
+              <option value="meter">Compteur (heures/km)</option>
+              <option value="temps">Temps (jours)</option>
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-muted">Intervalle</span>
+            <input
+              type="number"
+              name="intervalle"
+              required
+              min={1}
+              step="1"
+              className="w-28 rounded-md border border-line-2 bg-paper px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-muted">
+              Unité (compteur)
+            </span>
+            <select
+              name="meterUnit"
+              className="rounded-md border border-line-2 bg-paper px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            >
+              <option value="heures">heures</option>
+              <option value="km">km</option>
+            </select>
+          </label>
+          <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
+            Ajouter le plan
           </button>
         </form>
       </section>

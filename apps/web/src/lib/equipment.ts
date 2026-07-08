@@ -124,6 +124,7 @@ export interface CurrentMeter {
 export interface EquipmentWorkOrderRecord {
   id: string;
   equipmentId: string;
+  planId?: string;
   type: WorkOrderType;
   status: WorkOrderStatus;
   title: string;
@@ -205,6 +206,86 @@ export const WORK_ORDER_STATUS_BADGES: Record<
   en_cours: { label: 'En cours', classes: 'bg-ochre-soft text-ochre' },
   clos: { label: 'Clos', classes: 'bg-emerald-soft text-emerald' },
 };
+
+// ── GMAO: preventive maintenance plans ───────────────────────────────────────
+
+export type MaintenanceTriggerType = 'meter' | 'temps';
+export type PlanDueStatus = 'a_jour' | 'bientot' | 'en_retard';
+
+export interface PlanDueResult {
+  status: PlanDueStatus;
+  nextDueMeter: number | null;
+  remainingMeter: number | null;
+  nextDueDate: string | null;
+  remainingDays: number | null;
+}
+
+export interface MaintenancePlanRecord {
+  id: string;
+  equipmentId: string;
+  name: string;
+  triggerType: MaintenanceTriggerType;
+  meterUnit?: MeterUnit;
+  intervalMeter?: number;
+  lastServiceMeter?: number;
+  intervalDays?: number;
+  lastServiceDate?: string;
+  active: boolean;
+  notes?: string;
+  createdAt: string;
+}
+
+/** GET /equipment/:id/maintenance-plans row — plan + live due status. */
+export interface MaintenancePlanWithStatus extends MaintenancePlanRecord {
+  due: PlanDueResult;
+}
+
+/** GET /equipment/maintenance/due row — a due plan with its machine name. */
+export interface DuePlan extends MaintenancePlanWithStatus {
+  equipmentName: string;
+}
+
+export const MAINTENANCE_TRIGGER_LABELS: Record<MaintenanceTriggerType, string> =
+  {
+    meter: 'Compteur',
+    temps: 'Temps',
+  };
+
+export const PLAN_DUE_BADGES: Record<
+  PlanDueStatus,
+  { label: string; classes: string }
+> = {
+  a_jour: { label: 'À jour', classes: 'bg-emerald-soft text-emerald' },
+  bientot: { label: 'Bientôt', classes: 'bg-ochre-soft text-ochre' },
+  en_retard: { label: 'En retard', classes: 'bg-clay-soft text-clay' },
+};
+
+/** Human "prochaine échéance" for a plan (meter value+unit, or a date). */
+export function fmtPlanNextDue(plan: MaintenancePlanWithStatus): string {
+  if (plan.triggerType === 'meter') {
+    if (plan.due.nextDueMeter === null) return '—';
+    const unit = plan.meterUnit ? ` ${METER_UNIT_LABELS[plan.meterUnit]}` : '';
+    return `${plan.due.nextDueMeter.toLocaleString('fr-MA')}${unit}`;
+  }
+  return fmtDate(plan.due.nextDueDate ?? undefined);
+}
+
+/** Human "reste" until a plan is due (heures/km or jours). */
+export function fmtPlanRemaining(plan: MaintenancePlanWithStatus): string {
+  if (plan.triggerType === 'meter') {
+    if (plan.due.remainingMeter === null) return '—';
+    const unit = plan.meterUnit ? ` ${METER_UNIT_LABELS[plan.meterUnit]}` : '';
+    return `${plan.due.remainingMeter.toLocaleString('fr-MA')}${unit}`;
+  }
+  if (plan.due.remainingDays === null) return '—';
+  return `${plan.due.remainingDays} j`;
+}
+
+export const MAINTENANCE_INTERVAL_LABEL: Record<MaintenanceTriggerType, string> =
+  {
+    meter: 'Intervalle (heures/km)',
+    temps: 'Intervalle (jours)',
+  };
 
 /**
  * Presentational mirror of the core documentExpiryStatus rule (30-day window),

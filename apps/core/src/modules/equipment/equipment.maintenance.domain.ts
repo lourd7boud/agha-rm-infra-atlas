@@ -144,3 +144,97 @@ export function assertWorkOrderTransition(
     );
   }
 }
+
+// ── Preventive maintenance plans (plans d'entretien) ─────────────────────────
+
+/** A plan fires off usage ('meter') or the calendar ('temps'). */
+export const MAINTENANCE_TRIGGER_TYPES = ['meter', 'temps'] as const;
+
+export type MaintenanceTriggerType = (typeof MAINTENANCE_TRIGGER_TYPES)[number];
+
+/** Days before a time-based service is due that the plan starts warning. */
+export const MAINTENANCE_DAYS_WARN = 7;
+
+/** Fraction of the meter interval, remaining, at which a plan starts warning. */
+export const MAINTENANCE_METER_WARN_FRACTION = 0.1;
+
+export type PlanDueStatus = 'a_jour' | 'bientot' | 'en_retard';
+
+/** Minimal shape maintenancePlanDue reads from a plan (store-agnostic). */
+export interface MaintenancePlanLike {
+  triggerType: MaintenanceTriggerType;
+  intervalMeter?: number;
+  lastServiceMeter?: number;
+  intervalDays?: number;
+  lastServiceDate?: Date;
+}
+
+export interface PlanDueResult {
+  status: PlanDueStatus;
+  /** Meter value at which the next service falls due (meter plans). */
+  nextDueMeter: number | null;
+  /** nextDueMeter − currentMeter (negative = overdue); null without a reading. */
+  remainingMeter: number | null;
+  /** Calendar date the next service falls due (time plans). */
+  nextDueDate: Date | null;
+  /** Whole days from today to nextDueDate (negative = overdue). */
+  remainingDays: number | null;
+}
+
+/**
+ * Computes whether a preventive plan is due. Meter plans compare the machine's
+ * current meter against lastServiceMeter + intervalMeter (warning within
+ * MAINTENANCE_METER_WARN_FRACTION of the interval); time plans compare today
+ * against lastServiceDate + intervalDays (warning within MAINTENANCE_DAYS_WARN).
+ * A machine with no reading yet, or a time plan never serviced, reads 'a_jour'
+ * (it cannot be overdue without a usage/service baseline).
+ */
+export function maintenancePlanDue(
+  plan: MaintenancePlanLike,
+  currentMeter: number | null,
+  today: Date,
+): PlanDueResult {
+  const result: PlanDueResult = {
+    status: 'a_jour',
+    nextDueMeter: null,
+    remainingMeter: null,
+    nextDueDate: null,
+    remainingDays: null,
+  };
+
+  if (plan.triggerType === 'meter') {
+    const interval = plan.intervalMeter ?? 0;
+    if (interval <= 0) return result;
+    result.nextDueMeter = (plan.lastServiceMeter ?? 0) + interval;
+    if (currentMeter === null) return result; // no usage baseline yet
+    const remaining = result.nextDueMeter - currentMeter;
+    result.remainingMeter = remaining;
+    const warn = interval * MAINTENANCE_METER_WARN_FRACTION;
+    result.status =
+      remaining <= 0 ? 'en_retard' : remaining <= warn ? 'bientot' : 'a_jour';
+    return result;
+  }
+
+  // triggerType === 'temps'
+  const days = plan.intervalDays ?? 0;
+  if (days <= 0 || !plan.lastServiceDate) return result;
+  const nextDue = new Date(
+    Date.UTC(
+      plan.lastServiceDate.getUTCFullYear(),
+      plan.lastServiceDate.getUTCMonth(),
+      plan.lastServiceDate.getUTCDate() + days,
+    ),
+  );
+  result.nextDueDate = nextDue;
+  const remainingDays = Math.floor(
+    (toUtcMidnight(nextDue) - toUtcMidnight(today)) / MS_PER_DAY,
+  );
+  result.remainingDays = remainingDays;
+  result.status =
+    remainingDays <= 0
+      ? 'en_retard'
+      : remainingDays <= MAINTENANCE_DAYS_WARN
+        ? 'bientot'
+        : 'a_jour';
+  return result;
+}

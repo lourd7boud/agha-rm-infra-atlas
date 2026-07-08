@@ -10,6 +10,9 @@ import {
   DOCUMENT_TYPE_LABELS,
   EQUIPMENT_STATUS_BADGES,
   EQUIPMENT_STATUS_ORDER,
+  MAINTENANCE_TRIGGER_LABELS,
+  PLAN_DUE_BADGES,
+  type DuePlan,
   type EquipmentDetail,
   type EquipmentRecord,
   type EquipmentStatus,
@@ -81,12 +84,16 @@ export default async function EquipmentPage({
   // One bounded DB page for the table + a DB-side summary for the KPI tiles
   // (status counts correct over the WHOLE parc, not just this page) + projects
   // for the chantier name map.
-  const [equipmentPage, summary, projects, documentAlerts] = await Promise.all([
-    apiGet<Paged<EquipmentRecord>>(`/equipment?page=${page}&limit=${PAGE_SIZE}`),
-    apiGet<EquipmentSummary>('/equipment/summary'),
-    apiGet<ProjectSummary[]>('/project/projects'),
-    apiGet<ExpiringDocument[]>('/equipment/documents/alerts?withinDays=30'),
-  ]);
+  const [equipmentPage, summary, projects, documentAlerts, maintenanceDue] =
+    await Promise.all([
+      apiGet<Paged<EquipmentRecord>>(
+        `/equipment?page=${page}&limit=${PAGE_SIZE}`,
+      ),
+      apiGet<EquipmentSummary>('/equipment/summary'),
+      apiGet<ProjectSummary[]>('/project/projects'),
+      apiGet<ExpiringDocument[]>('/equipment/documents/alerts?withinDays=30'),
+      apiGet<DuePlan[]>('/equipment/maintenance/due'),
+    ]);
   const equipment = equipmentPage.items;
   const counts = summary.counts;
 
@@ -249,6 +256,47 @@ export default async function EquipmentPage({
           {documentAlerts.length > 8 && (
             <p className="px-5 py-2 text-xs text-faint">
               + {documentAlerts.length - 8} autre(s)
+            </p>
+          )}
+        </section>
+      )}
+
+      {maintenanceDue.length > 0 && (
+        <section className="mb-6 overflow-hidden rounded-xl border border-cyan-soft bg-cyan-soft/10 shadow-sm">
+          <h2 className="flex items-center gap-2 border-b border-cyan-soft/50 px-5 py-3 text-xs font-semibold uppercase tracking-widest text-cyan">
+            <span aria-hidden>🔧</span>
+            Entretiens à prévoir ({maintenanceDue.length})
+          </h2>
+          <ul className="divide-y divide-line/60">
+            {maintenanceDue.slice(0, 8).map((plan) => {
+              const badge = PLAN_DUE_BADGES[plan.due.status];
+              return (
+                <li
+                  key={plan.id}
+                  className="flex flex-wrap items-center justify-between gap-3 px-5 py-2.5 text-sm"
+                >
+                  <Link
+                    href={`/equipment/${plan.equipmentId}`}
+                    className="font-semibold hover:text-cyan"
+                  >
+                    {plan.equipmentName}
+                  </Link>
+                  <span className="text-muted">{plan.name}</span>
+                  <span className="font-mono text-xs text-faint">
+                    {MAINTENANCE_TRIGGER_LABELS[plan.triggerType]}
+                  </span>
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${badge.classes}`}
+                  >
+                    {badge.label}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+          {maintenanceDue.length > 8 && (
+            <p className="px-5 py-2 text-xs text-faint">
+              + {maintenanceDue.length - 8} autre(s)
             </p>
           )}
         </section>
