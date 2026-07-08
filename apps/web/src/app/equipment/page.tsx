@@ -6,12 +6,15 @@ import { Pager } from '@/components/ui/Pager';
 import type { ProjectSummary } from '@/lib/projects';
 import {
   fmtDate,
+  DOCUMENT_EXPIRY_BADGES,
+  DOCUMENT_TYPE_LABELS,
   EQUIPMENT_STATUS_BADGES,
   EQUIPMENT_STATUS_ORDER,
   type EquipmentDetail,
   type EquipmentRecord,
   type EquipmentStatus,
   type EquipmentSummary,
+  type ExpiringDocument,
   type Paged,
 } from '@/lib/equipment';
 import { isRedirectError } from '@/lib/next-redirect';
@@ -78,10 +81,11 @@ export default async function EquipmentPage({
   // One bounded DB page for the table + a DB-side summary for the KPI tiles
   // (status counts correct over the WHOLE parc, not just this page) + projects
   // for the chantier name map.
-  const [equipmentPage, summary, projects] = await Promise.all([
+  const [equipmentPage, summary, projects, documentAlerts] = await Promise.all([
     apiGet<Paged<EquipmentRecord>>(`/equipment?page=${page}&limit=${PAGE_SIZE}`),
     apiGet<EquipmentSummary>('/equipment/summary'),
     apiGet<ProjectSummary[]>('/project/projects'),
+    apiGet<ExpiringDocument[]>('/equipment/documents/alerts?withinDays=30'),
   ]);
   const equipment = equipmentPage.items;
   const counts = summary.counts;
@@ -116,6 +120,8 @@ export default async function EquipmentPage({
         name,
         code: String(formData.get('code') ?? '') || undefined,
         category: String(formData.get('category') ?? '') || undefined,
+        marque: String(formData.get('marque') ?? '') || undefined,
+        modele: String(formData.get('modele') ?? '') || undefined,
         acquisitionDate: acquisitionDate || undefined,
         notes: String(formData.get('notes') ?? '') || undefined,
       });
@@ -205,6 +211,49 @@ export default async function EquipmentPage({
         </div>
       )}
 
+      {documentAlerts.length > 0 && (
+        <section className="mb-6 overflow-hidden rounded-xl border border-ochre-soft bg-ochre-soft/15 shadow-sm">
+          <h2 className="flex items-center gap-2 border-b border-ochre-soft/50 px-5 py-3 text-xs font-semibold uppercase tracking-widest text-ochre">
+            <span aria-hidden>⚠</span>
+            Documents à renouveler ({documentAlerts.length})
+          </h2>
+          <ul className="divide-y divide-line/60">
+            {documentAlerts.slice(0, 8).map((doc) => {
+              const badge = DOCUMENT_EXPIRY_BADGES[doc.status];
+              return (
+                <li
+                  key={doc.id}
+                  className="flex flex-wrap items-center justify-between gap-3 px-5 py-2.5 text-sm"
+                >
+                  <Link
+                    href={`/equipment/${doc.equipmentId}`}
+                    className="font-semibold hover:text-cyan"
+                  >
+                    {doc.equipmentName}
+                  </Link>
+                  <span className="text-muted">
+                    {DOCUMENT_TYPE_LABELS[doc.type]}
+                  </span>
+                  <span className="font-mono text-xs tabular-nums text-muted">
+                    {fmtDate(doc.expiryDate)}
+                  </span>
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${badge.classes}`}
+                  >
+                    {badge.label}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+          {documentAlerts.length > 8 && (
+            <p className="px-5 py-2 text-xs text-faint">
+              + {documentAlerts.length - 8} autre(s)
+            </p>
+          )}
+        </section>
+      )}
+
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
           <p className="text-xs font-semibold uppercase tracking-widest text-faint">
@@ -260,7 +309,14 @@ export default async function EquipmentPage({
                   <td className="px-4 py-3 font-mono text-xs">
                     {item.code ?? '—'}
                   </td>
-                  <td className="px-4 py-3 font-semibold">{item.name}</td>
+                  <td className="px-4 py-3 font-semibold">
+                    <Link
+                      href={`/equipment/${item.id}`}
+                      className="hover:text-cyan"
+                    >
+                      {item.name}
+                    </Link>
+                  </td>
                   <td className="px-4 py-3 text-muted">
                     {item.category ?? '—'}
                   </td>
@@ -393,6 +449,28 @@ export default async function EquipmentPage({
               name="category"
               maxLength={120}
               className="w-40 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-muted">
+              Marque (optionnel)
+            </span>
+            <input
+              type="text"
+              name="marque"
+              maxLength={120}
+              className="w-36 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-muted">
+              Modèle (optionnel)
+            </span>
+            <input
+              type="text"
+              name="modele"
+              maxLength={120}
+              className="w-36 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
             />
           </label>
           <label className="text-sm">

@@ -7,13 +7,24 @@
  * AND flip equipment.status in one commit (mirrors the Phase-5 sales
  * db.transaction), so the inventory status and the open-assignment log never
  * disagree under READ COMMITTED. Dates use Drizzle's date mode 'date'; money is
- * not modelled here. InMemory ↔ Drizzle keep strict behavioural parity (the
- * single-threaded InMemory store has no concurrency window, so it needs no lock).
+ * numeric (returned as string → mapped to Number). InMemory ↔ Drizzle keep
+ * strict behavioural parity (the single-threaded InMemory store has no
+ * concurrency window, so it needs no lock).
+ *
+ * The GMAO layer (documents / meters / work orders) hangs off the register: a
+ * machine carries compliance documents with expiry, a usage-meter reading log,
+ * and work orders (bons d'intervention) whose costs roll up per machine.
  */
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, lte, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
-import { equipmentAssignments, equipments } from '../../db/schema';
+import {
+  equipmentAssignments,
+  equipmentDocuments,
+  equipmentMeterReadings,
+  equipments,
+  equipmentWorkOrders,
+} from '../../db/schema';
 import {
   assertAssign,
   assertReturn,
@@ -21,6 +32,16 @@ import {
   EquipmentTransitionError,
   type EquipmentStatus,
 } from './equipment.domain';
+import {
+  assertWorkOrderTransition,
+  currentMeterValue,
+  documentExpiryStatus,
+  type DocumentExpiryStatus,
+  type EquipmentDocumentType,
+  type MeterUnit,
+  type WorkOrderStatus,
+  type WorkOrderType,
+} from './equipment.maintenance.domain';
 
 // ── inputs & records ─────────────────────────────────────────────────────────
 
@@ -28,6 +49,10 @@ export interface UpsertEquipment {
   name: string;
   code?: string;
   category?: string;
+  marque?: string;
+  modele?: string;
+  numeroSerie?: string;
+  immatriculation?: string;
   acquisitionDate?: Date;
   notes?: string;
 }
@@ -37,6 +62,10 @@ export interface EquipmentRecord {
   code?: string;
   name: string;
   category?: string;
+  marque?: string;
+  modele?: string;
+  numeroSerie?: string;
+  immatriculation?: string;
   status: EquipmentStatus;
   acquisitionDate?: Date;
   notes?: string;
@@ -119,6 +148,104 @@ export interface ProjectEquipmentRecord extends EquipmentRecord {
   openAssignment: EquipmentAssignmentRecord;
 }
 
+// ── GMAO: documents / meters / work orders ───────────────────────────────────
+
+export interface AddDocumentInput {
+  equipmentId: string;
+  type: EquipmentDocumentType;
+  reference?: string;
+  issueDate?: Date;
+  expiryDate?: Date;
+  notes?: string;
+}
+
+export interface EquipmentDocumentRecord {
+  id: string;
+  equipmentId: string;
+  type: EquipmentDocumentType;
+  reference?: string;
+  issueDate?: Date;
+  expiryDate?: Date;
+  notes?: string;
+  createdAt: Date;
+}
+
+/**
+ * A document that needs attention (expired or expiring within the window),
+ * carrying its machine name + computed status for the fleet alerts panel.
+ */
+export interface ExpiringDocument extends EquipmentDocumentRecord {
+  equipmentName: string;
+  status: DocumentExpiryStatus;
+}
+
+export interface AddMeterReadingInput {
+  equipmentId: string;
+  readingDate: Date;
+  value: number;
+  unit: MeterUnit;
+  source?: string;
+  notes?: string;
+}
+
+export interface EquipmentMeterReadingRecord {
+  id: string;
+  equipmentId: string;
+  readingDate: Date;
+  value: number;
+  unit: MeterUnit;
+  source: string;
+  notes?: string;
+  createdAt: Date;
+}
+
+/** The machine's current meter: latest reading value + its unit. */
+export interface CurrentMeter {
+  value: number;
+  unit: MeterUnit;
+}
+
+export interface CreateWorkOrderInput {
+  equipmentId: string;
+  type: WorkOrderType;
+  title: string;
+  description?: string;
+  reportedBy?: string;
+  openedAt: Date;
+  meterAtService?: number;
+  costMad?: number;
+}
+
+export interface EquipmentWorkOrderRecord {
+  id: string;
+  equipmentId: string;
+  type: WorkOrderType;
+  status: WorkOrderStatus;
+  title: string;
+  description?: string;
+  reportedBy?: string;
+  openedAt: Date;
+  completedAt?: Date;
+  meterAtService?: number;
+  costMad?: number;
+  resolution?: string;
+  createdAt: Date;
+}
+
+/** Status change + optional completion metadata for a work order. */
+export interface SetWorkOrderStatusInput {
+  status: WorkOrderStatus;
+  completedAt?: Date;
+  costMad?: number;
+  resolution?: string;
+  meterAtService?: number;
+}
+
+export interface WorkOrderFilter {
+  equipmentId?: string;
+  status?: WorkOrderStatus;
+}
+
 export const EQUIPMENT_REPOSITORY = Symbol('EQUIPMENT_REPOSITORY');
 
 export interface EquipmentRepository {
@@ -154,14 +281,80 @@ export interface EquipmentRepository {
    * its open assignment inline — one query, no per-machine getEquipment fan-out.
    */
   projectEquipment(projectId: string): Promise<ProjectEquipmentRecord[]>;
+
+  // ── GMAO: documents ────────────────────────────────────────────────────────
+  /** Records a compliance document (assurance, carte grise…) for a machine. */
+  addDocument(input: AddDocumentInput): Promise<EquipmentDocumentRecord>;
+  /** A machine's documents, soonest expiry first (permanent docs last). */
+  listDocuments(equipmentId: string): Promise<EquipmentDocumentRecord[]>;
+  /** Removes a document; true when a row was deleted. */
+  deleteDocument(id: string): Promise<boolean>;
+  /**
+   * Fleet-wide documents that are expired or expiring within `withinDays` of
+   * `today`, each with its machine name + computed status, soonest expiry first.
+   */
+  expiringDocuments(
+    withinDays: number,
+    today: Date,
+  ): Promise<ExpiringDocument[]>;
+
+  // ── GMAO: meters ───────────────────────────────────────────────────────────
+  /** Appends a usage-meter reading (heures / km). */
+  addMeterReading(
+    input: AddMeterReadingInput,
+  ): Promise<EquipmentMeterReadingRecord>;
+  /** A machine's reading log, newest reading date first. */
+  listMeterReadings(
+    equipmentId: string,
+  ): Promise<EquipmentMeterReadingRecord[]>;
+  /** The machine's current meter (latest reading), null when none recorded. */
+  currentMeter(equipmentId: string): Promise<CurrentMeter | null>;
+
+  // ── GMAO: work orders ──────────────────────────────────────────────────────
+  /** Opens a work order (bon d'intervention) in status 'ouvert'. */
+  createWorkOrder(
+    input: CreateWorkOrderInput,
+  ): Promise<EquipmentWorkOrderRecord>;
+  /** Work orders matching the filter, newest opened first. */
+  listWorkOrders(filter: WorkOrderFilter): Promise<EquipmentWorkOrderRecord[]>;
+  /**
+   * Moves a work order along its lifecycle (guarded by assertWorkOrderTransition)
+   * and applies optional completion metadata. Null when the id is unknown.
+   */
+  setWorkOrderStatus(
+    id: string,
+    input: SetWorkOrderStatusInput,
+  ): Promise<EquipmentWorkOrderRecord | null>;
+  /** Total intervention cost (sum of work-order cost_mad) for a machine, in MAD. */
+  equipmentCost(equipmentId: string): Promise<number>;
 }
 
 // ── in-memory store (dev/test fallback) ──────────────────────────────────────
+
+/** Newest reading first; same-date ties broken by later insertion (createdAt). */
+function latestReadingFirst(
+  a: { readingDate: Date; createdAt: Date },
+  b: { readingDate: Date; createdAt: Date },
+): number {
+  const byDate = b.readingDate.getTime() - a.readingDate.getTime();
+  if (byDate !== 0) return byDate;
+  return b.createdAt.getTime() - a.createdAt.getTime();
+}
+
+/** Compliance documents ordered soonest-expiry-first; permanent (null) last. */
+function byExpiryAsc(a: { expiryDate?: Date }, b: { expiryDate?: Date }): number {
+  const av = a.expiryDate ? a.expiryDate.getTime() : Number.POSITIVE_INFINITY;
+  const bv = b.expiryDate ? b.expiryDate.getTime() : Number.POSITIVE_INFINITY;
+  return av - bv;
+}
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
 export class InMemoryEquipmentRepository implements EquipmentRepository {
   private equipment: readonly EquipmentRecord[] = [];
   private assignments: readonly EquipmentAssignmentRecord[] = [];
+  private documents: readonly EquipmentDocumentRecord[] = [];
+  private meterReadings: readonly EquipmentMeterReadingRecord[] = [];
+  private workOrders: readonly EquipmentWorkOrderRecord[] = [];
 
   async upsertEquipment(input: UpsertEquipment): Promise<EquipmentRecord> {
     const index = this.equipment.findIndex((e) => e.name === input.name);
@@ -172,6 +365,10 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
         code: input.code,
         name: input.name,
         category: input.category,
+        marque: input.marque,
+        modele: input.modele,
+        numeroSerie: input.numeroSerie,
+        immatriculation: input.immatriculation,
         status: 'disponible',
         acquisitionDate: input.acquisitionDate,
         notes: input.notes,
@@ -187,6 +384,10 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
       ...existing,
       code: input.code ?? existing.code,
       category: input.category ?? existing.category,
+      marque: input.marque ?? existing.marque,
+      modele: input.modele ?? existing.modele,
+      numeroSerie: input.numeroSerie ?? existing.numeroSerie,
+      immatriculation: input.immatriculation ?? existing.immatriculation,
       acquisitionDate: input.acquisitionDate ?? existing.acquisitionDate,
       notes: input.notes ?? existing.notes,
       updatedAt: new Date(),
@@ -325,6 +526,166 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
       .map((e) => ({ ...e, openAssignment: openByEquipment.get(e.id)! }));
   }
 
+  // ── GMAO: documents ────────────────────────────────────────────────────────
+
+  async addDocument(input: AddDocumentInput): Promise<EquipmentDocumentRecord> {
+    const record: EquipmentDocumentRecord = {
+      id: randomUUID(),
+      equipmentId: input.equipmentId,
+      type: input.type,
+      reference: input.reference,
+      issueDate: input.issueDate,
+      expiryDate: input.expiryDate,
+      notes: input.notes,
+      createdAt: new Date(),
+    };
+    this.documents = [...this.documents, record];
+    return record;
+  }
+
+  async listDocuments(
+    equipmentId: string,
+  ): Promise<EquipmentDocumentRecord[]> {
+    return [...this.documents]
+      .filter((d) => d.equipmentId === equipmentId)
+      .sort(byExpiryAsc);
+  }
+
+  async deleteDocument(id: string): Promise<boolean> {
+    const next = this.documents.filter((d) => d.id !== id);
+    const deleted = next.length !== this.documents.length;
+    this.documents = next;
+    return deleted;
+  }
+
+  async expiringDocuments(
+    withinDays: number,
+    today: Date,
+  ): Promise<ExpiringDocument[]> {
+    const nameById = new Map(this.equipment.map((e) => [e.id, e.name]));
+    return this.documents
+      .map((doc) => ({
+        doc,
+        status: documentExpiryStatus(doc.expiryDate, today, withinDays),
+      }))
+      .filter((x) => x.status === 'expire' || x.status === 'expire_bientot')
+      .sort((a, b) => byExpiryAsc(a.doc, b.doc))
+      .map(({ doc, status }) => ({
+        ...doc,
+        equipmentName: nameById.get(doc.equipmentId) ?? '—',
+        status,
+      }));
+  }
+
+  // ── GMAO: meters ───────────────────────────────────────────────────────────
+
+  async addMeterReading(
+    input: AddMeterReadingInput,
+  ): Promise<EquipmentMeterReadingRecord> {
+    const record: EquipmentMeterReadingRecord = {
+      id: randomUUID(),
+      equipmentId: input.equipmentId,
+      readingDate: input.readingDate,
+      value: input.value,
+      unit: input.unit,
+      source: input.source ?? 'manuel',
+      notes: input.notes,
+      createdAt: new Date(),
+    };
+    this.meterReadings = [...this.meterReadings, record];
+    return record;
+  }
+
+  async listMeterReadings(
+    equipmentId: string,
+  ): Promise<EquipmentMeterReadingRecord[]> {
+    return [...this.meterReadings]
+      .filter((r) => r.equipmentId === equipmentId)
+      .sort(latestReadingFirst);
+  }
+
+  async currentMeter(equipmentId: string): Promise<CurrentMeter | null> {
+    const readings = this.meterReadings.filter(
+      (r) => r.equipmentId === equipmentId,
+    );
+    const value = currentMeterValue(readings);
+    if (value === null) return null;
+    const [latest] = [...readings].sort(latestReadingFirst);
+    return { value, unit: latest!.unit };
+  }
+
+  // ── GMAO: work orders ──────────────────────────────────────────────────────
+
+  async createWorkOrder(
+    input: CreateWorkOrderInput,
+  ): Promise<EquipmentWorkOrderRecord> {
+    const record: EquipmentWorkOrderRecord = {
+      id: randomUUID(),
+      equipmentId: input.equipmentId,
+      type: input.type,
+      status: 'ouvert',
+      title: input.title,
+      description: input.description,
+      reportedBy: input.reportedBy,
+      openedAt: input.openedAt,
+      completedAt: undefined,
+      meterAtService: input.meterAtService,
+      costMad: input.costMad,
+      resolution: undefined,
+      createdAt: new Date(),
+    };
+    this.workOrders = [...this.workOrders, record];
+    return record;
+  }
+
+  async listWorkOrders(
+    filter: WorkOrderFilter,
+  ): Promise<EquipmentWorkOrderRecord[]> {
+    return [...this.workOrders]
+      .filter((w) => {
+        if (filter.equipmentId && w.equipmentId !== filter.equipmentId) {
+          return false;
+        }
+        if (filter.status && w.status !== filter.status) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const byOpened = b.openedAt.getTime() - a.openedAt.getTime();
+        if (byOpened !== 0) return byOpened;
+        return b.createdAt.getTime() - a.createdAt.getTime();
+      });
+  }
+
+  async setWorkOrderStatus(
+    id: string,
+    input: SetWorkOrderStatusInput,
+  ): Promise<EquipmentWorkOrderRecord | null> {
+    const index = this.workOrders.findIndex((w) => w.id === id);
+    if (index === -1) return null;
+    const existing = this.workOrders[index]!;
+    assertWorkOrderTransition(existing.status, input.status);
+    const updated: EquipmentWorkOrderRecord = {
+      ...existing,
+      status: input.status,
+      completedAt: input.completedAt ?? existing.completedAt,
+      costMad: input.costMad ?? existing.costMad,
+      resolution: input.resolution ?? existing.resolution,
+      meterAtService: input.meterAtService ?? existing.meterAtService,
+    };
+    this.workOrders = [
+      ...this.workOrders.slice(0, index),
+      updated,
+      ...this.workOrders.slice(index + 1),
+    ];
+    return updated;
+  }
+
+  async equipmentCost(equipmentId: string): Promise<number> {
+    return this.workOrders
+      .filter((w) => w.equipmentId === equipmentId && w.costMad != null)
+      .reduce((sum, w) => sum + (w.costMad ?? 0), 0);
+  }
+
   /** Flip a machine's status + updatedAt in place (immutable swap). */
   private setStatusInPlace(
     id: string,
@@ -361,6 +722,10 @@ export class DrizzleEquipmentRepository implements EquipmentRepository {
         code: input.code,
         name: input.name,
         category: input.category,
+        marque: input.marque,
+        modele: input.modele,
+        numeroSerie: input.numeroSerie,
+        immatriculation: input.immatriculation,
         acquisitionDate: input.acquisitionDate,
         notes: input.notes,
       })
@@ -369,6 +734,10 @@ export class DrizzleEquipmentRepository implements EquipmentRepository {
         set: {
           code: sql`coalesce(excluded.code, ${equipments.code})`,
           category: sql`coalesce(excluded.category, ${equipments.category})`,
+          marque: sql`coalesce(excluded.marque, ${equipments.marque})`,
+          modele: sql`coalesce(excluded.modele, ${equipments.modele})`,
+          numeroSerie: sql`coalesce(excluded.numero_serie, ${equipments.numeroSerie})`,
+          immatriculation: sql`coalesce(excluded.immatriculation, ${equipments.immatriculation})`,
           acquisitionDate: sql`coalesce(excluded.acquisition_date, ${equipments.acquisitionDate})`,
           notes: sql`coalesce(excluded.notes, ${equipments.notes})`,
           updatedAt: sql`now()`,
@@ -604,12 +973,228 @@ export class DrizzleEquipmentRepository implements EquipmentRepository {
       openAssignment: toAssignment(row.assignment),
     }));
   }
+
+  // ── GMAO: documents ────────────────────────────────────────────────────────
+
+  async addDocument(input: AddDocumentInput): Promise<EquipmentDocumentRecord> {
+    const [row] = await this.db
+      .insert(equipmentDocuments)
+      .values({
+        equipmentId: input.equipmentId,
+        type: input.type,
+        reference: input.reference,
+        issueDate: input.issueDate,
+        expiryDate: input.expiryDate,
+        notes: input.notes,
+      })
+      .returning();
+    if (!row) throw new Error('Document insert returned no row');
+    return toDocument(row);
+  }
+
+  async listDocuments(
+    equipmentId: string,
+  ): Promise<EquipmentDocumentRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(equipmentDocuments)
+      .where(eq(equipmentDocuments.equipmentId, equipmentId))
+      .orderBy(asc(equipmentDocuments.expiryDate));
+    return rows.map(toDocument);
+  }
+
+  async deleteDocument(id: string): Promise<boolean> {
+    const rows = await this.db
+      .delete(equipmentDocuments)
+      .where(eq(equipmentDocuments.id, id))
+      .returning({ id: equipmentDocuments.id });
+    return rows.length > 0;
+  }
+
+  async expiringDocuments(
+    withinDays: number,
+    today: Date,
+  ): Promise<ExpiringDocument[]> {
+    // Reduce to rows expiring on/before (today + withinDays) — this excludes
+    // permanent (null expiry) and still-valid docs — then compute the badge
+    // status per row in JS so it matches the InMemory path exactly.
+    const cutoff = new Date(
+      Date.UTC(
+        today.getUTCFullYear(),
+        today.getUTCMonth(),
+        today.getUTCDate() + withinDays,
+      ),
+    );
+    const rows = await this.db
+      .select({ doc: equipmentDocuments, name: equipments.name })
+      .from(equipmentDocuments)
+      .innerJoin(
+        equipments,
+        eq(equipments.id, equipmentDocuments.equipmentId),
+      )
+      .where(lte(equipmentDocuments.expiryDate, cutoff))
+      .orderBy(asc(equipmentDocuments.expiryDate));
+    return rows.map((row) => ({
+      ...toDocument(row.doc),
+      equipmentName: row.name,
+      status: documentExpiryStatus(
+        row.doc.expiryDate ?? undefined,
+        today,
+        withinDays,
+      ),
+    }));
+  }
+
+  // ── GMAO: meters ───────────────────────────────────────────────────────────
+
+  async addMeterReading(
+    input: AddMeterReadingInput,
+  ): Promise<EquipmentMeterReadingRecord> {
+    const [row] = await this.db
+      .insert(equipmentMeterReadings)
+      .values({
+        equipmentId: input.equipmentId,
+        readingDate: input.readingDate,
+        value: String(input.value),
+        unit: input.unit,
+        source: input.source ?? 'manuel',
+        notes: input.notes,
+      })
+      .returning();
+    if (!row) throw new Error('Meter reading insert returned no row');
+    return toMeterReading(row);
+  }
+
+  async listMeterReadings(
+    equipmentId: string,
+  ): Promise<EquipmentMeterReadingRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(equipmentMeterReadings)
+      .where(eq(equipmentMeterReadings.equipmentId, equipmentId))
+      .orderBy(
+        desc(equipmentMeterReadings.readingDate),
+        desc(equipmentMeterReadings.createdAt),
+      );
+    return rows.map(toMeterReading);
+  }
+
+  async currentMeter(equipmentId: string): Promise<CurrentMeter | null> {
+    const [row] = await this.db
+      .select()
+      .from(equipmentMeterReadings)
+      .where(eq(equipmentMeterReadings.equipmentId, equipmentId))
+      .orderBy(
+        desc(equipmentMeterReadings.readingDate),
+        desc(equipmentMeterReadings.createdAt),
+      )
+      .limit(1);
+    if (!row) return null;
+    return { value: Number(row.value), unit: row.unit as MeterUnit };
+  }
+
+  // ── GMAO: work orders ──────────────────────────────────────────────────────
+
+  async createWorkOrder(
+    input: CreateWorkOrderInput,
+  ): Promise<EquipmentWorkOrderRecord> {
+    const [row] = await this.db
+      .insert(equipmentWorkOrders)
+      .values({
+        equipmentId: input.equipmentId,
+        type: input.type,
+        title: input.title,
+        description: input.description,
+        reportedBy: input.reportedBy,
+        openedAt: input.openedAt,
+        meterAtService:
+          input.meterAtService != null
+            ? String(input.meterAtService)
+            : undefined,
+        costMad: input.costMad != null ? String(input.costMad) : undefined,
+      })
+      .returning();
+    if (!row) throw new Error('Work order insert returned no row');
+    return toWorkOrder(row);
+  }
+
+  async listWorkOrders(
+    filter: WorkOrderFilter,
+  ): Promise<EquipmentWorkOrderRecord[]> {
+    const clauses = [];
+    if (filter.equipmentId) {
+      clauses.push(eq(equipmentWorkOrders.equipmentId, filter.equipmentId));
+    }
+    if (filter.status) {
+      clauses.push(eq(equipmentWorkOrders.status, filter.status));
+    }
+    const rows = await this.db
+      .select()
+      .from(equipmentWorkOrders)
+      .where(clauses.length ? and(...clauses) : undefined)
+      .orderBy(
+        desc(equipmentWorkOrders.openedAt),
+        desc(equipmentWorkOrders.createdAt),
+      );
+    return rows.map(toWorkOrder);
+  }
+
+  async setWorkOrderStatus(
+    id: string,
+    input: SetWorkOrderStatusInput,
+  ): Promise<EquipmentWorkOrderRecord | null> {
+    // Read + guard + UPDATE under a row lock so two concurrent status changes on
+    // the same work order can't both pass assertWorkOrderTransition from the same
+    // observed status. Mirrors setEquipmentStatus.
+    return this.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(equipmentWorkOrders)
+        .where(eq(equipmentWorkOrders.id, id))
+        .for('update')
+        .limit(1);
+      if (!existing) return null;
+      assertWorkOrderTransition(
+        existing.status as WorkOrderStatus,
+        input.status,
+      );
+      const [row] = await tx
+        .update(equipmentWorkOrders)
+        .set({
+          status: input.status,
+          completedAt: input.completedAt ?? existing.completedAt,
+          resolution: input.resolution ?? existing.resolution,
+          costMad:
+            input.costMad != null ? String(input.costMad) : existing.costMad,
+          meterAtService:
+            input.meterAtService != null
+              ? String(input.meterAtService)
+              : existing.meterAtService,
+        })
+        .where(eq(equipmentWorkOrders.id, id))
+        .returning();
+      return row ? toWorkOrder(row) : null;
+    });
+  }
+
+  async equipmentCost(equipmentId: string): Promise<number> {
+    const [row] = await this.db
+      .select({
+        total: sql<string>`coalesce(sum(${equipmentWorkOrders.costMad}), 0)`,
+      })
+      .from(equipmentWorkOrders)
+      .where(eq(equipmentWorkOrders.equipmentId, equipmentId));
+    return Number(row?.total ?? 0);
+  }
 }
 
 // ── row → record mappers ─────────────────────────────────────────────────────
 
 type EquipmentRow = typeof equipments.$inferSelect;
 type AssignmentRow = typeof equipmentAssignments.$inferSelect;
+type DocumentRow = typeof equipmentDocuments.$inferSelect;
+type MeterReadingRow = typeof equipmentMeterReadings.$inferSelect;
+type WorkOrderRow = typeof equipmentWorkOrders.$inferSelect;
 
 function toEquipment(row: EquipmentRow): EquipmentRecord {
   return {
@@ -617,6 +1202,10 @@ function toEquipment(row: EquipmentRow): EquipmentRecord {
     code: row.code ?? undefined,
     name: row.name,
     category: row.category ?? undefined,
+    marque: row.marque ?? undefined,
+    modele: row.modele ?? undefined,
+    numeroSerie: row.numeroSerie ?? undefined,
+    immatriculation: row.immatriculation ?? undefined,
     status: row.status as EquipmentStatus,
     acquisitionDate: row.acquisitionDate ?? undefined,
     notes: row.notes ?? undefined,
@@ -634,6 +1223,51 @@ function toAssignment(row: AssignmentRow): EquipmentAssignmentRecord {
     expectedReturnAt: row.expectedReturnAt ?? undefined,
     returnedAt: row.returnedAt ?? undefined,
     notes: row.notes ?? undefined,
+    createdAt: row.createdAt,
+  };
+}
+
+function toDocument(row: DocumentRow): EquipmentDocumentRecord {
+  return {
+    id: row.id,
+    equipmentId: row.equipmentId,
+    type: row.type as EquipmentDocumentType,
+    reference: row.reference ?? undefined,
+    issueDate: row.issueDate ?? undefined,
+    expiryDate: row.expiryDate ?? undefined,
+    notes: row.notes ?? undefined,
+    createdAt: row.createdAt,
+  };
+}
+
+function toMeterReading(row: MeterReadingRow): EquipmentMeterReadingRecord {
+  return {
+    id: row.id,
+    equipmentId: row.equipmentId,
+    readingDate: row.readingDate,
+    value: Number(row.value),
+    unit: row.unit as MeterUnit,
+    source: row.source,
+    notes: row.notes ?? undefined,
+    createdAt: row.createdAt,
+  };
+}
+
+function toWorkOrder(row: WorkOrderRow): EquipmentWorkOrderRecord {
+  return {
+    id: row.id,
+    equipmentId: row.equipmentId,
+    type: row.type as WorkOrderType,
+    status: row.status as WorkOrderStatus,
+    title: row.title,
+    description: row.description ?? undefined,
+    reportedBy: row.reportedBy ?? undefined,
+    openedAt: row.openedAt,
+    completedAt: row.completedAt ?? undefined,
+    meterAtService:
+      row.meterAtService != null ? Number(row.meterAtService) : undefined,
+    costMad: row.costMad != null ? Number(row.costMad) : undefined,
+    resolution: row.resolution ?? undefined,
     createdAt: row.createdAt,
   };
 }
