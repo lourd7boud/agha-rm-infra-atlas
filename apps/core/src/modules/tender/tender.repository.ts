@@ -1097,7 +1097,15 @@ export class DrizzleTenderRepository implements TenderRepository {
     // the SQL lifecycle counts equal the JS bid fold. Idempotent — only rows whose
     // (state, winner_name, winner_amount) change are written, and updated_at is NOT
     // bumped (so it never floods the ?since= live-refresh delta).
-    const result = await this.db.execute(sql`
+    //
+    // This whole-catalogue fold+UPDATE legitimately runs longer than the 30 s
+    // interactive statement_timeout the connection pool sets (unaccent over ~550k
+    // bids + ~97k tenders + the write). It is a periodic batch (post-harvest / the
+    // one-off backfill), never on a request path, so raise the ceiling for THIS
+    // transaction only (SET LOCAL) instead of letting the pool kill it.
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL statement_timeout = 600000`);
+      const result = await tx.execute(sql`
       WITH mk AS (
         SELECT
           btrim(regexp_replace(lower(unaccent(reference)), '[^a-z0-9]+', ' ', 'g')) || '|' ||
@@ -1123,8 +1131,9 @@ export class DrizzleTenderRepository implements TenderRepository {
           CASE WHEN m.has_winner THEN m.winner_name ELSE NULL END,
           CASE WHEN m.has_winner THEN m.winner_amount ELSE NULL END
         )
-    `);
-    return (result as { rowCount?: number }).rowCount ?? 0;
+      `);
+      return (result as { rowCount?: number }).rowCount ?? 0;
+    });
   }
 
   /** The 6 column facets (procedures/categories/secteurs/regions/buyers/states)
