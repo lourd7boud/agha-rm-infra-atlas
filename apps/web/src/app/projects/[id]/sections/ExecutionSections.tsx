@@ -130,8 +130,14 @@ export function BordereauSection({ bordereaux }: { bordereaux: Bordereau[] }) {
 export function DecomptesSection({ decomptes }: { decomptes: Decompte[] }) {
   return (
     <section className={CARD}>
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <p className={LABEL}>Décomptes</p>
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <p className={LABEL}>Décomptes</p>
+          <p className="mt-1 text-xs text-faint">
+            Générés automatiquement depuis le métré (quantité = cumul des
+            métrés · TVA · retenue · net à payer).
+          </p>
+        </div>
         <span className="text-xs text-faint">{decomptes.length}</span>
       </div>
       {decomptes.length === 0 ? (

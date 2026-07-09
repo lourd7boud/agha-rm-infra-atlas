@@ -43,11 +43,10 @@ import {
 } from './sections/ExecutionSections';
 import {
   BordereauEditor,
-  DecompteCreator,
   PeriodeCreator,
-  type DecompteInput,
   type PeriodeInput,
 } from './sections/EditorSections';
+import { MetreEditor, type MetreLinePayload } from './sections/MetreEditor';
 import type { BordereauLigne } from '@/lib/projects';
 
 // Turn an action failure into user-visible feedback: log the real cause
@@ -268,9 +267,13 @@ export default async function ProjectDetailPage({
     revalidatePath(`/projects/${id}`);
   }
 
-  async function createDecompte(input: DecompteInput) {
+  // Save a période's métré (the ONLY quantity input) — the core recomputes the
+  // décompte from the cumulative métré quantities. No décompte is typed by hand.
+  async function saveMetres(periodeId: string, metres: MetreLinePayload[]) {
     'use server';
-    await apiPost(`/project/projects/${id}/decomptes`, input);
+    await apiPost(`/project/projects/${id}/periodes/${periodeId}/metres`, {
+      metres,
+    });
     revalidatePath(`/projects/${id}`);
     revalidatePath('/projects');
   }
@@ -502,11 +505,11 @@ export default async function ProjectDetailPage({
         createPeriode={createPeriode}
       />
 
-      <DecompteCreator
-        periodes={periodes}
+      <MetreEditor
         bordereaux={bordereaux}
-        decomptes={decomptes}
-        createDecompte={createDecompte}
+        periodes={periodes}
+        metres={metres}
+        saveMetres={saveMetres}
       />
 
       <RevisionSection revision={revision} />
