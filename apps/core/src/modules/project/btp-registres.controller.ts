@@ -36,7 +36,7 @@ import {
 import { BTP_REGISTRES_REPOSITORY, type BtpRegistresRepository } from './btp-registres.repository';
 import { ODS_TYPES } from './btp-registres.domain';
 import { validateFormula } from './btp-revision.domain';
-import { actorFrom, toHttp, WRITE_ROLES, type AuthedRequest } from './btp.module';
+import { actorFrom, toHttp, WRITE_ROLES, type AuthedRequest } from './btp-http.helpers';
 
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 

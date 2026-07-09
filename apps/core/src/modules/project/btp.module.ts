@@ -30,26 +30,10 @@ import { BTP_ASSETS_REPOSITORY, type BtpAssetsRepository } from './btp-assets.re
 import { BtpRepositoryModule } from './btp-repository.module';
 import { BtpAssetsController, BtpRegistresController } from './btp-registres.controller';
 import { BtpExportService } from './btp-export.service';
-import { BtpTransitionError, computeDelaiInfo } from './btp-registres.domain';
+import { toHttp, WRITE_ROLES } from './btp-http.helpers';
+import { computeDelaiInfo } from './btp-registres.domain';
 import { calculateDecompteRevision, type IndexValues } from './btp-revision.domain';
 import { round2, toDecimal, toNumber } from './btp-finance.domain';
-
-// ─── Shared helpers ──────────────────────────────────────────────────────────
-
-export interface AuthedRequest {
-  user?: { sub: string; username: string; roles: string[] };
-}
-
-export function actorFrom(req: AuthedRequest): { sub: string; name: string } {
-  return { sub: req.user?.sub ?? 'unknown', name: req.user?.username ?? 'unknown' };
-}
-
-export function toHttp(error: unknown): never {
-  if (error instanceof BtpTransitionError) throw new ConflictException(error.message);
-  throw error;
-}
-
-export const WRITE_ROLES = ['travaux', 'direction', 'marches', 'admin-si'] as const;
 
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 
