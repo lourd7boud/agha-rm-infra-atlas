@@ -1,19 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { asc, desc, eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
-import {
-  avenants,
-  bordereaux,
-  decomptes,
-  metres,
-  periodes,
-  projectRevisionConfig,
-  projects,
-  revisionFormulas,
-  revisionIndexes,
-  situations,
-  tasks,
-} from '../../db/schema';
+import { avenants, projects, situations, tasks } from '../../db/schema';
 import { normalizeTaskPatch, type TaskPatch, type TaskStatus } from './task.domain';
 
 export type ProjectStatus =
@@ -39,22 +27,6 @@ export interface ProjectRecord extends CreateProject {
   id: string;
   status: ProjectStatus;
   createdAt: Date;
-  // Marché-de-travaux detail fields ported from the BTP app (nullable on
-  // manually-created chantiers; populated on migrated ones).
-  objet?: string;
-  annee?: string;
-  societe?: string;
-  commune?: string;
-  typeMarche?: string;
-  modePassation?: string;
-  delaiExecutionJours?: number;
-  dateOuverture?: Date;
-  receptionProvisoire?: Date;
-  receptionDefinitive?: Date;
-  achevementTravaux?: Date;
-  assistanceTechnique?: string;
-  maitreOeuvre?: string;
-  progressPct?: number;
 }
 
 export interface CreateSituation {
@@ -124,155 +96,6 @@ export interface TaskRecord {
   updatedAt: Date;
 }
 
-// ── Execution-detail records (bordereau / période / décompte / révision) ──────
-export interface BordereauRecord {
-  id: string;
-  projectId: string;
-  lignes: unknown[];
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface PeriodeRecord {
-  id: string;
-  projectId: string;
-  numero: number;
-  libelle?: string;
-  dateDebut?: Date;
-  dateFin?: Date;
-  tauxTva: number;
-  tauxRetenue: number;
-  decomptesPrecedents: number;
-  depensesExercicesAnterieurs: number;
-  isDecompteDernier: boolean;
-  statut: string;
-  observations?: string;
-}
-
-export interface DecompteRecord {
-  id: string;
-  projectId: string;
-  periodeId?: string;
-  numero: number;
-  dateDecompte?: Date;
-  lignes: unknown[];
-  totalHtMad: number;
-  montantTvaMad: number;
-  totalTtcMad: number;
-  totalGeneralTtcMad: number;
-  montantCumuleMad: number;
-  montantPrecedentMad: number;
-  montantActuelMad: number;
-  retenueGarantieMad: number;
-  netAPayerMad: number;
-  isDernier: boolean;
-  statut: string;
-}
-
-export interface RevisionFormulaRecord {
-  id: string;
-  name: string;
-  description?: string;
-  fixedPart: number;
-  weights: Record<string, number>;
-  isDefault: boolean;
-  isPublic: boolean;
-}
-
-export interface RevisionIndexRecord {
-  id: string;
-  monthDate: Date;
-  indexValues: Record<string, number>;
-  source?: string;
-  status: string;
-}
-
-export interface RevisionConfigRecord {
-  id: string;
-  projectId: string;
-  formulaId?: string;
-  baseIndexes: Record<string, number>;
-  baseDate?: Date;
-  isEnabled: boolean;
-  notes?: string;
-}
-
-export interface MetreRecord {
-  id: string;
-  projectId: string;
-  periodeId?: string;
-  bordereauLigneId?: string;
-  designation?: string;
-  unite?: string;
-  totalQuantite: number;
-  data: unknown;
-}
-
-/** Editable "fiche marché" fields of a chantier (all optional — a partial patch). */
-export interface ProjectDetailsPatch {
-  name?: string;
-  buyerName?: string;
-  montantMarcheMad?: number;
-  objet?: string;
-  annee?: string;
-  societe?: string;
-  commune?: string;
-  typeMarche?: string;
-  modePassation?: string;
-  delaiExecutionJours?: number;
-  dateOuverture?: Date;
-  receptionProvisoire?: Date;
-  receptionDefinitive?: Date;
-  achevementTravaux?: Date;
-  assistanceTechnique?: string;
-  maitreOeuvre?: string;
-  progressPct?: number;
-}
-
-export interface CreatePeriode {
-  projectId: string;
-  numero: number;
-  libelle?: string;
-  dateDebut?: Date;
-  dateFin?: Date;
-  tauxTva: number;
-  tauxRetenue: number;
-  decomptesPrecedents: number;
-  depensesExercicesAnterieurs: number;
-  isDecompteDernier: boolean;
-  statut?: string;
-  observations?: string;
-}
-
-/** Décompte to persist — totals are computed by the finance domain in the service. */
-export interface CreateDecompte {
-  projectId: string;
-  periodeId?: string;
-  numero: number;
-  dateDecompte?: Date;
-  lignes: unknown[];
-  totalHtMad: number;
-  montantTvaMad: number;
-  totalTtcMad: number;
-  totalGeneralTtcMad: number;
-  montantCumuleMad: number;
-  montantPrecedentMad: number;
-  montantActuelMad: number;
-  retenueGarantieMad: number;
-  netAPayerMad: number;
-  isDernier: boolean;
-  statut?: string;
-}
-
-/** One métré to persist for a (bordereau line × période). */
-export interface MetreSaveInput {
-  bordereauLigneId: string;
-  designation?: string;
-  unite?: string;
-  data: unknown;
-  totalQuantite: number;
-}
-
 export const PROJECT_REPOSITORY = Symbol('PROJECT_REPOSITORY');
 
 export interface ProjectRepository {
@@ -299,29 +122,6 @@ export interface ProjectRepository {
   listTasksByProject(projectId: string): Promise<TaskRecord[]>;
   findTaskById(id: string): Promise<TaskRecord | null>;
   updateTask(id: string, patch: TaskPatch): Promise<TaskRecord | null>;
-  // Execution detail (bordereau / période / décompte / révision des prix).
-  listBordereaux(projectId: string): Promise<BordereauRecord[]>;
-  listPeriodes(projectId: string): Promise<PeriodeRecord[]>;
-  listDecomptes(projectId: string): Promise<DecompteRecord[]>;
-  getRevisionConfig(projectId: string): Promise<RevisionConfigRecord | null>;
-  listRevisionFormulas(): Promise<RevisionFormulaRecord[]>;
-  listRevisionIndexes(): Promise<RevisionIndexRecord[]>;
-  listMetres(projectId: string): Promise<MetreRecord[]>;
-  updateProjectDetails(
-    id: string,
-    patch: ProjectDetailsPatch,
-  ): Promise<ProjectRecord | null>;
-  upsertBordereau(projectId: string, lignes: unknown[]): Promise<BordereauRecord>;
-  createPeriode(input: CreatePeriode): Promise<PeriodeRecord>;
-  createDecompte(input: CreateDecompte): Promise<DecompteRecord>;
-  /** Replace all métrés of a (project, période) with the provided set. */
-  saveMetres(
-    projectId: string,
-    periodeId: string,
-    metres: MetreSaveInput[],
-  ): Promise<MetreRecord[]>;
-  /** Create or replace the décompte of a période (periodeId required). */
-  upsertDecompteForPeriode(input: CreateDecompte): Promise<DecompteRecord>;
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
@@ -472,171 +272,6 @@ export class InMemoryProjectRepository implements ProjectRepository {
     this.tasks = this.tasks.map((t) => (t.id === id ? updated : t));
     return updated;
   }
-
-  // Execution-detail reads — empty in the in-memory dev fallback (these surfaces
-  // are only meaningful against the real migrated Postgres data).
-  private bordereauxMem: readonly BordereauRecord[] = [];
-  private periodesMem: readonly PeriodeRecord[] = [];
-  private decomptesMem: readonly DecompteRecord[] = [];
-
-  async listBordereaux(projectId: string): Promise<BordereauRecord[]> {
-    return this.bordereauxMem.filter((b) => b.projectId === projectId);
-  }
-  async listPeriodes(projectId: string): Promise<PeriodeRecord[]> {
-    return this.periodesMem
-      .filter((p) => p.projectId === projectId)
-      .sort((a, b) => a.numero - b.numero);
-  }
-  async listDecomptes(projectId: string): Promise<DecompteRecord[]> {
-    return this.decomptesMem
-      .filter((d) => d.projectId === projectId)
-      .sort((a, b) => a.numero - b.numero);
-  }
-  async getRevisionConfig(): Promise<RevisionConfigRecord | null> {
-    return null;
-  }
-  async listRevisionFormulas(): Promise<RevisionFormulaRecord[]> {
-    return [];
-  }
-  async listRevisionIndexes(): Promise<RevisionIndexRecord[]> {
-    return [];
-  }
-  async listMetres(projectId: string): Promise<MetreRecord[]> {
-    return this.metresMem.filter((m) => m.projectId === projectId);
-  }
-  async updateProjectDetails(
-    id: string,
-    patch: ProjectDetailsPatch,
-  ): Promise<ProjectRecord | null> {
-    const existing = await this.findById(id);
-    if (!existing) return null;
-    const clean = Object.fromEntries(
-      Object.entries(patch).filter(([, v]) => v !== undefined),
-    );
-    const updated: ProjectRecord = { ...existing, ...clean };
-    this.projects = this.projects.map((p) => (p.id === id ? updated : p));
-    return updated;
-  }
-
-  async upsertBordereau(
-    projectId: string,
-    lignes: unknown[],
-  ): Promise<BordereauRecord> {
-    const now = new Date();
-    const existing = this.bordereauxMem.find((b) => b.projectId === projectId);
-    if (existing) {
-      const updated: BordereauRecord = { ...existing, lignes, updatedAt: now };
-      this.bordereauxMem = this.bordereauxMem.map((b) =>
-        b.id === existing.id ? updated : b,
-      );
-      return updated;
-    }
-    const record: BordereauRecord = {
-      id: randomUUID(),
-      projectId,
-      lignes,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.bordereauxMem = [...this.bordereauxMem, record];
-    return record;
-  }
-
-  async createPeriode(input: CreatePeriode): Promise<PeriodeRecord> {
-    const record: PeriodeRecord = {
-      id: randomUUID(),
-      projectId: input.projectId,
-      numero: input.numero,
-      libelle: input.libelle,
-      dateDebut: input.dateDebut,
-      dateFin: input.dateFin,
-      tauxTva: input.tauxTva,
-      tauxRetenue: input.tauxRetenue,
-      decomptesPrecedents: input.decomptesPrecedents,
-      depensesExercicesAnterieurs: input.depensesExercicesAnterieurs,
-      isDecompteDernier: input.isDecompteDernier,
-      statut: input.statut ?? 'en_cours',
-      observations: input.observations,
-    };
-    this.periodesMem = [...this.periodesMem, record];
-    return record;
-  }
-
-  async createDecompte(input: CreateDecompte): Promise<DecompteRecord> {
-    const record: DecompteRecord = {
-      id: randomUUID(),
-      projectId: input.projectId,
-      periodeId: input.periodeId,
-      numero: input.numero,
-      dateDecompte: input.dateDecompte,
-      lignes: input.lignes,
-      totalHtMad: input.totalHtMad,
-      montantTvaMad: input.montantTvaMad,
-      totalTtcMad: input.totalTtcMad,
-      totalGeneralTtcMad: input.totalGeneralTtcMad,
-      montantCumuleMad: input.montantCumuleMad,
-      montantPrecedentMad: input.montantPrecedentMad,
-      montantActuelMad: input.montantActuelMad,
-      retenueGarantieMad: input.retenueGarantieMad,
-      netAPayerMad: input.netAPayerMad,
-      isDernier: input.isDernier,
-      statut: input.statut ?? 'draft',
-    };
-    this.decomptesMem = [...this.decomptesMem, record];
-    return record;
-  }
-
-  private metresMem: readonly MetreRecord[] = [];
-
-  async saveMetres(
-    projectId: string,
-    periodeId: string,
-    metres: MetreSaveInput[],
-  ): Promise<MetreRecord[]> {
-    const kept = this.metresMem.filter(
-      (m) => !(m.projectId === projectId && m.periodeId === periodeId),
-    );
-    const added: MetreRecord[] = metres.map((m) => ({
-      id: randomUUID(),
-      projectId,
-      periodeId,
-      bordereauLigneId: m.bordereauLigneId,
-      designation: m.designation,
-      unite: m.unite,
-      totalQuantite: m.totalQuantite,
-      data: m.data,
-    }));
-    this.metresMem = [...kept, ...added];
-    return added;
-  }
-
-  async upsertDecompteForPeriode(input: CreateDecompte): Promise<DecompteRecord> {
-    const existing = this.decomptesMem.find(
-      (d) => d.projectId === input.projectId && d.periodeId === input.periodeId,
-    );
-    const record: DecompteRecord = {
-      id: existing?.id ?? randomUUID(),
-      projectId: input.projectId,
-      periodeId: input.periodeId,
-      numero: existing?.numero ?? input.numero,
-      dateDecompte: input.dateDecompte,
-      lignes: input.lignes,
-      totalHtMad: input.totalHtMad,
-      montantTvaMad: input.montantTvaMad,
-      totalTtcMad: input.totalTtcMad,
-      totalGeneralTtcMad: input.totalGeneralTtcMad,
-      montantCumuleMad: input.montantCumuleMad,
-      montantPrecedentMad: input.montantPrecedentMad,
-      montantActuelMad: input.montantActuelMad,
-      retenueGarantieMad: input.retenueGarantieMad,
-      netAPayerMad: input.netAPayerMad,
-      isDernier: input.isDernier,
-      statut: input.statut ?? 'draft',
-    };
-    const kept = this.decomptesMem.filter((d) => d.id !== record.id);
-    this.decomptesMem = [...kept, record];
-    return record;
-  }
 }
 
 export class DrizzleProjectRepository implements ProjectRepository {
@@ -734,10 +369,15 @@ export class DrizzleProjectRepository implements ProjectRepository {
   }
 
   async listAvenants(projectId: string): Promise<AvenantRecord[]> {
+    // Since the BTP rebuild, avenants carry a statut lifecycle and approvedAt is
+    // nullable (brouillons). This legacy surface feeds the décompte ceiling, so
+    // it must only see APPROVED, non-deleted avenants.
     const rows = await this.db
       .select()
       .from(avenants)
-      .where(eq(avenants.projectId, projectId))
+      .where(
+        sql`${avenants.projectId} = ${projectId} and ${avenants.deletedAt} is null and (${avenants.statut} = 'approuve' or (${avenants.statut} = 'brouillon' and ${avenants.approvedAt} is not null))`,
+      )
       .orderBy(asc(avenants.numero));
     return rows.map((row) => ({
       id: row.id,
@@ -746,7 +386,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
       objet: row.objet,
       montantDeltaMad: Number(row.montantDeltaMad),
       delaiDeltaMois: Number(row.delaiDeltaMois),
-      approvedAt: row.approvedAt,
+      approvedAt: row.approvedAt ?? row.createdAt,
       createdAt: row.createdAt,
     }));
   }
@@ -761,6 +401,8 @@ export class DrizzleProjectRepository implements ProjectRepository {
         montantDeltaMad: input.montantDeltaMad.toString(),
         delaiDeltaMois: input.delaiDeltaMois.toString(),
         approvedAt: input.approvedAt,
+        // Legacy surface only ever created already-approved avenants.
+        statut: 'approuve',
       })
       .returning();
     if (!row) throw new Error('Avenant insert returned no row');
@@ -771,7 +413,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
       objet: row.objet,
       montantDeltaMad: Number(row.montantDeltaMad),
       delaiDeltaMois: Number(row.delaiDeltaMois),
-      approvedAt: row.approvedAt,
+      approvedAt: row.approvedAt ?? row.createdAt,
       createdAt: row.createdAt,
     };
   }
@@ -858,395 +500,6 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .returning();
     return row ? toTask(row) : null;
   }
-
-  async listBordereaux(projectId: string): Promise<BordereauRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(bordereaux)
-      .where(eq(bordereaux.projectId, projectId))
-      .orderBy(asc(bordereaux.createdAt));
-    return rows.map((r) => ({
-      id: r.id,
-      projectId: r.projectId,
-      lignes: Array.isArray(r.lignes) ? (r.lignes as unknown[]) : [],
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-    }));
-  }
-
-  async listPeriodes(projectId: string): Promise<PeriodeRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(periodes)
-      .where(eq(periodes.projectId, projectId))
-      .orderBy(asc(periodes.numero));
-    return rows.map((r) => ({
-      id: r.id,
-      projectId: r.projectId,
-      numero: r.numero,
-      libelle: r.libelle ?? undefined,
-      dateDebut: r.dateDebut ?? undefined,
-      dateFin: r.dateFin ?? undefined,
-      tauxTva: Number(r.tauxTva),
-      tauxRetenue: Number(r.tauxRetenue),
-      decomptesPrecedents: Number(r.decomptesPrecedents),
-      depensesExercicesAnterieurs: Number(r.depensesExercicesAnterieurs),
-      isDecompteDernier: r.isDecompteDernier,
-      statut: r.statut,
-      observations: r.observations ?? undefined,
-    }));
-  }
-
-  async listDecomptes(projectId: string): Promise<DecompteRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(decomptes)
-      .where(eq(decomptes.projectId, projectId))
-      .orderBy(asc(decomptes.numero));
-    return rows.map((r) => ({
-      id: r.id,
-      projectId: r.projectId,
-      periodeId: r.periodeId ?? undefined,
-      numero: r.numero,
-      dateDecompte: r.dateDecompte ?? undefined,
-      lignes: Array.isArray(r.lignes) ? (r.lignes as unknown[]) : [],
-      totalHtMad: Number(r.totalHtMad),
-      montantTvaMad: Number(r.montantTvaMad),
-      totalTtcMad: Number(r.totalTtcMad),
-      totalGeneralTtcMad: Number(r.totalGeneralTtcMad),
-      montantCumuleMad: Number(r.montantCumuleMad),
-      montantPrecedentMad: Number(r.montantPrecedentMad),
-      montantActuelMad: Number(r.montantActuelMad),
-      retenueGarantieMad: Number(r.retenueGarantieMad),
-      netAPayerMad: Number(r.netAPayerMad),
-      isDernier: r.isDernier,
-      statut: r.statut,
-    }));
-  }
-
-  async getRevisionConfig(projectId: string): Promise<RevisionConfigRecord | null> {
-    const [r] = await this.db
-      .select()
-      .from(projectRevisionConfig)
-      .where(eq(projectRevisionConfig.projectId, projectId))
-      .limit(1);
-    if (!r) return null;
-    return {
-      id: r.id,
-      projectId: r.projectId,
-      formulaId: r.formulaId ?? undefined,
-      baseIndexes: (r.baseIndexes ?? {}) as Record<string, number>,
-      baseDate: r.baseDate ?? undefined,
-      isEnabled: r.isEnabled,
-      notes: r.notes ?? undefined,
-    };
-  }
-
-  async listRevisionFormulas(): Promise<RevisionFormulaRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(revisionFormulas)
-      .orderBy(asc(revisionFormulas.name));
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      description: r.description ?? undefined,
-      fixedPart: Number(r.fixedPart),
-      weights: (r.weights ?? {}) as Record<string, number>,
-      isDefault: r.isDefault,
-      isPublic: r.isPublic,
-    }));
-  }
-
-  async listRevisionIndexes(): Promise<RevisionIndexRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(revisionIndexes)
-      .orderBy(desc(revisionIndexes.monthDate));
-    return rows.map((r) => ({
-      id: r.id,
-      monthDate: r.monthDate,
-      indexValues: (r.indexValues ?? {}) as Record<string, number>,
-      source: r.source ?? undefined,
-      status: r.status,
-    }));
-  }
-
-  async listMetres(projectId: string): Promise<MetreRecord[]> {
-    const rows = await this.db
-      .select()
-      .from(metres)
-      .where(eq(metres.projectId, projectId))
-      .orderBy(asc(metres.createdAt));
-    return rows.map((r) => ({
-      id: r.id,
-      projectId: r.projectId,
-      periodeId: r.periodeId ?? undefined,
-      bordereauLigneId: r.bordereauLigneId ?? undefined,
-      designation: r.designation ?? undefined,
-      unite: r.unite ?? undefined,
-      totalQuantite: Number(r.totalQuantite),
-      data: r.data,
-    }));
-  }
-
-  async updateProjectDetails(
-    id: string,
-    patch: ProjectDetailsPatch,
-  ): Promise<ProjectRecord | null> {
-    const [row] = await this.db
-      .update(projects)
-      .set({
-        ...(patch.name !== undefined ? { name: patch.name } : {}),
-        ...(patch.buyerName !== undefined ? { buyerName: patch.buyerName } : {}),
-        ...(patch.montantMarcheMad !== undefined
-          ? { montantMarcheMad: patch.montantMarcheMad.toString() }
-          : {}),
-        ...(patch.objet !== undefined ? { objet: patch.objet } : {}),
-        ...(patch.annee !== undefined ? { annee: patch.annee } : {}),
-        ...(patch.societe !== undefined ? { societe: patch.societe } : {}),
-        ...(patch.commune !== undefined ? { commune: patch.commune } : {}),
-        ...(patch.typeMarche !== undefined ? { typeMarche: patch.typeMarche } : {}),
-        ...(patch.modePassation !== undefined
-          ? { modePassation: patch.modePassation }
-          : {}),
-        ...(patch.delaiExecutionJours !== undefined
-          ? { delaiExecutionJours: patch.delaiExecutionJours }
-          : {}),
-        ...(patch.dateOuverture !== undefined
-          ? { dateOuverture: patch.dateOuverture }
-          : {}),
-        ...(patch.receptionProvisoire !== undefined
-          ? { receptionProvisoire: patch.receptionProvisoire }
-          : {}),
-        ...(patch.receptionDefinitive !== undefined
-          ? { receptionDefinitive: patch.receptionDefinitive }
-          : {}),
-        ...(patch.achevementTravaux !== undefined
-          ? { achevementTravaux: patch.achevementTravaux }
-          : {}),
-        ...(patch.assistanceTechnique !== undefined
-          ? { assistanceTechnique: patch.assistanceTechnique }
-          : {}),
-        ...(patch.maitreOeuvre !== undefined
-          ? { maitreOeuvre: patch.maitreOeuvre }
-          : {}),
-        ...(patch.progressPct !== undefined
-          ? { progressPct: patch.progressPct.toString() }
-          : {}),
-        updatedAt: new Date(),
-      })
-      .where(eq(projects.id, id))
-      .returning();
-    return row ? toProject(row) : null;
-  }
-
-  async upsertBordereau(
-    projectId: string,
-    lignes: unknown[],
-  ): Promise<BordereauRecord> {
-    const [existing] = await this.db
-      .select({ id: bordereaux.id })
-      .from(bordereaux)
-      .where(eq(bordereaux.projectId, projectId))
-      .limit(1);
-    const [row] = existing
-      ? await this.db
-          .update(bordereaux)
-          .set({ lignes, updatedAt: new Date() })
-          .where(eq(bordereaux.id, existing.id))
-          .returning()
-      : await this.db.insert(bordereaux).values({ projectId, lignes }).returning();
-    if (!row) throw new Error('Bordereau upsert returned no row');
-    return {
-      id: row.id,
-      projectId: row.projectId,
-      lignes: Array.isArray(row.lignes) ? (row.lignes as unknown[]) : [],
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    };
-  }
-
-  async createPeriode(input: CreatePeriode): Promise<PeriodeRecord> {
-    const [row] = await this.db
-      .insert(periodes)
-      .values({
-        projectId: input.projectId,
-        numero: input.numero,
-        libelle: input.libelle,
-        dateDebut: input.dateDebut,
-        dateFin: input.dateFin,
-        tauxTva: input.tauxTva.toString(),
-        tauxRetenue: input.tauxRetenue.toString(),
-        decomptesPrecedents: input.decomptesPrecedents.toString(),
-        depensesExercicesAnterieurs: input.depensesExercicesAnterieurs.toString(),
-        isDecompteDernier: input.isDecompteDernier,
-        statut: input.statut ?? 'en_cours',
-        observations: input.observations,
-      })
-      .returning();
-    if (!row) throw new Error('Periode insert returned no row');
-    return {
-      id: row.id,
-      projectId: row.projectId,
-      numero: row.numero,
-      libelle: row.libelle ?? undefined,
-      dateDebut: row.dateDebut ?? undefined,
-      dateFin: row.dateFin ?? undefined,
-      tauxTva: Number(row.tauxTva),
-      tauxRetenue: Number(row.tauxRetenue),
-      decomptesPrecedents: Number(row.decomptesPrecedents),
-      depensesExercicesAnterieurs: Number(row.depensesExercicesAnterieurs),
-      isDecompteDernier: row.isDecompteDernier,
-      statut: row.statut,
-      observations: row.observations ?? undefined,
-    };
-  }
-
-  async createDecompte(input: CreateDecompte): Promise<DecompteRecord> {
-    const [row] = await this.db
-      .insert(decomptes)
-      .values({
-        projectId: input.projectId,
-        periodeId: input.periodeId,
-        numero: input.numero,
-        dateDecompte: input.dateDecompte,
-        lignes: input.lignes,
-        totalHtMad: input.totalHtMad.toString(),
-        montantTvaMad: input.montantTvaMad.toString(),
-        totalTtcMad: input.totalTtcMad.toString(),
-        totalGeneralTtcMad: input.totalGeneralTtcMad.toString(),
-        montantCumuleMad: input.montantCumuleMad.toString(),
-        montantPrecedentMad: input.montantPrecedentMad.toString(),
-        montantActuelMad: input.montantActuelMad.toString(),
-        retenueGarantieMad: input.retenueGarantieMad.toString(),
-        netAPayerMad: input.netAPayerMad.toString(),
-        isDernier: input.isDernier,
-        statut: input.statut ?? 'draft',
-      })
-      .returning();
-    if (!row) throw new Error('Decompte insert returned no row');
-    return {
-      id: row.id,
-      projectId: row.projectId,
-      periodeId: row.periodeId ?? undefined,
-      numero: row.numero,
-      dateDecompte: row.dateDecompte ?? undefined,
-      lignes: Array.isArray(row.lignes) ? (row.lignes as unknown[]) : [],
-      totalHtMad: Number(row.totalHtMad),
-      montantTvaMad: Number(row.montantTvaMad),
-      totalTtcMad: Number(row.totalTtcMad),
-      totalGeneralTtcMad: Number(row.totalGeneralTtcMad),
-      montantCumuleMad: Number(row.montantCumuleMad),
-      montantPrecedentMad: Number(row.montantPrecedentMad),
-      montantActuelMad: Number(row.montantActuelMad),
-      retenueGarantieMad: Number(row.retenueGarantieMad),
-      netAPayerMad: Number(row.netAPayerMad),
-      isDernier: row.isDernier,
-      statut: row.statut,
-    };
-  }
-
-  async saveMetres(
-    projectId: string,
-    periodeId: string,
-    metresInput: MetreSaveInput[],
-  ): Promise<MetreRecord[]> {
-    // Atomic replace: a mid-write failure must NOT leave the période's métrés
-    // deleted-but-not-reinserted (which would zero its realized quantities and
-    // corrupt every later décompte's cumulative).
-    return this.db.transaction(async (tx) => {
-      await tx
-        .delete(metres)
-        .where(
-          and(eq(metres.projectId, projectId), eq(metres.periodeId, periodeId)),
-        );
-      if (metresInput.length === 0) return [];
-      const rows = await tx
-        .insert(metres)
-        .values(
-          metresInput.map((m) => ({
-            projectId,
-            periodeId,
-            bordereauLigneId: m.bordereauLigneId,
-            designation: m.designation,
-            unite: m.unite,
-            data: m.data,
-            totalQuantite: m.totalQuantite.toString(),
-          })),
-        )
-        .returning();
-      return rows.map((r) => ({
-        id: r.id,
-        projectId: r.projectId,
-        periodeId: r.periodeId ?? undefined,
-        bordereauLigneId: r.bordereauLigneId ?? undefined,
-        designation: r.designation ?? undefined,
-        unite: r.unite ?? undefined,
-        totalQuantite: Number(r.totalQuantite),
-        data: r.data,
-      }));
-    });
-  }
-
-  async upsertDecompteForPeriode(input: CreateDecompte): Promise<DecompteRecord> {
-    // Atomic delete-then-insert; the UNIQUE(project_id, periode_id) partial index
-    // (migration 0044) is the hard guard against two concurrent saves creating
-    // duplicate décomptes for one période (which would double-count in précédents).
-    return this.db.transaction(async (tx) => {
-      if (input.periodeId) {
-        await tx
-          .delete(decomptes)
-          .where(
-            and(
-              eq(decomptes.projectId, input.projectId),
-              eq(decomptes.periodeId, input.periodeId),
-            ),
-          );
-      }
-      const [row] = await tx
-        .insert(decomptes)
-        .values({
-          projectId: input.projectId,
-          periodeId: input.periodeId,
-          numero: input.numero,
-          dateDecompte: input.dateDecompte,
-          lignes: input.lignes,
-          totalHtMad: input.totalHtMad.toString(),
-          montantTvaMad: input.montantTvaMad.toString(),
-          totalTtcMad: input.totalTtcMad.toString(),
-          totalGeneralTtcMad: input.totalGeneralTtcMad.toString(),
-          montantCumuleMad: input.montantCumuleMad.toString(),
-          montantPrecedentMad: input.montantPrecedentMad.toString(),
-          montantActuelMad: input.montantActuelMad.toString(),
-          retenueGarantieMad: input.retenueGarantieMad.toString(),
-          netAPayerMad: input.netAPayerMad.toString(),
-          isDernier: input.isDernier,
-          statut: input.statut ?? 'draft',
-        })
-        .returning();
-      if (!row) throw new Error('Decompte upsert returned no row');
-      return {
-        id: row.id,
-        projectId: row.projectId,
-        periodeId: row.periodeId ?? undefined,
-        numero: row.numero,
-        dateDecompte: row.dateDecompte ?? undefined,
-        lignes: Array.isArray(row.lignes) ? (row.lignes as unknown[]) : [],
-        totalHtMad: Number(row.totalHtMad),
-        montantTvaMad: Number(row.montantTvaMad),
-        totalTtcMad: Number(row.totalTtcMad),
-        totalGeneralTtcMad: Number(row.totalGeneralTtcMad),
-        montantCumuleMad: Number(row.montantCumuleMad),
-        montantPrecedentMad: Number(row.montantPrecedentMad),
-        montantActuelMad: Number(row.montantActuelMad),
-        retenueGarantieMad: Number(row.retenueGarantieMad),
-        netAPayerMad: Number(row.netAPayerMad),
-        isDernier: row.isDernier,
-        statut: row.statut,
-      };
-    });
-  }
 }
 
 type ProjectRow = typeof projects.$inferSelect;
@@ -1265,20 +518,6 @@ function toProject(row: ProjectRow): ProjectRecord {
     delaiMois: row.delaiMois ? Number(row.delaiMois) : undefined,
     status: row.status as ProjectStatus,
     createdAt: row.createdAt,
-    objet: row.objet ?? undefined,
-    annee: row.annee ?? undefined,
-    societe: row.societe ?? undefined,
-    commune: row.commune ?? undefined,
-    typeMarche: row.typeMarche ?? undefined,
-    modePassation: row.modePassation ?? undefined,
-    delaiExecutionJours: row.delaiExecutionJours ?? undefined,
-    dateOuverture: row.dateOuverture ?? undefined,
-    receptionProvisoire: row.receptionProvisoire ?? undefined,
-    receptionDefinitive: row.receptionDefinitive ?? undefined,
-    achevementTravaux: row.achevementTravaux ?? undefined,
-    assistanceTechnique: row.assistanceTechnique ?? undefined,
-    maitreOeuvre: row.maitreOeuvre ?? undefined,
-    progressPct: row.progressPct != null ? Number(row.progressPct) : undefined,
   };
 }
 

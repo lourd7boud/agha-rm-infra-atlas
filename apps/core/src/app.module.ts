@@ -14,6 +14,7 @@ import { IntelModule } from './modules/intel/intel.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { PeopleModule } from './modules/people/people.module';
 import { PortalModule } from './modules/portal/portal.module';
+import { BtpModule } from './modules/project/btp.module';
 import { ProjectModule } from './modules/project/project.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { StockModule } from './modules/stock/stock.module';
@@ -48,6 +49,7 @@ export class HealthController {
     AgentsModule,
     AuditModule,
     BrainModule,
+    BtpModule,
     DigestModule,
     EquipmentModule,
     ExpertModule,
