@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import {
   avenants,
@@ -264,6 +264,15 @@ export interface CreateDecompte {
   statut?: string;
 }
 
+/** One métré to persist for a (bordereau line × période). */
+export interface MetreSaveInput {
+  bordereauLigneId: string;
+  designation?: string;
+  unite?: string;
+  data: unknown;
+  totalQuantite: number;
+}
+
 export const PROJECT_REPOSITORY = Symbol('PROJECT_REPOSITORY');
 
 export interface ProjectRepository {
@@ -305,6 +314,14 @@ export interface ProjectRepository {
   upsertBordereau(projectId: string, lignes: unknown[]): Promise<BordereauRecord>;
   createPeriode(input: CreatePeriode): Promise<PeriodeRecord>;
   createDecompte(input: CreateDecompte): Promise<DecompteRecord>;
+  /** Replace all métrés of a (project, période) with the provided set. */
+  saveMetres(
+    projectId: string,
+    periodeId: string,
+    metres: MetreSaveInput[],
+  ): Promise<MetreRecord[]>;
+  /** Create or replace the décompte of a période (periodeId required). */
+  upsertDecompteForPeriode(input: CreateDecompte): Promise<DecompteRecord>;
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
@@ -484,8 +501,8 @@ export class InMemoryProjectRepository implements ProjectRepository {
   async listRevisionIndexes(): Promise<RevisionIndexRecord[]> {
     return [];
   }
-  async listMetres(): Promise<MetreRecord[]> {
-    return [];
+  async listMetres(projectId: string): Promise<MetreRecord[]> {
+    return this.metresMem.filter((m) => m.projectId === projectId);
   }
   async updateProjectDetails(
     id: string,
@@ -566,6 +583,58 @@ export class InMemoryProjectRepository implements ProjectRepository {
       statut: input.statut ?? 'draft',
     };
     this.decomptesMem = [...this.decomptesMem, record];
+    return record;
+  }
+
+  private metresMem: readonly MetreRecord[] = [];
+
+  async saveMetres(
+    projectId: string,
+    periodeId: string,
+    metres: MetreSaveInput[],
+  ): Promise<MetreRecord[]> {
+    const kept = this.metresMem.filter(
+      (m) => !(m.projectId === projectId && m.periodeId === periodeId),
+    );
+    const added: MetreRecord[] = metres.map((m) => ({
+      id: randomUUID(),
+      projectId,
+      periodeId,
+      bordereauLigneId: m.bordereauLigneId,
+      designation: m.designation,
+      unite: m.unite,
+      totalQuantite: m.totalQuantite,
+      data: m.data,
+    }));
+    this.metresMem = [...kept, ...added];
+    return added;
+  }
+
+  async upsertDecompteForPeriode(input: CreateDecompte): Promise<DecompteRecord> {
+    const existing = this.decomptesMem.find(
+      (d) => d.projectId === input.projectId && d.periodeId === input.periodeId,
+    );
+    const record: DecompteRecord = {
+      id: existing?.id ?? randomUUID(),
+      projectId: input.projectId,
+      periodeId: input.periodeId,
+      numero: existing?.numero ?? input.numero,
+      dateDecompte: input.dateDecompte,
+      lignes: input.lignes,
+      totalHtMad: input.totalHtMad,
+      montantTvaMad: input.montantTvaMad,
+      totalTtcMad: input.totalTtcMad,
+      totalGeneralTtcMad: input.totalGeneralTtcMad,
+      montantCumuleMad: input.montantCumuleMad,
+      montantPrecedentMad: input.montantPrecedentMad,
+      montantActuelMad: input.montantActuelMad,
+      retenueGarantieMad: input.retenueGarantieMad,
+      netAPayerMad: input.netAPayerMad,
+      isDernier: input.isDernier,
+      statut: input.statut ?? 'draft',
+    };
+    const kept = this.decomptesMem.filter((d) => d.id !== record.id);
+    this.decomptesMem = [...kept, record];
     return record;
   }
 }
@@ -1076,6 +1145,55 @@ export class DrizzleProjectRepository implements ProjectRepository {
       isDernier: row.isDernier,
       statut: row.statut,
     };
+  }
+
+  async saveMetres(
+    projectId: string,
+    periodeId: string,
+    metresInput: MetreSaveInput[],
+  ): Promise<MetreRecord[]> {
+    await this.db
+      .delete(metres)
+      .where(and(eq(metres.projectId, projectId), eq(metres.periodeId, periodeId)));
+    if (metresInput.length === 0) return [];
+    const rows = await this.db
+      .insert(metres)
+      .values(
+        metresInput.map((m) => ({
+          projectId,
+          periodeId,
+          bordereauLigneId: m.bordereauLigneId,
+          designation: m.designation,
+          unite: m.unite,
+          data: m.data,
+          totalQuantite: m.totalQuantite.toString(),
+        })),
+      )
+      .returning();
+    return rows.map((r) => ({
+      id: r.id,
+      projectId: r.projectId,
+      periodeId: r.periodeId ?? undefined,
+      bordereauLigneId: r.bordereauLigneId ?? undefined,
+      designation: r.designation ?? undefined,
+      unite: r.unite ?? undefined,
+      totalQuantite: Number(r.totalQuantite),
+      data: r.data,
+    }));
+  }
+
+  async upsertDecompteForPeriode(input: CreateDecompte): Promise<DecompteRecord> {
+    if (input.periodeId) {
+      await this.db
+        .delete(decomptes)
+        .where(
+          and(
+            eq(decomptes.projectId, input.projectId),
+            eq(decomptes.periodeId, input.periodeId),
+          ),
+        );
+    }
+    return this.createDecompte(input);
   }
 }
 

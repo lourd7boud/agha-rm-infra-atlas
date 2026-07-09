@@ -11,6 +11,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { Roles } from '../auth/auth.module';
@@ -19,10 +20,23 @@ import { PeopleModule } from '../people/people.module';
 import { StockModule } from '../stock/stock.module';
 import { buildDecompte } from './decompte.domain';
 import { computeDecompteTotals, computeRecap } from './decompte-finance.domain';
+import {
+  calculatePartiel,
+  computeMetreTotals,
+  type MetreLigneInput,
+  type Unite,
+} from './metre-calc.domain';
+import {
+  generateAttachement,
+  generateDecompteFromMetres,
+  type BordereauLine,
+  type MetreContribution,
+} from './decompte-generation.domain';
 import { ProjectCostService } from './project-cost.service';
 import { ProjectRepositoryModule } from './project-repository.module';
 import {
   PROJECT_REPOSITORY,
+  type PeriodeRecord,
   type ProjectRecord,
   type ProjectRepository,
   type ProjectStatus,
@@ -143,6 +157,32 @@ const decompteInputSchema = z.object({
   dateDecompte: z.coerce.date().optional(),
   isDernier: z.boolean().default(false),
   lignes: z.array(decompteLigneSchema).min(1).max(5000),
+});
+
+const metreLigneSchema = z.object({
+  designation: z.string().max(500).optional(),
+  sectionTitre: z.string().max(300).optional(),
+  sousSectionTitre: z.string().max(300).optional(),
+  longueur: z.number().optional(),
+  largeur: z.number().optional(),
+  profondeur: z.number().optional(),
+  nombre: z.number().optional(),
+  diametre: z.number().optional(),
+  nombreSemblables: z.number().optional(),
+  partiel: z.number().optional(), // direct override of the geometry calc
+});
+/** Save the métré of one période — one entry per bordereau line. */
+const metreSaveSchema = z.object({
+  metres: z
+    .array(
+      z.object({
+        bordereauLigneId: z.string().min(1).max(200),
+        designation: z.string().max(1000).optional(),
+        unite: z.string().max(20),
+        lignes: z.array(metreLigneSchema).max(5000),
+      }),
+    )
+    .max(5000),
 });
 
 /** Chantier lifecycle (construction ops v1). */
@@ -495,6 +535,142 @@ export class ProjectController {
       `decompte.created ${id} n°${created.numero} ttc=${created.totalTtcMad} net=${created.netAPayerMad}`,
     );
     return created;
+  }
+
+  /**
+   * Save the métré of a période (the ONLY quantity input) and AUTO-REBUILD the
+   * décompte: quantité réalisée per bordereau line = cumulative Σ métré partiels
+   * over périodes ≤ current. Partiels are computed server-side per unité.
+   */
+  @Roles('travaux', 'direction', 'admin-si')
+  @Post('projects/:id/periodes/:periodeId/metres')
+  async saveMetres(
+    @Param('id') id: string,
+    @Param('periodeId') periodeId: string,
+    @Body() body: unknown,
+  ) {
+    const parsed = metreSaveSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    await this.findOr404(id);
+    const periodes = await this.repository.listPeriodes(id);
+    const current = periodes.find((p) => p.id === periodeId);
+    if (!current) throw new NotFoundException(`Période introuvable: ${periodeId}`);
+
+    const metreInputs = parsed.data.metres.map((m) => {
+      const unite = m.unite as Unite;
+      const lignes = m.lignes.map((l) => ({
+        ...l,
+        partiel:
+          l.partiel !== undefined
+            ? l.partiel
+            : calculatePartiel(unite, l as MetreLigneInput),
+      }));
+      const totals = computeMetreTotals(
+        lignes.map((l) => l.partiel),
+        0,
+        0,
+      );
+      return {
+        bordereauLigneId: m.bordereauLigneId,
+        designation: m.designation,
+        unite: m.unite,
+        data: { lignes },
+        totalQuantite: totals.totalPartiel,
+      };
+    });
+    await this.repository.saveMetres(id, periodeId, metreInputs);
+    const decompte = await this.rebuildDecompte(id, periodeId, periodes);
+    new Logger('Project').log(
+      `metre.saved ${id} periode=${current.numero} -> decompte ttc=${decompte?.totalTtcMad ?? 0}`,
+    );
+    return { ok: true, decompte };
+  }
+
+  /** Attachement provisoire — cumulative quantities per bordereau line (no prices). */
+  @Roles('travaux', 'direction', 'finance', 'marches', 'admin-si')
+  @Get('projects/:id/attachement')
+  async attachement(@Param('id') id: string, @Query('periodeId') periodeId?: string) {
+    await this.findOr404(id);
+    const periodes = await this.repository.listPeriodes(id);
+    const current = periodeId
+      ? periodes.find((p) => p.id === periodeId)
+      : periodes[periodes.length - 1];
+    if (!current) return { periode: null, lignes: [] };
+    const { bordereau, contributions } = await this.metreContext(id, periodes);
+    return {
+      periode: { id: current.id, numero: current.numero },
+      lignes: generateAttachement(bordereau, contributions, current.numero),
+    };
+  }
+
+  /** Bordereau lines + métré contributions shared by the generators. */
+  private async metreContext(
+    projectId: string,
+    periodes: readonly PeriodeRecord[],
+  ): Promise<{ bordereau: BordereauLine[]; contributions: MetreContribution[] }> {
+    const bordereaux = await this.repository.listBordereaux(projectId);
+    const bpu = (bordereaux[0]?.lignes ?? []) as Array<Record<string, unknown>>;
+    const bordereau: BordereauLine[] = bpu.map((l, i) => ({
+      key: String(l.prixNo ?? i + 1),
+      prixNo: l.prixNo as string | number | undefined,
+      designation: l.designation as string | undefined,
+      unite: l.unite as string | undefined,
+      quantite: Number(l.quantite) || 0,
+      prixUnitaire: Number(l.prixUnitaire) || 0,
+    }));
+    const numByPeriode = new Map(periodes.map((p) => [p.id, p.numero]));
+    const allMetres = await this.repository.listMetres(projectId);
+    const contributions: MetreContribution[] = allMetres
+      .filter((m) => m.periodeId && m.bordereauLigneId)
+      .map((m) => ({
+        bordereauLigneKey: m.bordereauLigneId as string,
+        periodeNumero: numByPeriode.get(m.periodeId as string) ?? 0,
+        totalPartiel: m.totalQuantite,
+      }));
+    return { bordereau, contributions };
+  }
+
+  /** Recompute + persist the décompte of a période from the current métrés. */
+  private async rebuildDecompte(
+    projectId: string,
+    periodeId: string,
+    periodes: readonly PeriodeRecord[],
+  ) {
+    const current = periodes.find((p) => p.id === periodeId);
+    if (!current) return null;
+    const { bordereau, contributions } = await this.metreContext(projectId, periodes);
+    const decomptes = await this.repository.listDecomptes(projectId);
+    const numByPeriode = new Map(periodes.map((p) => [p.id, p.numero]));
+    const decomptesPrecedents = decomptes
+      .filter((d) => (numByPeriode.get(d.periodeId ?? '') ?? 0) < current.numero)
+      .reduce((s, d) => s + d.netAPayerMad, 0);
+    const gen = generateDecompteFromMetres({
+      bordereau,
+      metres: contributions,
+      currentPeriodeNumero: current.numero,
+      tauxTva: current.tauxTva,
+      isDernier: current.isDecompteDernier,
+      depensesExercicesAnterieurs: current.depensesExercicesAnterieurs,
+      decomptesPrecedents,
+    });
+    const existing = decomptes.find((d) => d.periodeId === current.id);
+    return this.repository.upsertDecompteForPeriode({
+      projectId,
+      periodeId: current.id,
+      numero: existing?.numero ?? current.numero,
+      lignes: gen.lignes,
+      totalHtMad: gen.totalHtMad,
+      montantTvaMad: gen.montantTvaMad,
+      totalTtcMad: gen.totalTtcMad,
+      totalGeneralTtcMad: gen.totalTtcMad,
+      montantCumuleMad: gen.totalTtcMad,
+      montantPrecedentMad: decomptesPrecedents,
+      montantActuelMad: gen.netAPayerMad,
+      retenueGarantieMad: gen.retenueGarantieMad,
+      netAPayerMad: gen.netAPayerMad,
+      isDernier: current.isDecompteDernier,
+      statut: existing?.statut ?? 'draft',
+    });
   }
 
   /** Add a tâche de chantier (physical work-breakdown item). */
