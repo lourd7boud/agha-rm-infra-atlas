@@ -11,6 +11,7 @@ import {
   type JournalResponse,
   type Metre,
   type Paged,
+  type Periode,
   type ProjectCost,
   type ProjectLabor,
   type ProjectSummary,
@@ -40,6 +41,14 @@ import {
   MetreSection,
   RevisionSection,
 } from './sections/ExecutionSections';
+import {
+  BordereauEditor,
+  DecompteCreator,
+  PeriodeCreator,
+  type DecompteInput,
+  type PeriodeInput,
+} from './sections/EditorSections';
+import type { BordereauLigne } from '@/lib/projects';
 
 // Turn an action failure into user-visible feedback: log the real cause
 // server-side, then redirect back to the project with a stable error code the
@@ -157,6 +166,7 @@ export default async function ProjectDetailPage({
     decomptes,
     revision,
     metres,
+    periodes,
   ] = await Promise.all([
     apiGet<ProjectDetail>(`/project/projects/${id}`),
     apiGet<JournalResponse>(`/field/projects/${id}/logs`),
@@ -176,6 +186,9 @@ export default async function ProjectDetailPage({
       () => ({ config: null, formulas: [], indexes: [] }) as RevisionResponse,
     ),
     apiGet<Metre[]>(`/project/projects/${id}/metres`).catch(() => [] as Metre[]),
+    apiGet<Periode[]>(`/project/projects/${id}/periodes`).catch(
+      () => [] as Periode[],
+    ),
   ]);
   // projectEquipment carries each machine's open assignment inline (affecté-le /
   // retour-prévu) from a single list call — no per-machine getEquipment fetch.
@@ -239,6 +252,25 @@ export default async function ProjectDetailPage({
     } catch (error) {
       failToProject(id, 'updateDetails', error);
     }
+    revalidatePath(`/projects/${id}`);
+    revalidatePath('/projects');
+  }
+
+  async function saveBordereau(lignes: BordereauLigne[]) {
+    'use server';
+    await apiPost(`/project/projects/${id}/bordereau`, { lignes });
+    revalidatePath(`/projects/${id}`);
+  }
+
+  async function createPeriode(input: PeriodeInput) {
+    'use server';
+    await apiPost(`/project/projects/${id}/periodes`, input);
+    revalidatePath(`/projects/${id}`);
+  }
+
+  async function createDecompte(input: DecompteInput) {
+    'use server';
+    await apiPost(`/project/projects/${id}/decomptes`, input);
     revalidatePath(`/projects/${id}`);
     revalidatePath('/projects');
   }
@@ -461,7 +493,21 @@ export default async function ProjectDetailPage({
 
       <BordereauSection bordereaux={bordereaux} />
 
+      <BordereauEditor bordereaux={bordereaux} saveBordereau={saveBordereau} />
+
       <MetreSection metres={metres} />
+
+      <PeriodeCreator
+        nextNumero={(periodes[periodes.length - 1]?.numero ?? 0) + 1}
+        createPeriode={createPeriode}
+      />
+
+      <DecompteCreator
+        periodes={periodes}
+        bordereaux={bordereaux}
+        decomptes={decomptes}
+        createDecompte={createDecompte}
+      />
 
       <RevisionSection revision={revision} />
 
