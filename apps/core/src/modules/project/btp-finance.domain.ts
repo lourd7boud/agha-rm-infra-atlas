@@ -259,8 +259,10 @@ export function computeDecompte(input: DecompteComputationInput): DecompteComput
 
 /**
  * Financial progress % — the source app's ProjectsPage formula:
- * dernier décompte's cumulative TTC ÷ marché TTC × 100 (uncapped; the list UI
- * caps at 100, the detail header shows the overrun).
+ * dernier décompte's cumulative TTC ÷ marché TTC × 100. The UI caps the bar at
+ * 100 and shows the overrun; here we only cap at 999.99 because progress_pct
+ * is numeric(5,2) — degenerate data (a tiny test marché with a real décompte)
+ * must not overflow the column and fail the whole chain rebuild.
  */
 export function computeProgressPct(
   dernierTotalTtc: number,
@@ -268,5 +270,8 @@ export function computeProgressPct(
 ): number {
   const marcheTtc = computeMarcheTtcInternal(bordereauLignes);
   if (marcheTtc.isZero()) return 0;
-  return toNumber(toDecimal(dernierTotalTtc).dividedBy(marcheTtc).times(100).toDecimalPlaces(2));
+  const pct = toNumber(
+    toDecimal(dernierTotalTtc).dividedBy(marcheTtc).times(100).toDecimalPlaces(2),
+  );
+  return Math.min(Math.max(pct, 0), 999.99);
 }
