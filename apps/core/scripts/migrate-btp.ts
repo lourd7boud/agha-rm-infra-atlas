@@ -793,7 +793,7 @@ async function main(): Promise<void> {
 
   const formulaIdMap = await migrateRevisionReference();
 
-  const legacyProjects = await q<LegacyProject>(
+  const legacyProjects = await qL<LegacyProject>(
     `select * from "${L}".projects order by created_at asc`,
   );
   console.log(`${legacyProjects.length} projets legacy à traiter…`);
