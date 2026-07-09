@@ -229,6 +229,41 @@ export interface ProjectDetailsPatch {
   progressPct?: number;
 }
 
+export interface CreatePeriode {
+  projectId: string;
+  numero: number;
+  libelle?: string;
+  dateDebut?: Date;
+  dateFin?: Date;
+  tauxTva: number;
+  tauxRetenue: number;
+  decomptesPrecedents: number;
+  depensesExercicesAnterieurs: number;
+  isDecompteDernier: boolean;
+  statut?: string;
+  observations?: string;
+}
+
+/** Décompte to persist — totals are computed by the finance domain in the service. */
+export interface CreateDecompte {
+  projectId: string;
+  periodeId?: string;
+  numero: number;
+  dateDecompte?: Date;
+  lignes: unknown[];
+  totalHtMad: number;
+  montantTvaMad: number;
+  totalTtcMad: number;
+  totalGeneralTtcMad: number;
+  montantCumuleMad: number;
+  montantPrecedentMad: number;
+  montantActuelMad: number;
+  retenueGarantieMad: number;
+  netAPayerMad: number;
+  isDernier: boolean;
+  statut?: string;
+}
+
 export const PROJECT_REPOSITORY = Symbol('PROJECT_REPOSITORY');
 
 export interface ProjectRepository {
@@ -267,6 +302,9 @@ export interface ProjectRepository {
     id: string,
     patch: ProjectDetailsPatch,
   ): Promise<ProjectRecord | null>;
+  upsertBordereau(projectId: string, lignes: unknown[]): Promise<BordereauRecord>;
+  createPeriode(input: CreatePeriode): Promise<PeriodeRecord>;
+  createDecompte(input: CreateDecompte): Promise<DecompteRecord>;
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
@@ -420,14 +458,22 @@ export class InMemoryProjectRepository implements ProjectRepository {
 
   // Execution-detail reads — empty in the in-memory dev fallback (these surfaces
   // are only meaningful against the real migrated Postgres data).
-  async listBordereaux(): Promise<BordereauRecord[]> {
-    return [];
+  private bordereauxMem: readonly BordereauRecord[] = [];
+  private periodesMem: readonly PeriodeRecord[] = [];
+  private decomptesMem: readonly DecompteRecord[] = [];
+
+  async listBordereaux(projectId: string): Promise<BordereauRecord[]> {
+    return this.bordereauxMem.filter((b) => b.projectId === projectId);
   }
-  async listPeriodes(): Promise<PeriodeRecord[]> {
-    return [];
+  async listPeriodes(projectId: string): Promise<PeriodeRecord[]> {
+    return this.periodesMem
+      .filter((p) => p.projectId === projectId)
+      .sort((a, b) => a.numero - b.numero);
   }
-  async listDecomptes(): Promise<DecompteRecord[]> {
-    return [];
+  async listDecomptes(projectId: string): Promise<DecompteRecord[]> {
+    return this.decomptesMem
+      .filter((d) => d.projectId === projectId)
+      .sort((a, b) => a.numero - b.numero);
   }
   async getRevisionConfig(): Promise<RevisionConfigRecord | null> {
     return null;
@@ -453,6 +499,74 @@ export class InMemoryProjectRepository implements ProjectRepository {
     const updated: ProjectRecord = { ...existing, ...clean };
     this.projects = this.projects.map((p) => (p.id === id ? updated : p));
     return updated;
+  }
+
+  async upsertBordereau(
+    projectId: string,
+    lignes: unknown[],
+  ): Promise<BordereauRecord> {
+    const now = new Date();
+    const existing = this.bordereauxMem.find((b) => b.projectId === projectId);
+    if (existing) {
+      const updated: BordereauRecord = { ...existing, lignes, updatedAt: now };
+      this.bordereauxMem = this.bordereauxMem.map((b) =>
+        b.id === existing.id ? updated : b,
+      );
+      return updated;
+    }
+    const record: BordereauRecord = {
+      id: randomUUID(),
+      projectId,
+      lignes,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.bordereauxMem = [...this.bordereauxMem, record];
+    return record;
+  }
+
+  async createPeriode(input: CreatePeriode): Promise<PeriodeRecord> {
+    const record: PeriodeRecord = {
+      id: randomUUID(),
+      projectId: input.projectId,
+      numero: input.numero,
+      libelle: input.libelle,
+      dateDebut: input.dateDebut,
+      dateFin: input.dateFin,
+      tauxTva: input.tauxTva,
+      tauxRetenue: input.tauxRetenue,
+      decomptesPrecedents: input.decomptesPrecedents,
+      depensesExercicesAnterieurs: input.depensesExercicesAnterieurs,
+      isDecompteDernier: input.isDecompteDernier,
+      statut: input.statut ?? 'en_cours',
+      observations: input.observations,
+    };
+    this.periodesMem = [...this.periodesMem, record];
+    return record;
+  }
+
+  async createDecompte(input: CreateDecompte): Promise<DecompteRecord> {
+    const record: DecompteRecord = {
+      id: randomUUID(),
+      projectId: input.projectId,
+      periodeId: input.periodeId,
+      numero: input.numero,
+      dateDecompte: input.dateDecompte,
+      lignes: input.lignes,
+      totalHtMad: input.totalHtMad,
+      montantTvaMad: input.montantTvaMad,
+      totalTtcMad: input.totalTtcMad,
+      totalGeneralTtcMad: input.totalGeneralTtcMad,
+      montantCumuleMad: input.montantCumuleMad,
+      montantPrecedentMad: input.montantPrecedentMad,
+      montantActuelMad: input.montantActuelMad,
+      retenueGarantieMad: input.retenueGarantieMad,
+      netAPayerMad: input.netAPayerMad,
+      isDernier: input.isDernier,
+      statut: input.statut ?? 'draft',
+    };
+    this.decomptesMem = [...this.decomptesMem, record];
+    return record;
   }
 }
 
@@ -856,6 +970,112 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .where(eq(projects.id, id))
       .returning();
     return row ? toProject(row) : null;
+  }
+
+  async upsertBordereau(
+    projectId: string,
+    lignes: unknown[],
+  ): Promise<BordereauRecord> {
+    const [existing] = await this.db
+      .select({ id: bordereaux.id })
+      .from(bordereaux)
+      .where(eq(bordereaux.projectId, projectId))
+      .limit(1);
+    const [row] = existing
+      ? await this.db
+          .update(bordereaux)
+          .set({ lignes, updatedAt: new Date() })
+          .where(eq(bordereaux.id, existing.id))
+          .returning()
+      : await this.db.insert(bordereaux).values({ projectId, lignes }).returning();
+    if (!row) throw new Error('Bordereau upsert returned no row');
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      lignes: Array.isArray(row.lignes) ? (row.lignes as unknown[]) : [],
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  async createPeriode(input: CreatePeriode): Promise<PeriodeRecord> {
+    const [row] = await this.db
+      .insert(periodes)
+      .values({
+        projectId: input.projectId,
+        numero: input.numero,
+        libelle: input.libelle,
+        dateDebut: input.dateDebut,
+        dateFin: input.dateFin,
+        tauxTva: input.tauxTva.toString(),
+        tauxRetenue: input.tauxRetenue.toString(),
+        decomptesPrecedents: input.decomptesPrecedents.toString(),
+        depensesExercicesAnterieurs: input.depensesExercicesAnterieurs.toString(),
+        isDecompteDernier: input.isDecompteDernier,
+        statut: input.statut ?? 'en_cours',
+        observations: input.observations,
+      })
+      .returning();
+    if (!row) throw new Error('Periode insert returned no row');
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      numero: row.numero,
+      libelle: row.libelle ?? undefined,
+      dateDebut: row.dateDebut ?? undefined,
+      dateFin: row.dateFin ?? undefined,
+      tauxTva: Number(row.tauxTva),
+      tauxRetenue: Number(row.tauxRetenue),
+      decomptesPrecedents: Number(row.decomptesPrecedents),
+      depensesExercicesAnterieurs: Number(row.depensesExercicesAnterieurs),
+      isDecompteDernier: row.isDecompteDernier,
+      statut: row.statut,
+      observations: row.observations ?? undefined,
+    };
+  }
+
+  async createDecompte(input: CreateDecompte): Promise<DecompteRecord> {
+    const [row] = await this.db
+      .insert(decomptes)
+      .values({
+        projectId: input.projectId,
+        periodeId: input.periodeId,
+        numero: input.numero,
+        dateDecompte: input.dateDecompte,
+        lignes: input.lignes,
+        totalHtMad: input.totalHtMad.toString(),
+        montantTvaMad: input.montantTvaMad.toString(),
+        totalTtcMad: input.totalTtcMad.toString(),
+        totalGeneralTtcMad: input.totalGeneralTtcMad.toString(),
+        montantCumuleMad: input.montantCumuleMad.toString(),
+        montantPrecedentMad: input.montantPrecedentMad.toString(),
+        montantActuelMad: input.montantActuelMad.toString(),
+        retenueGarantieMad: input.retenueGarantieMad.toString(),
+        netAPayerMad: input.netAPayerMad.toString(),
+        isDernier: input.isDernier,
+        statut: input.statut ?? 'draft',
+      })
+      .returning();
+    if (!row) throw new Error('Decompte insert returned no row');
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      periodeId: row.periodeId ?? undefined,
+      numero: row.numero,
+      dateDecompte: row.dateDecompte ?? undefined,
+      lignes: Array.isArray(row.lignes) ? (row.lignes as unknown[]) : [],
+      totalHtMad: Number(row.totalHtMad),
+      montantTvaMad: Number(row.montantTvaMad),
+      totalTtcMad: Number(row.totalTtcMad),
+      totalGeneralTtcMad: Number(row.totalGeneralTtcMad),
+      montantCumuleMad: Number(row.montantCumuleMad),
+      montantPrecedentMad: Number(row.montantPrecedentMad),
+      montantActuelMad: Number(row.montantActuelMad),
+      retenueGarantieMad: Number(row.retenueGarantieMad),
+      netAPayerMad: Number(row.netAPayerMad),
+      isDernier: row.isDernier,
+      statut: row.statut,
+    };
   }
 }
 

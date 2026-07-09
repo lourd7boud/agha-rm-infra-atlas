@@ -18,6 +18,7 @@ import { FinanceModule } from '../finance/finance.module';
 import { PeopleModule } from '../people/people.module';
 import { StockModule } from '../stock/stock.module';
 import { buildDecompte } from './decompte.domain';
+import { computeDecompteTotals, computeRecap } from './decompte-finance.domain';
 import { ProjectCostService } from './project-cost.service';
 import { ProjectRepositoryModule } from './project-repository.module';
 import {
@@ -103,6 +104,46 @@ const projectDetailsSchema = z
   .refine((patch) => Object.keys(patch).length > 0, {
     message: 'Au moins un champ à modifier est requis',
   });
+
+const bordereauLigneSchema = z.object({
+  prixNo: z.union([z.string(), z.number()]).optional(),
+  designation: z.string().max(1000).optional(),
+  unite: z.string().max(60).optional(),
+  quantite: z.number().optional(),
+  prixUnitaire: z.number().optional(),
+  montant: z.number().optional(),
+});
+const bordereauSchema = z.object({
+  lignes: z.array(bordereauLigneSchema).max(5000),
+});
+
+const periodeInputSchema = z.object({
+  numero: z.number().int().min(1).max(1000),
+  libelle: z.string().max(255).optional(),
+  dateDebut: z.coerce.date().optional(),
+  dateFin: z.coerce.date().optional(),
+  tauxTva: z.number().min(0).max(100).default(20),
+  tauxRetenue: z.number().min(0).max(100).default(10),
+  decomptesPrecedents: z.number().min(0).max(10_000_000_000).default(0),
+  depensesExercicesAnterieurs: z.number().min(0).max(10_000_000_000).default(0),
+  isDecompteDernier: z.boolean().default(false),
+  observations: z.string().max(2000).optional(),
+});
+
+const decompteLigneSchema = z.object({
+  prixNo: z.union([z.string(), z.number()]).optional(),
+  designation: z.string().max(1000).optional(),
+  unite: z.string().max(60).optional(),
+  quantiteBordereau: z.number().optional(),
+  quantiteRealisee: z.number().min(0).max(1_000_000_000),
+  prixUnitaireHT: z.number().min(0).max(1_000_000_000),
+});
+const decompteInputSchema = z.object({
+  periodeId: z.string().uuid().optional(),
+  dateDecompte: z.coerce.date().optional(),
+  isDernier: z.boolean().default(false),
+  lignes: z.array(decompteLigneSchema).min(1).max(5000),
+});
 
 /** Chantier lifecycle (construction ops v1). */
 const PROJECT_TRANSITIONS: Record<ProjectStatus, ProjectStatus[]> = {
@@ -362,6 +403,98 @@ export class ProjectController {
     if (!updated) throw new NotFoundException(`Project not found: ${id}`);
     new Logger('Project').log(`project.details.updated ${id}`);
     return updated;
+  }
+
+  /** Upsert the chantier's bordereau des prix (BPU). */
+  @Roles('travaux', 'direction', 'admin-si')
+  @Post('projects/:id/bordereau')
+  async saveBordereau(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = bordereauSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    await this.findOr404(id);
+    return this.repository.upsertBordereau(id, parsed.data.lignes);
+  }
+
+  /** Create a période de travaux for the chantier. */
+  @Roles('travaux', 'direction', 'admin-si')
+  @Post('projects/:id/periodes')
+  async createPeriode(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = periodeInputSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    await this.findOr404(id);
+    const existing = await this.repository.listPeriodes(id);
+    if (existing.some((p) => p.numero === parsed.data.numero)) {
+      throw new ConflictException(
+        `Une période N°${parsed.data.numero} existe déjà pour ce chantier`,
+      );
+    }
+    return this.repository.createPeriode({ projectId: id, ...parsed.data });
+  }
+
+  /**
+   * Create a décompte — HT/TVA/TTC and the récapitulatif (retenue de garantie,
+   * net à payer) are computed server-side by the Excel-compliant finance engine
+   * from the entered realized quantities and the période's TVA/retenue rates.
+   */
+  @Roles('travaux', 'direction')
+  @Post('projects/:id/decomptes')
+  async createDecompte(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = decompteInputSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    await this.findOr404(id);
+
+    const periode = parsed.data.periodeId
+      ? (await this.repository.listPeriodes(id)).find(
+          (p) => p.id === parsed.data.periodeId,
+        )
+      : undefined;
+    if (parsed.data.periodeId && !periode) {
+      throw new NotFoundException(`Période introuvable: ${parsed.data.periodeId}`);
+    }
+    const decomptes = await this.repository.listDecomptes(id);
+    if (
+      parsed.data.periodeId &&
+      decomptes.some((d) => d.periodeId === parsed.data.periodeId)
+    ) {
+      throw new ConflictException('Un décompte existe déjà pour cette période');
+    }
+
+    const tauxTva = periode?.tauxTva ?? 20;
+    const tauxRetenue = periode?.tauxRetenue ?? 10;
+    const decomptesPrecedents = periode?.decomptesPrecedents ?? 0;
+    const depensesExercicesAnterieurs = periode?.depensesExercicesAnterieurs ?? 0;
+
+    const totals = computeDecompteTotals(parsed.data.lignes, tauxTva);
+    const recap = computeRecap({
+      totalTtcMad: totals.totalTtcMad,
+      tauxRetenue,
+      decomptesPrecedents,
+      depensesExercicesAnterieurs,
+    });
+    const numero = (decomptes[decomptes.length - 1]?.numero ?? 0) + 1;
+
+    const created = await this.repository.createDecompte({
+      projectId: id,
+      periodeId: parsed.data.periodeId,
+      numero,
+      dateDecompte: parsed.data.dateDecompte,
+      lignes: totals.lignes,
+      totalHtMad: totals.totalHtMad,
+      montantTvaMad: totals.montantTvaMad,
+      totalTtcMad: totals.totalTtcMad,
+      totalGeneralTtcMad: totals.totalTtcMad,
+      montantCumuleMad: totals.totalTtcMad,
+      montantPrecedentMad: decomptesPrecedents,
+      montantActuelMad: recap.montantActuelMad,
+      retenueGarantieMad: recap.retenueGarantieMad,
+      netAPayerMad: recap.netAPayerMad,
+      isDernier: parsed.data.isDernier,
+      statut: 'draft',
+    });
+    new Logger('Project').log(
+      `decompte.created ${id} n°${created.numero} ttc=${created.totalTtcMad} net=${created.netAPayerMad}`,
+    );
+    return created;
   }
 
   /** Add a tâche de chantier (physical work-breakdown item). */
