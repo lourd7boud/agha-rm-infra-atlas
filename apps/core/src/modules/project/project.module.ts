@@ -169,7 +169,6 @@ const metreLigneSchema = z.object({
   nombre: z.number().optional(),
   diametre: z.number().optional(),
   nombreSemblables: z.number().optional(),
-  partiel: z.number().optional(), // direct override of the geometry calc
 });
 /** Save the métré of one période — one entry per bordereau line. */
 const metreSaveSchema = z.object({
@@ -452,7 +451,34 @@ export class ProjectController {
     const parsed = bordereauSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     await this.findOr404(id);
-    return this.repository.upsertBordereau(id, parsed.data.lignes);
+    const lignes = parsed.data.lignes;
+    // Prix N° is the stable métré join key: require it and keep it unique, so two
+    // lines can't collapse onto one métré (double-count) or drift positionally.
+    const keys = lignes.map((l) => String(l.prixNo ?? '').trim());
+    if (keys.some((k) => k === '')) {
+      throw new BadRequestException(
+        'Chaque ligne du bordereau doit avoir un N° de prix.',
+      );
+    }
+    const dup = keys.find((k, i) => keys.indexOf(k) !== i);
+    if (dup) {
+      throw new BadRequestException(
+        `N° de prix en double: "${dup}". Les N° de prix doivent être uniques.`,
+      );
+    }
+    // Don't silently orphan métrés: block a save that drops/renames a prix N° that
+    // already has métrés (their realized quantités would vanish from the décompte).
+    const orphaned = (await this.repository.listMetres(id))
+      .map((m) => m.bordereauLigneId)
+      .filter((k): k is string => !!k && !keys.includes(k));
+    if (orphaned.length > 0) {
+      const uniq = [...new Set(orphaned)];
+      throw new BadRequestException(
+        `Des métrés existent pour le(s) N° de prix ${uniq.join(', ')}. ` +
+          'Supprimez ces métrés avant de renommer ou retirer ces lignes.',
+      );
+    }
+    return this.repository.upsertBordereau(id, lignes);
   }
 
   /** Create a période de travaux for the chantier. */
@@ -556,14 +582,24 @@ export class ProjectController {
     const current = periodes.find((p) => p.id === periodeId);
     if (!current) throw new NotFoundException(`Période introuvable: ${periodeId}`);
 
+    // The métré is the join key into the bordereau — reject métrés keyed to a
+    // line that doesn't exist so a stale/buggy client can't silently orphan them.
+    const bpuKeys = await this.bordereauKeys(id);
+    for (const m of parsed.data.metres) {
+      if (!bpuKeys.has(m.bordereauLigneId)) {
+        throw new BadRequestException(
+          `Ligne de bordereau inconnue: ${m.bordereauLigneId}`,
+        );
+      }
+    }
+
+    // Partiel is ALWAYS derived server-side from the geometry (the spec invariant:
+    // quantities are only ever geometry-derived; never trust a client-sent value).
     const metreInputs = parsed.data.metres.map((m) => {
       const unite = m.unite as Unite;
       const lignes = m.lignes.map((l) => ({
         ...l,
-        partiel:
-          l.partiel !== undefined
-            ? l.partiel
-            : calculatePartiel(unite, l as MetreLigneInput),
+        partiel: calculatePartiel(unite, l as MetreLigneInput),
       }));
       const totals = computeMetreTotals(
         lignes.map((l) => l.partiel),
@@ -579,7 +615,11 @@ export class ProjectController {
       };
     });
     await this.repository.saveMetres(id, periodeId, metreInputs);
-    const decompte = await this.rebuildDecompte(id, periodeId, periodes);
+    // A décompte is cumulative, so editing this période's métré also shifts the
+    // realized quantities AND the "décomptes précédents" of every LATER période.
+    // Rebuild the current période and all later ones, ascending, so each later
+    // rebuild reads the freshly-persisted earlier nets (telescoping stays exact).
+    const decompte = await this.rebuildDecomptesFrom(id, current.numero, periodes);
     new Logger('Project').log(
       `metre.saved ${id} periode=${current.numero} -> decompte ttc=${decompte?.totalTtcMad ?? 0}`,
     );
@@ -603,14 +643,11 @@ export class ProjectController {
     };
   }
 
-  /** Bordereau lines + métré contributions shared by the generators. */
-  private async metreContext(
-    projectId: string,
-    periodes: readonly PeriodeRecord[],
-  ): Promise<{ bordereau: BordereauLine[]; contributions: MetreContribution[] }> {
-    const bordereaux = await this.repository.listBordereaux(projectId);
-    const bpu = (bordereaux[0]?.lignes ?? []) as Array<Record<string, unknown>>;
-    const bordereau: BordereauLine[] = bpu.map((l, i) => ({
+  /** Map raw BPU jsonb lines to BordereauLine[] with the stable join key (prix N°). */
+  private mapBordereau(
+    bpu: Array<Record<string, unknown>>,
+  ): BordereauLine[] {
+    return bpu.map((l, i) => ({
       key: String(l.prixNo ?? i + 1),
       prixNo: l.prixNo as string | number | undefined,
       designation: l.designation as string | undefined,
@@ -618,6 +655,23 @@ export class ProjectController {
       quantite: Number(l.quantite) || 0,
       prixUnitaire: Number(l.prixUnitaire) || 0,
     }));
+  }
+
+  /** The set of valid bordereau line keys (prix N°) for métré join validation. */
+  private async bordereauKeys(projectId: string): Promise<Set<string>> {
+    const bordereaux = await this.repository.listBordereaux(projectId);
+    const bpu = (bordereaux[0]?.lignes ?? []) as Array<Record<string, unknown>>;
+    return new Set(this.mapBordereau(bpu).map((l) => l.key));
+  }
+
+  /** Bordereau lines + métré contributions shared by the generators. */
+  private async metreContext(
+    projectId: string,
+    periodes: readonly PeriodeRecord[],
+  ): Promise<{ bordereau: BordereauLine[]; contributions: MetreContribution[] }> {
+    const bordereaux = await this.repository.listBordereaux(projectId);
+    const bpu = (bordereaux[0]?.lignes ?? []) as Array<Record<string, unknown>>;
+    const bordereau = this.mapBordereau(bpu);
     const numByPeriode = new Map(periodes.map((p) => [p.id, p.numero]));
     const allMetres = await this.repository.listMetres(projectId);
     const contributions: MetreContribution[] = allMetres
@@ -630,7 +684,31 @@ export class ProjectController {
     return { bordereau, contributions };
   }
 
-  /** Recompute + persist the décompte of a période from the current métrés. */
+  /**
+   * Rebuild the given période AND every later one, in ascending numéro order.
+   * Because a décompte is cumulative (quantités = Σ métrés over périodes ≤ its
+   * own, and its "précédents" = Σ nets of earlier périodes), editing one période
+   * invalidates all later décomptes — so the whole tail must be recomputed, and
+   * ascending order lets each later rebuild read the freshly-persisted earlier nets.
+   * Returns the décompte of the `fromNumero` période.
+   */
+  private async rebuildDecomptesFrom(
+    projectId: string,
+    fromNumero: number,
+    periodes: readonly PeriodeRecord[],
+  ) {
+    const chain = periodes
+      .filter((p) => p.numero >= fromNumero)
+      .sort((a, b) => a.numero - b.numero);
+    let head: Awaited<ReturnType<typeof this.rebuildDecompte>> = null;
+    for (const p of chain) {
+      const d = await this.rebuildDecompte(projectId, p.id, periodes);
+      if (p.numero === fromNumero) head = d;
+    }
+    return head;
+  }
+
+  /** Recompute + persist the décompte of a single période from the current métrés. */
   private async rebuildDecompte(
     projectId: string,
     periodeId: string,
@@ -641,8 +719,15 @@ export class ProjectController {
     const { bordereau, contributions } = await this.metreContext(projectId, periodes);
     const decomptes = await this.repository.listDecomptes(projectId);
     const numByPeriode = new Map(periodes.map((p) => [p.id, p.numero]));
+    // Only earlier périodes' décomptes telescope in — a décompte with no période
+    // (created via the manual endpoint) must NOT be treated as numéro 0/precedent.
     const decomptesPrecedents = decomptes
-      .filter((d) => (numByPeriode.get(d.periodeId ?? '') ?? 0) < current.numero)
+      .filter(
+        (d) =>
+          d.periodeId !== undefined &&
+          numByPeriode.has(d.periodeId) &&
+          (numByPeriode.get(d.periodeId) as number) < current.numero,
+      )
       .reduce((s, d) => s + d.netAPayerMad, 0);
     const gen = generateDecompteFromMetres({
       bordereau,
@@ -658,6 +743,8 @@ export class ProjectController {
       projectId,
       periodeId: current.id,
       numero: existing?.numero ?? current.numero,
+      // Preserve a previously-set establishment date across an amounts-only rebuild.
+      dateDecompte: existing?.dateDecompte,
       lignes: gen.lignes,
       totalHtMad: gen.totalHtMad,
       montantTvaMad: gen.montantTvaMad,

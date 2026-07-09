@@ -107,20 +107,21 @@ export function generateDecompteFromMetres(
   });
 
   const tvaDisplay = trunc2(totalHtInternal.times(toDec(input.tauxTva).dividedBy(100)));
-  const ttcInternal = totalHtInternal.plus(tvaDisplay);
-  const totalTtc = round2(ttcInternal);
+  const totalTtc = round2(totalHtInternal.plus(tvaDisplay));
 
-  // Retenue de garantie = MIN( TRUNC(TTC × 10%), TRUNC(marché TTC × 7%) ).
+  // Retenue de garantie = MIN( TRUNC(TTC × 10%), TRUNC(marché TTC × 7%) ), taken
+  // on the ROUNDED, displayed TTC so the retenue reconciles to 10% of the printed
+  // TTC (matches the sibling manual path computeRecap and the BTP Excel décompte).
   const montantMarcheTtc = input.bordereau.reduce(
     (acc, l) => acc.plus(toDec(l.quantite).times(toDec(l.prixUnitaire)).times(1.2)),
     new Decimal(0),
   );
-  const retenue10 = trunc2(ttcInternal.times(0.1));
+  const retenue10 = trunc2(totalTtc.times(0.1));
   const retenue7 = trunc2(montantMarcheTtc.times(0.07));
   const retenueGarantie = retenue10.lessThan(retenue7) ? retenue10 : retenue7;
 
   const acompte = round2(
-    ttcInternal
+    totalTtc
       .minus(retenueGarantie)
       .minus(toDec(input.depensesExercicesAnterieurs))
       .minus(toDec(input.decomptesPrecedents)),

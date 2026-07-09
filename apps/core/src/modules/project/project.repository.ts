@@ -1152,48 +1152,100 @@ export class DrizzleProjectRepository implements ProjectRepository {
     periodeId: string,
     metresInput: MetreSaveInput[],
   ): Promise<MetreRecord[]> {
-    await this.db
-      .delete(metres)
-      .where(and(eq(metres.projectId, projectId), eq(metres.periodeId, periodeId)));
-    if (metresInput.length === 0) return [];
-    const rows = await this.db
-      .insert(metres)
-      .values(
-        metresInput.map((m) => ({
-          projectId,
-          periodeId,
-          bordereauLigneId: m.bordereauLigneId,
-          designation: m.designation,
-          unite: m.unite,
-          data: m.data,
-          totalQuantite: m.totalQuantite.toString(),
-        })),
-      )
-      .returning();
-    return rows.map((r) => ({
-      id: r.id,
-      projectId: r.projectId,
-      periodeId: r.periodeId ?? undefined,
-      bordereauLigneId: r.bordereauLigneId ?? undefined,
-      designation: r.designation ?? undefined,
-      unite: r.unite ?? undefined,
-      totalQuantite: Number(r.totalQuantite),
-      data: r.data,
-    }));
+    // Atomic replace: a mid-write failure must NOT leave the période's métrés
+    // deleted-but-not-reinserted (which would zero its realized quantities and
+    // corrupt every later décompte's cumulative).
+    return this.db.transaction(async (tx) => {
+      await tx
+        .delete(metres)
+        .where(
+          and(eq(metres.projectId, projectId), eq(metres.periodeId, periodeId)),
+        );
+      if (metresInput.length === 0) return [];
+      const rows = await tx
+        .insert(metres)
+        .values(
+          metresInput.map((m) => ({
+            projectId,
+            periodeId,
+            bordereauLigneId: m.bordereauLigneId,
+            designation: m.designation,
+            unite: m.unite,
+            data: m.data,
+            totalQuantite: m.totalQuantite.toString(),
+          })),
+        )
+        .returning();
+      return rows.map((r) => ({
+        id: r.id,
+        projectId: r.projectId,
+        periodeId: r.periodeId ?? undefined,
+        bordereauLigneId: r.bordereauLigneId ?? undefined,
+        designation: r.designation ?? undefined,
+        unite: r.unite ?? undefined,
+        totalQuantite: Number(r.totalQuantite),
+        data: r.data,
+      }));
+    });
   }
 
   async upsertDecompteForPeriode(input: CreateDecompte): Promise<DecompteRecord> {
-    if (input.periodeId) {
-      await this.db
-        .delete(decomptes)
-        .where(
-          and(
-            eq(decomptes.projectId, input.projectId),
-            eq(decomptes.periodeId, input.periodeId),
-          ),
-        );
-    }
-    return this.createDecompte(input);
+    // Atomic delete-then-insert; the UNIQUE(project_id, periode_id) partial index
+    // (migration 0044) is the hard guard against two concurrent saves creating
+    // duplicate décomptes for one période (which would double-count in précédents).
+    return this.db.transaction(async (tx) => {
+      if (input.periodeId) {
+        await tx
+          .delete(decomptes)
+          .where(
+            and(
+              eq(decomptes.projectId, input.projectId),
+              eq(decomptes.periodeId, input.periodeId),
+            ),
+          );
+      }
+      const [row] = await tx
+        .insert(decomptes)
+        .values({
+          projectId: input.projectId,
+          periodeId: input.periodeId,
+          numero: input.numero,
+          dateDecompte: input.dateDecompte,
+          lignes: input.lignes,
+          totalHtMad: input.totalHtMad.toString(),
+          montantTvaMad: input.montantTvaMad.toString(),
+          totalTtcMad: input.totalTtcMad.toString(),
+          totalGeneralTtcMad: input.totalGeneralTtcMad.toString(),
+          montantCumuleMad: input.montantCumuleMad.toString(),
+          montantPrecedentMad: input.montantPrecedentMad.toString(),
+          montantActuelMad: input.montantActuelMad.toString(),
+          retenueGarantieMad: input.retenueGarantieMad.toString(),
+          netAPayerMad: input.netAPayerMad.toString(),
+          isDernier: input.isDernier,
+          statut: input.statut ?? 'draft',
+        })
+        .returning();
+      if (!row) throw new Error('Decompte upsert returned no row');
+      return {
+        id: row.id,
+        projectId: row.projectId,
+        periodeId: row.periodeId ?? undefined,
+        numero: row.numero,
+        dateDecompte: row.dateDecompte ?? undefined,
+        lignes: Array.isArray(row.lignes) ? (row.lignes as unknown[]) : [],
+        totalHtMad: Number(row.totalHtMad),
+        montantTvaMad: Number(row.montantTvaMad),
+        totalTtcMad: Number(row.totalTtcMad),
+        totalGeneralTtcMad: Number(row.totalGeneralTtcMad),
+        montantCumuleMad: Number(row.montantCumuleMad),
+        montantPrecedentMad: Number(row.montantPrecedentMad),
+        montantActuelMad: Number(row.montantActuelMad),
+        retenueGarantieMad: Number(row.retenueGarantieMad),
+        netAPayerMad: Number(row.netAPayerMad),
+        isDernier: row.isDernier,
+        statut: row.statut,
+      };
+    });
   }
 }
 

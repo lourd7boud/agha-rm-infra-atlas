@@ -102,7 +102,12 @@ export function calculatePartiel(unite: Unite, l: MetreLigneInput): number {
   return result * mult;
 }
 
-/** 2-dp round for on-screen totals (ROUND_HALF_UP-ish; display only). */
+/** 2-dp round for on-screen totals (mirrors the server's ROUND_HALF_UP; display only).
+ *  A fixed Number.EPSILON nudge is too small at métré magnitudes, so exact x.xx5
+ *  midpoints (e.g. 2.175) would round DOWN while the decimal.js server rounds UP.
+ *  Nudging on the ×100 scale by a small absolute epsilon fixes the midpoints
+ *  without falsely bumping genuine x.xx4999… values. */
 export function round2(v: number): number {
-  return Math.round((v + Number.EPSILON) * 100) / 100;
+  const scaled = v * 100;
+  return Math.round(scaled + (scaled >= 0 ? 1e-6 : -1e-6)) / 100;
 }

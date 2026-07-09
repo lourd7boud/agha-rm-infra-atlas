@@ -9,8 +9,10 @@ import {
   pgSchema,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { tenders } from './tender';
 
 export const project = pgSchema('project');
@@ -274,7 +276,16 @@ export const decomptes = project.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index('decompte_project_id_idx').on(table.projectId)],
+  (table) => [
+    index('decompte_project_id_idx').on(table.projectId),
+    // At most one décompte per période (the métré-driven upsert relies on this;
+    // it also blocks concurrent double-saves creating duplicates that would
+    // double-count in the cumulative "décomptes précédents"). Nulls excluded so
+    // manual, période-less décomptes remain allowed.
+    uniqueIndex('decompte_project_periode_uq')
+      .on(table.projectId, table.periodeId)
+      .where(sql`${table.periodeId} is not null`),
+  ],
 );
 
 // Révision des prix — reusable index-revision formula (P = P0·[a + Σ wᵢ·Iᵢ/Iᵢ0]).

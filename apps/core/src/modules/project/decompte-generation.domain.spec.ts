@@ -76,6 +76,26 @@ describe('generateDecompteFromMetres', () => {
     expect(d.travauxTerminesMad).toBe(24000); // isDernier
   });
 
+  test('retenue is 10% of the ROUNDED TTC (reconciles to the printed décompte)', () => {
+    // qté 0.23 × 4348.20 = 1000.086 → TVA trunc 200.01 → TTC round 1200.10.
+    // Retenue must be TRUNC(1200.10×10%)=120.01, NOT TRUNC(1200.096×10%)=120.00,
+    // so it equals 10% of the SHOWN TTC. Large marché → the 10% branch binds.
+    const d = generateDecompteFromMetres({
+      bordereau: [
+        { key: '1', prixNo: 1, unite: 'M³', designation: 'A', quantite: 100, prixUnitaire: 4348.2 },
+      ],
+      metres: [{ bordereauLigneKey: '1', periodeNumero: 1, totalPartiel: 0.23 }],
+      currentPeriodeNumero: 1,
+      tauxTva: 20,
+      isDernier: false,
+      depensesExercicesAnterieurs: 0,
+      decomptesPrecedents: 0,
+    });
+    expect(d.totalTtcMad).toBe(1200.1);
+    expect(d.retenueGarantieMad).toBe(120.01);
+    expect(d.netAPayerMad).toBe(1080.09);
+  });
+
   test('subtracts previous payments from the acompte', () => {
     const d = generateDecompteFromMetres({
       bordereau,

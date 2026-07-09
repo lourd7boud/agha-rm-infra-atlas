@@ -282,6 +282,7 @@ function PeriodeGrid({
   });
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const grandTotalHt = keyed.reduce((sum, { line, key, unite }) => {
     const partiel = round2(
@@ -295,6 +296,25 @@ function PeriodeGrid({
   }, 0);
 
   const onSave = async () => {
+    // Ferraillage guard: a KG/T row with nombre/longueur but no Ø computes a
+    // partiel of 0 and would be silently dropped — surface it instead of a
+    // misleading "métré enregistré".
+    const missingDiametre = keyed.filter(
+      ({ key, unite }) =>
+        (unite === 'KG' || unite === 'T') &&
+        (rowsByLine[key] ?? []).some(
+          (r) => (r.nombre || r.longueur) && !r.diametre,
+        ),
+    );
+    if (missingDiametre.length > 0) {
+      setError(
+        `Diamètre (Ø) requis pour le ferraillage — ligne(s) ${missingDiametre
+          .map(({ key }) => `N°${key}`)
+          .join(', ')}.`,
+      );
+      return;
+    }
+    setError(null);
     setSaving(true);
     try {
       const payload: MetreLinePayload[] = keyed
@@ -309,6 +329,10 @@ function PeriodeGrid({
         .filter((m) => m.lignes.length > 0);
       await saveMetres(periode.id, payload);
       setSavedAt(new Date().toLocaleTimeString('fr-MA'));
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : 'Échec de l’enregistrement du métré.',
+      );
     } finally {
       setSaving(false);
     }
@@ -352,7 +376,15 @@ function PeriodeGrid({
           </button>
         </div>
       </div>
-      {savedAt && (
+      {error && (
+        <p
+          role="alert"
+          className="mt-2 rounded-md border border-clay-soft bg-clay-soft/20 px-3 py-2 text-right text-xs font-medium text-clay"
+        >
+          {error}
+        </p>
+      )}
+      {savedAt && !error && (
         <p className="mt-2 text-right text-xs text-emerald">
           Métré enregistré à {savedAt} — décompte recalculé.
         </p>
