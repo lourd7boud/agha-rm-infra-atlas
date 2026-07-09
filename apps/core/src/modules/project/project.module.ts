@@ -280,6 +280,43 @@ export class ProjectController {
     return this.repository.listAvenants(id);
   }
 
+  /** Bordereau des prix (BPU) lines for a chantier. */
+  @Roles('travaux', 'direction', 'finance', 'marches', 'admin-si')
+  @Get('projects/:id/bordereaux')
+  async listBordereaux(@Param('id') id: string) {
+    await this.findOr404(id);
+    return this.repository.listBordereaux(id);
+  }
+
+  /** Périodes (billing periods) of a chantier. */
+  @Roles('travaux', 'direction', 'finance', 'marches', 'admin-si')
+  @Get('projects/:id/periodes')
+  async listPeriodes(@Param('id') id: string) {
+    await this.findOr404(id);
+    return this.repository.listPeriodes(id);
+  }
+
+  /** Décomptes (line-item, BTP-style) of a chantier. */
+  @Roles('travaux', 'direction', 'finance', 'marches', 'admin-si')
+  @Get('projects/:id/decomptes')
+  async listDecomptes(@Param('id') id: string) {
+    await this.findOr404(id);
+    return this.repository.listDecomptes(id);
+  }
+
+  /** Révision des prix: per-project config + reference formulas + monthly indexes. */
+  @Roles('travaux', 'direction', 'finance', 'marches', 'admin-si')
+  @Get('projects/:id/revision')
+  async revision(@Param('id') id: string) {
+    await this.findOr404(id);
+    const [config, formulas, indexes] = await Promise.all([
+      this.repository.getRevisionConfig(id),
+      this.repository.listRevisionFormulas(),
+      this.repository.listRevisionIndexes(),
+    ]);
+    return { config, formulas, indexes };
+  }
+
   /** Add a tâche de chantier (physical work-breakdown item). */
   @Roles('travaux', 'direction', 'terrain', 'admin-si')
   @Post('projects/:id/tasks')

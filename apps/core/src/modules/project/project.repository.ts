@@ -1,7 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { asc, desc, eq } from 'drizzle-orm';
 import type { Db } from '../../db/client';
-import { avenants, projects, situations, tasks } from '../../db/schema';
+import {
+  avenants,
+  bordereaux,
+  decomptes,
+  periodes,
+  projectRevisionConfig,
+  projects,
+  revisionFormulas,
+  revisionIndexes,
+  situations,
+  tasks,
+} from '../../db/schema';
 import { normalizeTaskPatch, type TaskPatch, type TaskStatus } from './task.domain';
 
 export type ProjectStatus =
@@ -27,6 +38,22 @@ export interface ProjectRecord extends CreateProject {
   id: string;
   status: ProjectStatus;
   createdAt: Date;
+  // Marché-de-travaux detail fields ported from the BTP app (nullable on
+  // manually-created chantiers; populated on migrated ones).
+  objet?: string;
+  annee?: string;
+  societe?: string;
+  commune?: string;
+  typeMarche?: string;
+  modePassation?: string;
+  delaiExecutionJours?: number;
+  dateOuverture?: Date;
+  receptionProvisoire?: Date;
+  receptionDefinitive?: Date;
+  achevementTravaux?: Date;
+  assistanceTechnique?: string;
+  maitreOeuvre?: string;
+  progressPct?: number;
 }
 
 export interface CreateSituation {
@@ -96,6 +123,79 @@ export interface TaskRecord {
   updatedAt: Date;
 }
 
+// ── Execution-detail records (bordereau / période / décompte / révision) ──────
+export interface BordereauRecord {
+  id: string;
+  projectId: string;
+  lignes: unknown[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface PeriodeRecord {
+  id: string;
+  projectId: string;
+  numero: number;
+  libelle?: string;
+  dateDebut?: Date;
+  dateFin?: Date;
+  tauxTva: number;
+  tauxRetenue: number;
+  decomptesPrecedents: number;
+  depensesExercicesAnterieurs: number;
+  isDecompteDernier: boolean;
+  statut: string;
+  observations?: string;
+}
+
+export interface DecompteRecord {
+  id: string;
+  projectId: string;
+  periodeId?: string;
+  numero: number;
+  dateDecompte?: Date;
+  lignes: unknown[];
+  totalHtMad: number;
+  montantTvaMad: number;
+  totalTtcMad: number;
+  totalGeneralTtcMad: number;
+  montantCumuleMad: number;
+  montantPrecedentMad: number;
+  montantActuelMad: number;
+  retenueGarantieMad: number;
+  netAPayerMad: number;
+  isDernier: boolean;
+  statut: string;
+}
+
+export interface RevisionFormulaRecord {
+  id: string;
+  name: string;
+  description?: string;
+  fixedPart: number;
+  weights: Record<string, number>;
+  isDefault: boolean;
+  isPublic: boolean;
+}
+
+export interface RevisionIndexRecord {
+  id: string;
+  monthDate: Date;
+  indexValues: Record<string, number>;
+  source?: string;
+  status: string;
+}
+
+export interface RevisionConfigRecord {
+  id: string;
+  projectId: string;
+  formulaId?: string;
+  baseIndexes: Record<string, number>;
+  baseDate?: Date;
+  isEnabled: boolean;
+  notes?: string;
+}
+
 export const PROJECT_REPOSITORY = Symbol('PROJECT_REPOSITORY');
 
 export interface ProjectRepository {
@@ -122,6 +222,13 @@ export interface ProjectRepository {
   listTasksByProject(projectId: string): Promise<TaskRecord[]>;
   findTaskById(id: string): Promise<TaskRecord | null>;
   updateTask(id: string, patch: TaskPatch): Promise<TaskRecord | null>;
+  // Execution detail (bordereau / période / décompte / révision des prix).
+  listBordereaux(projectId: string): Promise<BordereauRecord[]>;
+  listPeriodes(projectId: string): Promise<PeriodeRecord[]>;
+  listDecomptes(projectId: string): Promise<DecompteRecord[]>;
+  getRevisionConfig(projectId: string): Promise<RevisionConfigRecord | null>;
+  listRevisionFormulas(): Promise<RevisionFormulaRecord[]>;
+  listRevisionIndexes(): Promise<RevisionIndexRecord[]>;
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
@@ -271,6 +378,27 @@ export class InMemoryProjectRepository implements ProjectRepository {
     };
     this.tasks = this.tasks.map((t) => (t.id === id ? updated : t));
     return updated;
+  }
+
+  // Execution-detail reads — empty in the in-memory dev fallback (these surfaces
+  // are only meaningful against the real migrated Postgres data).
+  async listBordereaux(): Promise<BordereauRecord[]> {
+    return [];
+  }
+  async listPeriodes(): Promise<PeriodeRecord[]> {
+    return [];
+  }
+  async listDecomptes(): Promise<DecompteRecord[]> {
+    return [];
+  }
+  async getRevisionConfig(): Promise<RevisionConfigRecord | null> {
+    return null;
+  }
+  async listRevisionFormulas(): Promise<RevisionFormulaRecord[]> {
+    return [];
+  }
+  async listRevisionIndexes(): Promise<RevisionIndexRecord[]> {
+    return [];
   }
 }
 
@@ -493,6 +621,119 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .returning();
     return row ? toTask(row) : null;
   }
+
+  async listBordereaux(projectId: string): Promise<BordereauRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(bordereaux)
+      .where(eq(bordereaux.projectId, projectId))
+      .orderBy(asc(bordereaux.createdAt));
+    return rows.map((r) => ({
+      id: r.id,
+      projectId: r.projectId,
+      lignes: Array.isArray(r.lignes) ? (r.lignes as unknown[]) : [],
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    }));
+  }
+
+  async listPeriodes(projectId: string): Promise<PeriodeRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(periodes)
+      .where(eq(periodes.projectId, projectId))
+      .orderBy(asc(periodes.numero));
+    return rows.map((r) => ({
+      id: r.id,
+      projectId: r.projectId,
+      numero: r.numero,
+      libelle: r.libelle ?? undefined,
+      dateDebut: r.dateDebut ?? undefined,
+      dateFin: r.dateFin ?? undefined,
+      tauxTva: Number(r.tauxTva),
+      tauxRetenue: Number(r.tauxRetenue),
+      decomptesPrecedents: Number(r.decomptesPrecedents),
+      depensesExercicesAnterieurs: Number(r.depensesExercicesAnterieurs),
+      isDecompteDernier: r.isDecompteDernier,
+      statut: r.statut,
+      observations: r.observations ?? undefined,
+    }));
+  }
+
+  async listDecomptes(projectId: string): Promise<DecompteRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(decomptes)
+      .where(eq(decomptes.projectId, projectId))
+      .orderBy(asc(decomptes.numero));
+    return rows.map((r) => ({
+      id: r.id,
+      projectId: r.projectId,
+      periodeId: r.periodeId ?? undefined,
+      numero: r.numero,
+      dateDecompte: r.dateDecompte ?? undefined,
+      lignes: Array.isArray(r.lignes) ? (r.lignes as unknown[]) : [],
+      totalHtMad: Number(r.totalHtMad),
+      montantTvaMad: Number(r.montantTvaMad),
+      totalTtcMad: Number(r.totalTtcMad),
+      totalGeneralTtcMad: Number(r.totalGeneralTtcMad),
+      montantCumuleMad: Number(r.montantCumuleMad),
+      montantPrecedentMad: Number(r.montantPrecedentMad),
+      montantActuelMad: Number(r.montantActuelMad),
+      retenueGarantieMad: Number(r.retenueGarantieMad),
+      netAPayerMad: Number(r.netAPayerMad),
+      isDernier: r.isDernier,
+      statut: r.statut,
+    }));
+  }
+
+  async getRevisionConfig(projectId: string): Promise<RevisionConfigRecord | null> {
+    const [r] = await this.db
+      .select()
+      .from(projectRevisionConfig)
+      .where(eq(projectRevisionConfig.projectId, projectId))
+      .limit(1);
+    if (!r) return null;
+    return {
+      id: r.id,
+      projectId: r.projectId,
+      formulaId: r.formulaId ?? undefined,
+      baseIndexes: (r.baseIndexes ?? {}) as Record<string, number>,
+      baseDate: r.baseDate ?? undefined,
+      isEnabled: r.isEnabled,
+      notes: r.notes ?? undefined,
+    };
+  }
+
+  async listRevisionFormulas(): Promise<RevisionFormulaRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(revisionFormulas)
+      .orderBy(asc(revisionFormulas.name));
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description ?? undefined,
+      fixedPart: Number(r.fixedPart),
+      weights: (r.weights ?? {}) as Record<string, number>,
+      isDefault: r.isDefault,
+      isPublic: r.isPublic,
+    }));
+  }
+
+  async listRevisionIndexes(): Promise<RevisionIndexRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(revisionIndexes)
+      .orderBy(desc(revisionIndexes.monthDate));
+    return rows.map((r) => ({
+      id: r.id,
+      monthDate: r.monthDate,
+      indexValues: (r.indexValues ?? {}) as Record<string, number>,
+      source: r.source ?? undefined,
+      status: r.status,
+    }));
+  }
 }
 
 type ProjectRow = typeof projects.$inferSelect;
@@ -511,6 +752,20 @@ function toProject(row: ProjectRow): ProjectRecord {
     delaiMois: row.delaiMois ? Number(row.delaiMois) : undefined,
     status: row.status as ProjectStatus,
     createdAt: row.createdAt,
+    objet: row.objet ?? undefined,
+    annee: row.annee ?? undefined,
+    societe: row.societe ?? undefined,
+    commune: row.commune ?? undefined,
+    typeMarche: row.typeMarche ?? undefined,
+    modePassation: row.modePassation ?? undefined,
+    delaiExecutionJours: row.delaiExecutionJours ?? undefined,
+    dateOuverture: row.dateOuverture ?? undefined,
+    receptionProvisoire: row.receptionProvisoire ?? undefined,
+    receptionDefinitive: row.receptionDefinitive ?? undefined,
+    achevementTravaux: row.achevementTravaux ?? undefined,
+    assistanceTechnique: row.assistanceTechnique ?? undefined,
+    maitreOeuvre: row.maitreOeuvre ?? undefined,
+    progressPct: row.progressPct != null ? Number(row.progressPct) : undefined,
   };
 }
 

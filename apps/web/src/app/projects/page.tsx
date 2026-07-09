@@ -21,14 +21,46 @@ export default async function ProjectsPage() {
     costSummary.map((cost) => [cost.projectId, cost]),
   );
 
+  // Portfolio KPIs (computed from the list — no extra query).
+  const total = projects.length;
+  const enCours = projects.filter((p) => p.status === 'en_cours').length;
+  const receptionnes = projects.filter(
+    (p) => p.status === 'receptionne' || p.status === 'clos',
+  ).length;
+  const enPreparation = projects.filter((p) => p.status === 'preparation').length;
+  const montantTotal = projects.reduce((sum, p) => sum + p.montantMarcheMad, 0);
+  const kpis: { label: string; value: string; tone: string }[] = [
+    { label: 'Chantiers', value: String(total), tone: 'text-ink' },
+    { label: 'En cours', value: String(enCours), tone: 'text-emerald' },
+    { label: 'Réceptionnés', value: String(receptionnes), tone: 'text-cyan' },
+    { label: 'En préparation', value: String(enPreparation), tone: 'text-ochre' },
+    { label: 'Montant marchés', value: fmtMad(montantTotal), tone: 'text-ink' },
+  ];
+
   return (
     <div>
-      <div className="mb-8">
+      <div className="mb-6">
         <h1 className="text-3xl font-black tracking-tight">Chantiers</h1>
         <p className="mt-1 text-sm text-muted">
           Portefeuille des marchés en exécution — avancement et position
           financière
         </p>
+      </div>
+
+      <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        {kpis.map((kpi) => (
+          <div
+            key={kpi.label}
+            className="rounded-xl border border-line bg-paper-2 p-4 shadow-sm"
+          >
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-faint">
+              {kpi.label}
+            </p>
+            <p className={`mt-1 font-mono text-xl font-bold tabular-nums ${kpi.tone}`}>
+              {kpi.value}
+            </p>
+          </div>
+        ))}
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -57,8 +89,18 @@ export default async function ProjectsPage() {
                   {badge.label}
                 </span>
               </div>
-              <h2 className="mb-1 font-bold">{project.name}</h2>
-              <p className="mb-4 text-sm text-muted">{project.buyerName}</p>
+              <h2 className="mb-1 line-clamp-2 font-bold">{project.name}</h2>
+              <p className="text-sm text-muted">{project.buyerName}</p>
+              {(project.societe || project.annee || project.typeMarche) && (
+                <p className="mb-4 mt-0.5 flex flex-wrap gap-x-2 text-xs text-faint">
+                  {project.societe && <span>{project.societe}</span>}
+                  {project.annee && <span>· {project.annee}</span>}
+                  {project.typeMarche && <span>· {project.typeMarche}</span>}
+                </p>
+              )}
+              {!(project.societe || project.annee || project.typeMarche) && (
+                <div className="mb-4" />
+              )}
 
               <div className="mb-2 flex items-baseline justify-between text-sm">
                 <span className="font-mono tabular-nums text-ink-2">

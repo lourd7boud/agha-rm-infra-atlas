@@ -5,12 +5,15 @@ import { apiGet, apiPatch, apiPost, AtlasApiError } from '@/lib/api';
 import { isRedirectError } from '@/lib/next-redirect';
 import {
   PROJECT_STATUS_BADGES,
+  type Bordereau,
+  type Decompte,
   type EmployeeListItem,
   type JournalResponse,
   type Paged,
   type ProjectCost,
   type ProjectLabor,
   type ProjectSummary,
+  type RevisionResponse,
   type TaskStatus,
   type TasksResponse,
   type TeamResponse,
@@ -28,6 +31,12 @@ import { TeamSection } from './sections/TeamSection';
 import { JournalSection } from './sections/JournalSection';
 import { ConsumptionSection } from './sections/ConsumptionSection';
 import { EquipmentSection } from './sections/EquipmentSection';
+import {
+  BordereauSection,
+  DecomptesSection,
+  MarcheInfoSection,
+  RevisionSection,
+} from './sections/ExecutionSections';
 
 // Turn an action failure into user-visible feedback: log the real cause
 // server-side, then redirect back to the project with a stable error code the
@@ -137,6 +146,9 @@ export default async function ProjectDetailPage({
     labor,
     projectEquipment,
     cost,
+    bordereaux,
+    decomptes,
+    revision,
   ] = await Promise.all([
     apiGet<ProjectDetail>(`/project/projects/${id}`),
     apiGet<JournalResponse>(`/field/projects/${id}/logs`),
@@ -149,6 +161,12 @@ export default async function ProjectDetailPage({
     apiGet<ProjectLabor>(`/people/projects/${id}/labor`),
     apiGet<ProjectEquipmentRecord[]>(`/equipment/projects/${id}`),
     apiGet<ProjectCost>(`/project/projects/${id}/cost`),
+    // Execution detail — degrade to empty rather than break the page.
+    apiGet<Bordereau[]>(`/project/projects/${id}/bordereaux`).catch(() => []),
+    apiGet<Decompte[]>(`/project/projects/${id}/decomptes`).catch(() => []),
+    apiGet<RevisionResponse>(`/project/projects/${id}/revision`).catch(
+      () => ({ config: null, formulas: [], indexes: [] }) as RevisionResponse,
+    ),
   ]);
   // projectEquipment carries each machine's open assignment inline (affecté-le /
   // retour-prévu) from a single list call — no per-machine getEquipment fetch.
@@ -369,6 +387,8 @@ export default async function ProjectDetailPage({
 
       <FinancialSummarySection project={project} cost={cost} />
 
+      <MarcheInfoSection project={project} />
+
       {actions.length > 0 && (
         <div className="mb-8 flex flex-wrap gap-3">
           {actions.map((action) => (
@@ -388,6 +408,12 @@ export default async function ProjectDetailPage({
         project={project}
         transitionSituation={transitionSituation}
       />
+
+      <DecomptesSection decomptes={decomptes} />
+
+      <BordereauSection bordereaux={bordereaux} />
+
+      <RevisionSection revision={revision} />
 
       <TasksSection
         project={project}
