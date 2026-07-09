@@ -1,10 +1,16 @@
-# Projets & Chantiers — BTP module integrated into ATLAS
+# Projets & Chantiers — BTP source app (REFERENCE ONLY)
+
+> **STATUS (2026-07-09): retired as a served app.** `/projects` on
+> `atlas.marocinfra.com` is now the NATIVE ATLAS module (NestJS `/api/btp/*` +
+> Next.js `apps/web/src/app/projects/**`), a faithful rebuild of this app's
+> engine (bordereau → métré → décompte auto, révision des prix, registres,
+> photothèque). This directory stays in the repo as the **blueprint + data
+> source**: the `projects-postgres` container (btpdb) feeds
+> `apps/core/scripts/migrate-btp.ts`. Do not serve it at /projects again.
 
 This directory is the **lift-and-shift** of the standalone BTP construction-management
-app (formerly served at `marocinfra.com`) into the ATLAS platform. It is served at
-**`https://atlas.marocinfra.com/projects/`** and reuses the original app 1:1 so it
-runs with the same logic and data; the "adapt it to fit ATLAS" work (shared SSO,
-shared shell/theme, unified data model) comes in later phases.
+app (formerly served at `marocinfra.com`) into the ATLAS platform. It was briefly
+served at `https://atlas.marocinfra.com/projects/` before the native rebuild.
 
 It is intentionally **isolated from the pnpm workspace** (it lives at the repo root,
 not under `apps/*`), because it has its own npm toolchain and lockfiles.
