@@ -1,13 +1,15 @@
 // Migration btpdb → module BTP natif.
 //
-// Prérequis (sur le VPS):
-//   1. docker exec atlas-projects-postgres pg_dump -U btpuser -d btpdb -Fc -f /tmp/btpdb.dump
-//      docker cp atlas-projects-postgres:/tmp/btpdb.dump /tmp/btpdb.dump
-//   2. Restore dans la base ATLAS sous le schéma btp_legacy (voir le runbook du
-//      déploiement: create schema btp_legacy + pg_restore avec remap de schéma).
-//   3. docker compose -f docker-compose.apps.yml run --rm \
+// Exécution (sur le VPS) — lecture DIRECTE de btpdb via une 2e connexion:
+//   1. docker network connect atlas-platform_default atlas-projects-postgres
+//   2. docker compose -f docker-compose.apps.yml run --rm \
 //        -v /opt/atlas/projects-data/uploads:/legacy-uploads:ro \
+//        -v /opt/atlas/apps/core/scripts/migrate-btp.ts:/app/apps/core/scripts/migrate-btp.ts:ro \
+//        -e LEGACY_DATABASE_URL="postgres://btpuser:<PROJECTS_DB_PASSWORD>@atlas-projects-postgres:5432/btpdb" \
 //        --entrypoint sh core -c "cd /app/apps/core && npx tsx scripts/migrate-btp.ts"
+//   3. docker network disconnect atlas-platform_default atlas-projects-postgres
+//   (LEGACY_SCHEMA=public par défaut; un restore local btp_legacy reste possible
+//    en pointant LEGACY_DATABASE_URL sur la base ATLAS + LEGACY_SCHEMA=btp_legacy.)
 //
 // Politique: les valeurs HISTORIQUES (décomptes, acomptes) sont copiées telles
 // quelles — le moteur ne recalcule PAS le passé; il reprendra la main à la
@@ -24,7 +26,7 @@ import {
   type ObjectStorage,
 } from '../src/modules/vault/storage';
 
-const L = process.env.LEGACY_SCHEMA ?? 'btp_legacy';
+const L = process.env.LEGACY_SCHEMA ?? 'public';
 const UPLOADS_DIR = process.env.LEGACY_UPLOADS ?? '/legacy-uploads';
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
@@ -33,6 +35,10 @@ if (!DATABASE_URL) {
 }
 
 const pool = new Pool({ connectionString: DATABASE_URL, max: 4 });
+const legacyPool = new Pool({
+  connectionString: process.env.LEGACY_DATABASE_URL ?? DATABASE_URL,
+  max: 4,
+});
 
 function md5Uuid(input: string): string {
   const h = createHash('md5').update(input).digest('hex');
@@ -72,6 +78,12 @@ async function q<T = Record<string, unknown>>(text: string, params: unknown[] = 
   return result.rows as T[];
 }
 
+// Lectures legacy — seconde connexion (btpdb en direct) quand LEGACY_DATABASE_URL est fourni.
+async function qL<T = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<T[]> {
+  const result = await legacyPool.query(text, params);
+  return result.rows as T[];
+}
+
 function buildStorage(): ObjectStorage | null {
   const endpoint = process.env.S3_ENDPOINT;
   const accessKey = process.env.S3_ACCESS_KEY;
@@ -85,7 +97,7 @@ function buildStorage(): ObjectStorage | null {
 
 async function migrateRevisionReference(): Promise<Map<number, string>> {
   const formulaIdMap = new Map<number, string>();
-  const formulas = await q(`select * from "${L}".revision_formulas`);
+  const formulas = await qL(`select * from "${L}".revision_formulas`);
   for (const f of formulas) {
     const id = md5Uuid(`formula:${f.id}`);
     formulaIdMap.set(Number(f.id), id);
@@ -105,7 +117,7 @@ async function migrateRevisionReference(): Promise<Map<number, string>> {
     );
     bump('formulas');
   }
-  const indexes = await q(`select * from "${L}".revision_indexes`);
+  const indexes = await qL(`select * from "${L}".revision_indexes`);
   for (const i of indexes) {
     await pool.query(
       `insert into project.revision_index (id, month_date, index_values, source, notes, status, created_by)
@@ -252,7 +264,7 @@ interface BordereauLigne {
 
 async function migrateChain(lp: LegacyProject, projectId: string): Promise<void> {
   // Bordereau (le premier non supprimé).
-  const bordereaux = await q(
+  const bordereaux = await qL(
     `select * from "${L}".bordereaux where project_id=$1 and deleted_at is null order by created_at asc`,
     [lp.id],
   );
@@ -293,7 +305,7 @@ async function migrateChain(lp: LegacyProject, projectId: string): Promise<void>
   const marcheTtc = bordereauLignes.reduce((s, l) => s + l.quantite * l.prixUnitaire * 1.2, 0);
 
   // Périodes.
-  const periodes = await q(
+  const periodes = await qL(
     `select * from "${L}".periodes where project_id=$1 and deleted_at is null order by numero asc`,
     [lp.id],
   );
@@ -322,7 +334,7 @@ async function migrateChain(lp: LegacyProject, projectId: string): Promise<void>
   }
 
   // Métrés.
-  const metres = await q(`select * from "${L}".metres where project_id=$1 and deleted_at is null`, [
+  const metres = await qL(`select * from "${L}".metres where project_id=$1 and deleted_at is null`, [
     lp.id,
   ]);
   for (const m of metres) {
@@ -355,7 +367,7 @@ async function migrateChain(lp: LegacyProject, projectId: string): Promise<void>
 
   // Décomptes — valeurs historiques conservées; champs dérivés reconstitués.
   const periodeById = new Map(periodes.map((p) => [String(p.id), p]));
-  const decomptes = await q(
+  const decomptes = await qL(
     `select * from "${L}".decompts where project_id=$1 and deleted_at is null order by numero asc`,
     [lp.id],
   );
@@ -429,7 +441,7 @@ async function migrateRevisionConfig(
   projectId: string,
   formulaIdMap: Map<number, string>,
 ): Promise<void> {
-  const configs = await q(`select * from "${L}".project_revision_config where project_id=$1`, [
+  const configs = await qL(`select * from "${L}".project_revision_config where project_id=$1`, [
     lp.id,
   ]);
   const config = configs[0];
@@ -455,7 +467,7 @@ async function migrateRevisionConfig(
 
 async function migrateRegistres(lp: LegacyProject, projectId: string): Promise<void> {
   // Avenants (upsert par id — préserve les avenants natifs).
-  const avenants = await q(
+  const avenants = await qL(
     `select * from "${L}".avenants where project_id=$1 and deleted_at is null`,
     [lp.id],
   ).catch(() => [] as Record<string, unknown>[]);
@@ -495,7 +507,7 @@ async function migrateRegistres(lp: LegacyProject, projectId: string): Promise<v
   }
 
   // ODS.
-  const odsList = await q(`select * from "${L}".ordres_service where project_id=$1`, [lp.id]).catch(
+  const odsList = await qL(`select * from "${L}".ordres_service where project_id=$1`, [lp.id]).catch(
     () => [] as Record<string, unknown>[],
   );
   for (const o of odsList) {
@@ -536,7 +548,7 @@ async function migrateRegistres(lp: LegacyProject, projectId: string): Promise<v
   }
 
   // Pénalités / cautions / retenues.
-  const penalites = await q(`select * from "${L}".penalties where project_id=$1`, [lp.id]).catch(
+  const penalites = await qL(`select * from "${L}".penalties where project_id=$1`, [lp.id]).catch(
     () => [] as Record<string, unknown>[],
   );
   for (const p of penalites) {
@@ -569,7 +581,7 @@ async function migrateRegistres(lp: LegacyProject, projectId: string): Promise<v
     );
     bump('penalites');
   }
-  const cautions = await q(`select * from "${L}".bonds where project_id=$1`, [lp.id]).catch(
+  const cautions = await qL(`select * from "${L}".bonds where project_id=$1`, [lp.id]).catch(
     () => [] as Record<string, unknown>[],
   );
   for (const b of cautions) {
@@ -596,7 +608,7 @@ async function migrateRegistres(lp: LegacyProject, projectId: string): Promise<v
     );
     bump('cautions');
   }
-  const retenues = await q(`select * from "${L}".retentions where project_id=$1`, [lp.id]).catch(
+  const retenues = await qL(`select * from "${L}".retentions where project_id=$1`, [lp.id]).catch(
     () => [] as Record<string, unknown>[],
   );
   for (const r of retenues) {
@@ -632,7 +644,7 @@ async function migrateAssets(
   storage: ObjectStorage | null,
 ): Promise<void> {
   // Albums d'abord (les photos y font référence).
-  const albums = await q(`select * from "${L}".photo_albums where project_id=$1`, [lp.id]).catch(
+  const albums = await qL(`select * from "${L}".photo_albums where project_id=$1`, [lp.id]).catch(
     () => [] as Record<string, unknown>[],
   );
   for (const album of albums) {
@@ -722,7 +734,7 @@ async function migrateAssets(
   }
 
   // Système v2 (project_assets) — la source de vérité récente.
-  const v2 = await q(
+  const v2 = await qL(
     `select * from "${L}".project_assets where project_id=$1 and deleted_at is null`,
     [lp.id],
   ).catch(() => [] as Record<string, unknown>[]);
@@ -746,7 +758,7 @@ async function migrateAssets(
   }
 
   // Système v1 (photos historiques) — seulement les fichiers non déjà migrés.
-  const v1Photos = await q(
+  const v1Photos = await qL(
     `select * from "${L}".photos where project_id=$1 and deleted_at is null`,
     [lp.id],
   ).catch(() => [] as Record<string, unknown>[]);
