@@ -4,9 +4,13 @@ import {
   type Bordereau,
   type BordereauLigne,
   type Decompte,
+  type Metre,
   type ProjectSummary,
   type RevisionResponse,
 } from '@/lib/projects';
+
+/** A server action bound in the detail page (native <form action>). */
+type ProjectFormAction = (formData: FormData) => Promise<void>;
 
 const CARD = 'mb-8 rounded-xl border border-line bg-paper-2 p-6 shadow-sm';
 const LABEL = 'text-xs font-semibold uppercase tracking-widest text-faint';
@@ -182,7 +186,8 @@ export function DecomptesSection({ decomptes }: { decomptes: Decompte[] }) {
 /** Révision des prix — per-project config + formulas + monthly indexes. */
 export function RevisionSection({ revision }: { revision: RevisionResponse }) {
   const { config, formulas, indexes } = revision;
-  if (!config && formulas.length === 0 && indexes.length === 0) return null;
+  // Révision is a per-chantier setup — only surface it where it's configured.
+  if (!config) return null;
   const activeFormula = config?.formulaId
     ? formulas.find((f) => f.id === config.formulaId)
     : formulas.find((f) => f.isDefault);
@@ -271,5 +276,131 @@ export function RevisionSection({ revision }: { revision: RevisionResponse }) {
         </div>
       )}
     </section>
+  );
+}
+
+/** Métré — measurement summary per BPU line. */
+export function MetreSection({ metres }: { metres: Metre[] }) {
+  if (metres.length === 0) return null;
+  return (
+    <section className={CARD}>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <p className={LABEL}>Métré</p>
+        <span className="text-xs text-faint">{metres.length} lignes</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[560px] text-sm">
+          <thead>
+            <tr className="border-b border-line">
+              <th className={TH}>Désignation</th>
+              <th className={TH}>Unité</th>
+              <th className={`${TH} text-right`}>Quantité cumulée</th>
+            </tr>
+          </thead>
+          <tbody>
+            {metres.slice(0, 60).map((m) => (
+              <tr key={m.id} className="border-b border-line/50">
+                <td className={`${TD} text-ink-2`}>{m.designation ?? '—'}</td>
+                <td className={`${TD} text-muted`}>{m.unite ?? '—'}</td>
+                <td className={NUM}>{m.totalQuantite.toLocaleString('fr-MA')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+/** Editable "fiche marché" — a native <details> form patching the chantier. */
+export function FicheMarcheEditSection({
+  project,
+  updateDetails,
+}: {
+  project: ProjectSummary;
+  updateDetails: ProjectFormAction;
+}) {
+  const inputCls =
+    'mt-1 w-full rounded-md border border-line bg-paper px-3 py-2 text-sm text-ink outline-none focus:border-cyan';
+  const Field = ({
+    name,
+    label,
+    value,
+    type = 'text',
+  }: {
+    name: string;
+    label: string;
+    value: string | number | undefined;
+    type?: string;
+  }) => (
+    <label className="block">
+      <span className="text-xs text-faint">{label}</span>
+      <input name={name} type={type} defaultValue={value ?? ''} className={inputCls} />
+    </label>
+  );
+  return (
+    <details className="mb-8 rounded-xl border border-line bg-paper-2 p-6 shadow-sm">
+      <summary className="cursor-pointer select-none text-xs font-semibold uppercase tracking-widest text-faint">
+        Modifier la fiche marché
+      </summary>
+      <form
+        action={updateDetails}
+        className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+      >
+        <label className="block sm:col-span-2 lg:col-span-3">
+          <span className="text-xs text-faint">Objet</span>
+          <textarea
+            name="objet"
+            rows={2}
+            defaultValue={project.objet ?? ''}
+            className={inputCls}
+          />
+        </label>
+        <Field name="societe" label="Société" value={project.societe} />
+        <Field name="commune" label="Commune" value={project.commune} />
+        <Field name="annee" label="Année" value={project.annee} />
+        <Field name="typeMarche" label="Type de marché" value={project.typeMarche} />
+        <Field
+          name="modePassation"
+          label="Mode de passation"
+          value={project.modePassation}
+        />
+        <Field name="maitreOeuvre" label="Maître d'œuvre" value={project.maitreOeuvre} />
+        <Field
+          name="assistanceTechnique"
+          label="Assistance technique"
+          value={project.assistanceTechnique}
+        />
+        <Field
+          name="delaiExecutionJours"
+          label="Délai d'exécution (jours)"
+          value={project.delaiExecutionJours}
+          type="number"
+        />
+        <Field
+          name="receptionProvisoire"
+          label="Réception provisoire"
+          value={project.receptionProvisoire?.slice(0, 10)}
+          type="date"
+        />
+        <Field
+          name="receptionDefinitive"
+          label="Réception définitive"
+          value={project.receptionDefinitive?.slice(0, 10)}
+          type="date"
+        />
+        <Field
+          name="achevementTravaux"
+          label="Achèvement des travaux"
+          value={project.achevementTravaux?.slice(0, 10)}
+          type="date"
+        />
+        <div className="sm:col-span-2 lg:col-span-3">
+          <button className="rounded-md bg-cyan-deep px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan">
+            Enregistrer
+          </button>
+        </div>
+      </form>
+    </details>
   );
 }

@@ -9,6 +9,7 @@ import {
   type Decompte,
   type EmployeeListItem,
   type JournalResponse,
+  type Metre,
   type Paged,
   type ProjectCost,
   type ProjectLabor,
@@ -34,7 +35,9 @@ import { EquipmentSection } from './sections/EquipmentSection';
 import {
   BordereauSection,
   DecomptesSection,
+  FicheMarcheEditSection,
   MarcheInfoSection,
+  MetreSection,
   RevisionSection,
 } from './sections/ExecutionSections';
 
@@ -75,6 +78,10 @@ const ACTION_ERROR_MESSAGES: Record<string, string> = {
   'createDailyLog:invalid':
     'Rapport refusé : effectifs ≥ 0 et travaux réalisés d’au moins 10 caractères requis.',
   'createDailyLog:failed': 'Échec de la consignation du rapport. Réessayez.',
+  'updateDetails:invalid':
+    'Modification refusée : renseignez au moins un champ valide.',
+  'updateDetails:failed':
+    'Échec de la mise à jour de la fiche marché. Réessayez.',
 };
 
 function actionErrorMessage(
@@ -149,6 +156,7 @@ export default async function ProjectDetailPage({
     bordereaux,
     decomptes,
     revision,
+    metres,
   ] = await Promise.all([
     apiGet<ProjectDetail>(`/project/projects/${id}`),
     apiGet<JournalResponse>(`/field/projects/${id}/logs`),
@@ -167,6 +175,7 @@ export default async function ProjectDetailPage({
     apiGet<RevisionResponse>(`/project/projects/${id}/revision`).catch(
       () => ({ config: null, formulas: [], indexes: [] }) as RevisionResponse,
     ),
+    apiGet<Metre[]>(`/project/projects/${id}/metres`).catch(() => [] as Metre[]),
   ]);
   // projectEquipment carries each machine's open assignment inline (affecté-le /
   // retour-prévu) from a single list call — no per-machine getEquipment fetch.
@@ -193,6 +202,43 @@ export default async function ProjectDetailPage({
     await apiPost(`/project/projects/${id}/transition`, {
       to: String(formData.get('to')),
     });
+    revalidatePath(`/projects/${id}`);
+    revalidatePath('/projects');
+  }
+
+  async function updateDetails(formData: FormData) {
+    'use server';
+    // Only forward the fields the user actually filled — the backend patch
+    // requires at least one and validates types (dates coerced, délai numeric).
+    const patch: Record<string, string | number> = {};
+    for (const key of [
+      'objet',
+      'societe',
+      'commune',
+      'annee',
+      'typeMarche',
+      'modePassation',
+      'maitreOeuvre',
+      'assistanceTechnique',
+      'receptionProvisoire',
+      'receptionDefinitive',
+      'achevementTravaux',
+    ]) {
+      const v = String(formData.get(key) ?? '').trim();
+      if (v) patch[key] = v;
+    }
+    const delai = String(formData.get('delaiExecutionJours') ?? '').trim();
+    if (delai && Number.isFinite(Number(delai))) {
+      patch.delaiExecutionJours = Number(delai);
+    }
+    if (Object.keys(patch).length === 0) {
+      redirect(`/projects/${id}?error=updateDetails&code=invalid`);
+    }
+    try {
+      await apiPatch(`/project/projects/${id}/details`, patch);
+    } catch (error) {
+      failToProject(id, 'updateDetails', error);
+    }
     revalidatePath(`/projects/${id}`);
     revalidatePath('/projects');
   }
@@ -389,6 +435,8 @@ export default async function ProjectDetailPage({
 
       <MarcheInfoSection project={project} />
 
+      <FicheMarcheEditSection project={project} updateDetails={updateDetails} />
+
       {actions.length > 0 && (
         <div className="mb-8 flex flex-wrap gap-3">
           {actions.map((action) => (
@@ -412,6 +460,8 @@ export default async function ProjectDetailPage({
       <DecomptesSection decomptes={decomptes} />
 
       <BordereauSection bordereaux={bordereaux} />
+
+      <MetreSection metres={metres} />
 
       <RevisionSection revision={revision} />
 

@@ -5,6 +5,7 @@ import {
   avenants,
   bordereaux,
   decomptes,
+  metres,
   periodes,
   projectRevisionConfig,
   projects,
@@ -196,6 +197,38 @@ export interface RevisionConfigRecord {
   notes?: string;
 }
 
+export interface MetreRecord {
+  id: string;
+  projectId: string;
+  periodeId?: string;
+  bordereauLigneId?: string;
+  designation?: string;
+  unite?: string;
+  totalQuantite: number;
+  data: unknown;
+}
+
+/** Editable "fiche marché" fields of a chantier (all optional — a partial patch). */
+export interface ProjectDetailsPatch {
+  name?: string;
+  buyerName?: string;
+  montantMarcheMad?: number;
+  objet?: string;
+  annee?: string;
+  societe?: string;
+  commune?: string;
+  typeMarche?: string;
+  modePassation?: string;
+  delaiExecutionJours?: number;
+  dateOuverture?: Date;
+  receptionProvisoire?: Date;
+  receptionDefinitive?: Date;
+  achevementTravaux?: Date;
+  assistanceTechnique?: string;
+  maitreOeuvre?: string;
+  progressPct?: number;
+}
+
 export const PROJECT_REPOSITORY = Symbol('PROJECT_REPOSITORY');
 
 export interface ProjectRepository {
@@ -229,6 +262,11 @@ export interface ProjectRepository {
   getRevisionConfig(projectId: string): Promise<RevisionConfigRecord | null>;
   listRevisionFormulas(): Promise<RevisionFormulaRecord[]>;
   listRevisionIndexes(): Promise<RevisionIndexRecord[]>;
+  listMetres(projectId: string): Promise<MetreRecord[]>;
+  updateProjectDetails(
+    id: string,
+    patch: ProjectDetailsPatch,
+  ): Promise<ProjectRecord | null>;
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
@@ -399,6 +437,22 @@ export class InMemoryProjectRepository implements ProjectRepository {
   }
   async listRevisionIndexes(): Promise<RevisionIndexRecord[]> {
     return [];
+  }
+  async listMetres(): Promise<MetreRecord[]> {
+    return [];
+  }
+  async updateProjectDetails(
+    id: string,
+    patch: ProjectDetailsPatch,
+  ): Promise<ProjectRecord | null> {
+    const existing = await this.findById(id);
+    if (!existing) return null;
+    const clean = Object.fromEntries(
+      Object.entries(patch).filter(([, v]) => v !== undefined),
+    );
+    const updated: ProjectRecord = { ...existing, ...clean };
+    this.projects = this.projects.map((p) => (p.id === id ? updated : p));
+    return updated;
   }
 }
 
@@ -733,6 +787,75 @@ export class DrizzleProjectRepository implements ProjectRepository {
       source: r.source ?? undefined,
       status: r.status,
     }));
+  }
+
+  async listMetres(projectId: string): Promise<MetreRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(metres)
+      .where(eq(metres.projectId, projectId))
+      .orderBy(asc(metres.createdAt));
+    return rows.map((r) => ({
+      id: r.id,
+      projectId: r.projectId,
+      periodeId: r.periodeId ?? undefined,
+      bordereauLigneId: r.bordereauLigneId ?? undefined,
+      designation: r.designation ?? undefined,
+      unite: r.unite ?? undefined,
+      totalQuantite: Number(r.totalQuantite),
+      data: r.data,
+    }));
+  }
+
+  async updateProjectDetails(
+    id: string,
+    patch: ProjectDetailsPatch,
+  ): Promise<ProjectRecord | null> {
+    const [row] = await this.db
+      .update(projects)
+      .set({
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.buyerName !== undefined ? { buyerName: patch.buyerName } : {}),
+        ...(patch.montantMarcheMad !== undefined
+          ? { montantMarcheMad: patch.montantMarcheMad.toString() }
+          : {}),
+        ...(patch.objet !== undefined ? { objet: patch.objet } : {}),
+        ...(patch.annee !== undefined ? { annee: patch.annee } : {}),
+        ...(patch.societe !== undefined ? { societe: patch.societe } : {}),
+        ...(patch.commune !== undefined ? { commune: patch.commune } : {}),
+        ...(patch.typeMarche !== undefined ? { typeMarche: patch.typeMarche } : {}),
+        ...(patch.modePassation !== undefined
+          ? { modePassation: patch.modePassation }
+          : {}),
+        ...(patch.delaiExecutionJours !== undefined
+          ? { delaiExecutionJours: patch.delaiExecutionJours }
+          : {}),
+        ...(patch.dateOuverture !== undefined
+          ? { dateOuverture: patch.dateOuverture }
+          : {}),
+        ...(patch.receptionProvisoire !== undefined
+          ? { receptionProvisoire: patch.receptionProvisoire }
+          : {}),
+        ...(patch.receptionDefinitive !== undefined
+          ? { receptionDefinitive: patch.receptionDefinitive }
+          : {}),
+        ...(patch.achevementTravaux !== undefined
+          ? { achevementTravaux: patch.achevementTravaux }
+          : {}),
+        ...(patch.assistanceTechnique !== undefined
+          ? { assistanceTechnique: patch.assistanceTechnique }
+          : {}),
+        ...(patch.maitreOeuvre !== undefined
+          ? { maitreOeuvre: patch.maitreOeuvre }
+          : {}),
+        ...(patch.progressPct !== undefined
+          ? { progressPct: patch.progressPct.toString() }
+          : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(projects.id, id))
+      .returning();
+    return row ? toProject(row) : null;
   }
 }
 

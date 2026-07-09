@@ -78,6 +78,32 @@ const taskPatchSchema = z
     message: 'Au moins un champ à modifier est requis',
   });
 
+/** Editable "fiche marché" fields (partial patch — at least one required). */
+const projectDetailsSchema = z
+  .object({
+    name: z.string().min(3).max(500),
+    buyerName: z.string().min(2).max(300),
+    montantMarcheMad: z.number().nonnegative().max(10_000_000_000),
+    objet: z.string().max(4000),
+    annee: z.string().max(10),
+    societe: z.string().max(300),
+    commune: z.string().max(200),
+    typeMarche: z.string().max(60),
+    modePassation: z.string().max(120),
+    delaiExecutionJours: z.number().int().min(0).max(100_000),
+    dateOuverture: z.coerce.date(),
+    receptionProvisoire: z.coerce.date(),
+    receptionDefinitive: z.coerce.date(),
+    achevementTravaux: z.coerce.date(),
+    assistanceTechnique: z.string().max(300),
+    maitreOeuvre: z.string().max(300),
+    progressPct: z.number().min(0).max(100),
+  })
+  .partial()
+  .refine((patch) => Object.keys(patch).length > 0, {
+    message: 'Au moins un champ à modifier est requis',
+  });
+
 /** Chantier lifecycle (construction ops v1). */
 const PROJECT_TRANSITIONS: Record<ProjectStatus, ProjectStatus[]> = {
   preparation: ['en_cours'],
@@ -315,6 +341,27 @@ export class ProjectController {
       this.repository.listRevisionIndexes(),
     ]);
     return { config, formulas, indexes };
+  }
+
+  /** Métrés (measurements) of a chantier. */
+  @Roles('travaux', 'direction', 'finance', 'marches', 'admin-si')
+  @Get('projects/:id/metres')
+  async listMetres(@Param('id') id: string) {
+    await this.findOr404(id);
+    return this.repository.listMetres(id);
+  }
+
+  /** Edit a chantier's "fiche marché" (objet, société, dates, etc.). */
+  @Roles('travaux', 'direction', 'admin-si')
+  @Patch('projects/:id/details')
+  async updateDetails(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = projectDetailsSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    await this.findOr404(id);
+    const updated = await this.repository.updateProjectDetails(id, parsed.data);
+    if (!updated) throw new NotFoundException(`Project not found: ${id}`);
+    new Logger('Project').log(`project.details.updated ${id}`);
+    return updated;
   }
 
   /** Add a tâche de chantier (physical work-breakdown item). */

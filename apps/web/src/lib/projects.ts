@@ -376,3 +376,14 @@ export interface RevisionResponse {
   formulas: RevisionFormula[];
   indexes: RevisionIndex[];
 }
+
+export interface Metre {
+  id: string;
+  projectId: string;
+  periodeId?: string;
+  bordereauLigneId?: string;
+  designation?: string;
+  unite?: string;
+  totalQuantite: number;
+  data: unknown;
+}
