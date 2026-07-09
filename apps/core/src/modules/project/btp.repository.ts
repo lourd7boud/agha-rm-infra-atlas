@@ -37,7 +37,7 @@ import {
   type MetreSousSection,
 } from './btp-metre.domain';
 import {
-  calculateDecompteRevision,
+  calculateMonthCoefficient,
   dateToMonthKey,
   type IndexValues,
   type RevisionFormulaSpec,
@@ -1311,9 +1311,12 @@ export class DrizzleBtpExecutionRepository implements BtpExecutionRepository {
         periodeRow.createdAt
       ).getFullYear();
 
-      // Révision coefficient for the dernier décompte only.
+      // Révision coefficient for the dernier décompte only. Source app
+      // (PeriodeDecomptePage): coefficient du SEUL mois de periode.dateDebut
+      // (calculateMonthCoefficient, TRUNC4) — the day-weighted table in
+      // RevisionTab is analysis-only and never feeds the décompte.
       let revisionCoefficient: number | null = null;
-      let revisionTrace: ReturnType<typeof calculateDecompteRevision> | null = null;
+      let revisionDetails: Record<string, unknown> | null = null;
       if (
         periodeRow.isDecompteDernier &&
         formula &&
@@ -1321,19 +1324,19 @@ export class DrizzleBtpExecutionRepository implements BtpExecutionRepository {
         config &&
         Object.keys((config.baseIndexes as IndexValues) ?? {}).length > 0
       ) {
-        const start = periodeRow.dateDebut ?? periodeRow.dateFin ?? periodeRow.createdAt;
-        const end = periodeRow.dateFin ?? periodeRow.dateDebut ?? periodeRow.createdAt;
-        // montantAReviser = cumulative HT before révision — applied by the
-        // finance engine; the coefficient only depends on dates/indexes.
-        revisionTrace = calculateDecompteRevision({
-          montantAReviser: 0,
-          periodStart: start,
-          periodEnd: end,
-          baseIndexes: (config.baseIndexes as IndexValues) ?? {},
-          monthlyIndexes,
-          formula,
-        });
-        revisionCoefficient = revisionTrace.coefficient;
+        const moisDate = periodeRow.dateDebut ?? periodeRow.dateFin ?? periodeRow.createdAt;
+        const monthKey = dateToMonthKey(moisDate);
+        const currentIndexes = monthlyIndexes.get(monthKey);
+        // Comme la source: pas d'index publiés pour ce mois → pas de révision.
+        if (currentIndexes) {
+          const coefficientResult = calculateMonthCoefficient(
+            currentIndexes,
+            (config.baseIndexes as IndexValues) ?? {},
+            formula,
+          );
+          revisionCoefficient = coefficientResult.display;
+          revisionDetails = { month: monthKey, breakdown: coefficientResult.breakdown };
+        }
       }
 
       const computation = computeDecompte({
@@ -1377,16 +1380,12 @@ export class DrizzleBtpExecutionRepository implements BtpExecutionRepository {
       }
 
       // Persist the révision trace (or clear it when no longer applicable).
-      if (revisionCoefficient != null && revisionTrace && computation.revisionMontant !== 0) {
+      if (revisionCoefficient != null && revisionDetails && computation.revisionMontant !== 0) {
         const revisionValues = {
           montantAReviser: String(computation.totalHt),
           coefficientApplique: String(revisionCoefficient),
           montantRevision: String(computation.revisionMontant),
-          calculationDetails: {
-            totalDays: revisionTrace.totalDays,
-            details: revisionTrace.details,
-            missingMonths: revisionTrace.missingMonths,
-          },
+          calculationDetails: revisionDetails,
           formulaSnapshot: formula,
           baseIndexesSnapshot: (config?.baseIndexes as IndexValues) ?? {},
           updatedAt: new Date(),

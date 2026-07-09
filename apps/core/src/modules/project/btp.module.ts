@@ -501,12 +501,13 @@ export class BtpExecutionController {
   // Révision des prix (per-marché view: config + analysis table)
   @Get('revision')
   async revision(@Param('projectId') projectId: string) {
-    const [config, formulas, indexes, decomptes, periodes] = await Promise.all([
+    const [config, formulas, indexes, decomptes, periodes, project] = await Promise.all([
       this.registres.getRevisionConfig(projectId),
       this.registres.listFormulas(),
       this.registres.listIndexes(),
       this.execution.listDecomptes(projectId),
       this.execution.listPeriodes(projectId),
+      this.execution.getProject(projectId),
     ]);
     const formula = config?.formulaId
       ? (formulas.find((f) => f.id === config.formulaId) ?? null)
@@ -518,13 +519,18 @@ export class BtpExecutionController {
       ]),
     );
     const periodeById = new Map(periodes.map((p) => [p.id, p]));
+    // Source (RevisionTab): la chaîne d'analyse démarre à l'O.S.C, chaque
+    // décompte couvre [fin du décompte précédent → sa date de fin] — la date
+    // de début des périodes est ignorée (souvent laissée au jour de saisie).
+    let previousEnd: Date | null = project?.ordreServiceDate ?? null;
     let previousHt = 0;
     const table = decomptes.map((decompte) => {
       const periode = decompte.periodeId ? periodeById.get(decompte.periodeId) : undefined;
       // Montant à réviser = HT de la période (delta, non cumulatif).
       const montantAReviser = toNumber(round2(toDecimal(decompte.totalHtMad).minus(previousHt)));
       previousHt = decompte.totalHtMad;
-      if (!config || !formula || !periode?.dateDebut) {
+      const dateFin = periode?.dateFin ?? null;
+      if (!config || !formula || !previousEnd || !dateFin) {
         return {
           decompteId: decompte.id,
           numero: decompte.numero,
@@ -539,8 +545,8 @@ export class BtpExecutionController {
       }
       const result = calculateDecompteRevision({
         montantAReviser,
-        periodStart: periode.dateDebut,
-        periodEnd: periode.dateFin ?? periode.dateDebut,
+        periodStart: previousEnd,
+        periodEnd: dateFin,
         baseIndexes: config.baseIndexes,
         monthlyIndexes,
         formula: {
@@ -549,6 +555,7 @@ export class BtpExecutionController {
           weights: formula.weights,
         },
       });
+      previousEnd = dateFin;
       return {
         decompteId: decompte.id,
         numero: decompte.numero,
