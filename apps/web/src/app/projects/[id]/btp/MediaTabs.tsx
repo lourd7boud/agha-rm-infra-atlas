@@ -1,7 +1,14 @@
-// Photothèque (albums + grille) et Documents/PV — fichiers dans MinIO, URLs
-// présignées 1h. L'upload passe par un server action multipart.
+// Photothèque (albums + grille) et Documents/PV — fichiers dans MinIO, servis
+// via le proxy /api/btp-asset. L'upload passe par un server action multipart.
 import { apiGet } from '@/lib/api';
-import { fmtDate, fmtFileSize, type Album, type Asset, type BtpProjectDetail } from '@/lib/btp';
+import {
+  assetFileHref,
+  fmtDate,
+  fmtFileSize,
+  type Album,
+  type Asset,
+  type BtpProjectDetail,
+} from '@/lib/btp';
 import { createAlbum, deleteAlbum, deleteAsset, moveAssetToAlbum, uploadAssets } from '../actions';
 
 const inputClass =
@@ -120,16 +127,18 @@ export async function PhotosTab({ project }: { project: BtpProjectDetail }) {
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-          {photos.map((photo) => (
+          {photos.map((photo) => {
+            const fileHref = assetFileHref(project.id, photo);
+            return (
             <figure
               key={photo.id}
               className="group relative overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm"
             >
-              {photo.url ? (
-                <a href={photo.url} target="_blank" rel="noreferrer">
+              {fileHref ? (
+                <a href={fileHref} target="_blank" rel="noreferrer">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={photo.url}
+                    src={fileHref}
                     alt={photo.originalName ?? 'photo chantier'}
                     loading="lazy"
                     className="aspect-square w-full object-cover transition group-hover:scale-105"
@@ -176,7 +185,8 @@ export async function PhotosTab({ project }: { project: BtpProjectDetail }) {
                 </form>
               )}
             </figure>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -213,12 +223,13 @@ function AssetTable({
       <tbody className="divide-y divide-line">
         {assets.map((asset) => {
           const meta = asset.metadata as { pvType?: string; description?: string };
+          const fileHref = assetFileHref(projectId, asset);
           return (
             <tr key={asset.id} className="transition hover:bg-sand/40">
               <td className="px-4 py-2.5">
-                {asset.url ? (
+                {fileHref ? (
                   <a
-                    href={asset.url}
+                    href={fileHref}
                     target="_blank"
                     rel="noreferrer"
                     className="text-sm font-semibold text-cyan hover:underline"

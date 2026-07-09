@@ -20,6 +20,9 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { Pool } from 'pg';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import * as schema from '../src/db/schema';
+import { DrizzleBtpExecutionRepository } from '../src/modules/project/btp.repository';
 import {
   S3ObjectStorage,
   sanitizeFilename,
@@ -39,6 +42,12 @@ const legacyPool = new Pool({
   connectionString: process.env.LEGACY_DATABASE_URL ?? DATABASE_URL,
   max: 4,
 });
+
+// Moteur de recalcul métré→décompte. L'ancienne app recalculait le récap à
+// l'affichage : ses totaux STOCKÉS dérivent (HT à 0 sur d'anciens décomptes).
+// Après migration on rejoue donc la chaîne avec le même moteur que l'API.
+const engineDb = drizzle(pool, { schema });
+const executionRepo = new DrizzleBtpExecutionRepository(engineDb);
 
 function md5Uuid(input: string): string {
   const h = createHash('md5').update(input).digest('hex');
@@ -783,6 +792,34 @@ async function migrateAssets(
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
+/**
+ * Rejoue la chaîne bordereau→métré→décompte avec le moteur de l'API pour que
+ * les récaps soient cohérents (mêmes règles Excel). On ne le fait que si
+ * CHAQUE période a au moins un métré — sinon on garde les montants legacy
+ * plutôt que d'écraser un décompte stocké par des zéros.
+ */
+async function rebuildEngineChain(projectId: string): Promise<void> {
+  const [cov] = await q<{ total: number; avec: number }>(
+    `select count(*)::int as total,
+            count(*) filter (where exists (
+              select 1 from project.metre m
+              where m.periode_id = p.id and m.deleted_at is null
+            ))::int as avec
+     from project.periode p
+     where p.project_id = $1 and p.deleted_at is null`,
+    [projectId],
+  );
+  const total = cov?.total ?? 0;
+  const avec = cov?.avec ?? 0;
+  if (total === 0) return;
+  if (avec < total) {
+    bump('rebuildSkipped');
+    return;
+  }
+  await executionRepo.rebuildProjectChain(projectId);
+  bump('chainsRebuilt');
+}
+
 async function main(): Promise<void> {
   console.log(`Migration btpdb (schéma "${L}") → module BTP natif`);
   const storage = buildStorage();
@@ -804,6 +841,7 @@ async function main(): Promise<void> {
       await wipeSatellites(projectId);
       await migrateChain(lp, projectId);
       await migrateRevisionConfig(lp, projectId, formulaIdMap);
+      await rebuildEngineChain(projectId);
       await migrateRegistres(lp, projectId);
       await migrateAssets(lp, projectId, storage);
       console.log(`  ✔ ${label}`);

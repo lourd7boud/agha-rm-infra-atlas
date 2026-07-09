@@ -16,6 +16,7 @@ import {
   Put,
   Query,
   Req,
+  StreamableFile,
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
@@ -632,13 +633,9 @@ export class BtpAssetsController {
   async listAssets(@Param('projectId') projectId: string, @Query('type') type?: string) {
     const assetType =
       type === 'photo' || type === 'pv' || type === 'document' ? (type as AssetType) : undefined;
-    const records = await this.assets.listAssets(projectId, assetType);
-    return Promise.all(
-      records.map(async (asset) => ({
-        ...asset,
-        url: asset.storageKey ? await this.storage.presignedGetUrl(asset.storageKey, 3600) : null,
-      })),
-    );
+    // Pas d'URL présignée : MinIO n'est pas exposé publiquement, le web sert
+    // les fichiers via son proxy /api/btp-asset → GET assets/:id/download.
+    return this.assets.listAssets(projectId, assetType);
   }
 
   @Get('assets/counts')
@@ -695,7 +692,7 @@ export class BtpAssetsController {
         metadata,
         createdBy: actor.sub,
       });
-      created.push({ ...asset, url: await this.storage.presignedGetUrl(key, 3600) });
+      created.push(asset);
     }
     return created;
   }
@@ -714,11 +711,23 @@ export class BtpAssetsController {
     return updated;
   }
 
-  @Get('assets/:assetId/url')
-  async assetUrl(@Param('assetId') assetId: string) {
+  /** Relaie l'objet MinIO (inline) — seul chemin joignable depuis un navigateur. */
+  @Get('assets/:assetId/download')
+  async downloadAsset(
+    @Param('projectId') projectId: string,
+    @Param('assetId') assetId: string,
+  ): Promise<StreamableFile> {
     const asset = await this.assets.getAsset(assetId);
-    if (!asset?.storageKey) throw new NotFoundException(`Fichier introuvable: ${assetId}`);
-    return { url: await this.storage.presignedGetUrl(asset.storageKey, 3600) };
+    if (!asset || asset.projectId !== projectId || !asset.storageKey) {
+      throw new NotFoundException(`Fichier introuvable: ${assetId}`);
+    }
+    const objet = await this.storage.getObject(asset.storageKey);
+    const fileName = encodeURIComponent(asset.fileName ?? asset.originalName ?? 'fichier');
+    return new StreamableFile(objet.body, {
+      type: asset.mimeType ?? objet.mime,
+      disposition: `inline; filename*=UTF-8''${fileName}`,
+      length: asset.fileSize ?? objet.sizeBytes,
+    });
   }
 
   @Roles(...WRITE_ROLES)

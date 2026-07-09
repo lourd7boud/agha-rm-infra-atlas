@@ -256,10 +256,10 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Sea
 
       <div className="mt-6">
         <Pager
-          page={page}
+          page={page - 1}
           pageSize={PAGE_SIZE}
           total={portfolio.total}
-          hrefForPage={(p) => `/projects${buildQuery({ ...filters, page: String(p) })}`}
+          hrefForPage={(p) => `/projects${buildQuery({ ...filters, page: String(p + 1) })}`}
         />
       </div>
     </div>

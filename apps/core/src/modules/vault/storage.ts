@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 import {
   CreateBucketCommand,
   GetObjectCommand,
@@ -64,10 +65,23 @@ export interface StoredObject {
   sizeBytes: number;
 }
 
+/** Object content streamed back from storage (for API-proxied downloads). */
+export interface FetchedObject {
+  body: Readable;
+  mime: string;
+  sizeBytes?: number;
+}
+
 export interface ObjectStorage {
   ensureBucket(): Promise<void>;
   put(key: string, body: Buffer, mime: string): Promise<StoredObject>;
   presignedGetUrl(key: string, expiresSeconds?: number): Promise<string>;
+  /**
+   * Streams an object through the API. Required because MinIO is not exposed
+   * publicly: presigned URLs point at the docker-internal host and are
+   * unreachable from a browser.
+   */
+  getObject(key: string): Promise<FetchedObject>;
 }
 
 export const OBJECT_STORAGE = Symbol('OBJECT_STORAGE');
@@ -131,6 +145,18 @@ export class S3ObjectStorage implements ObjectStorage {
       { expiresIn: expiresSeconds },
     );
   }
+
+  async getObject(key: string): Promise<FetchedObject> {
+    const result = await this.client.send(
+      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
+    if (!result.Body) throw new Error(`Objet vide ou introuvable: ${key}`);
+    return {
+      body: result.Body as Readable,
+      mime: result.ContentType ?? 'application/octet-stream',
+      sizeBytes: result.ContentLength,
+    };
+  }
 }
 
 /** Test double keeping objects in memory. */
@@ -157,6 +183,12 @@ export class InMemoryObjectStorage implements ObjectStorage {
   async presignedGetUrl(key: string): Promise<string> {
     if (!this.objects.has(key)) throw new Error(`No object: ${key}`);
     return `memory://${this.bucket}/${key}`;
+  }
+
+  async getObject(key: string): Promise<FetchedObject> {
+    const entry = this.objects.get(key);
+    if (!entry) throw new Error(`No object: ${key}`);
+    return { body: Readable.from(entry.body), mime: entry.mime, sizeBytes: entry.body.length };
   }
 
   get(key: string): { body: Buffer; mime: string } | undefined {

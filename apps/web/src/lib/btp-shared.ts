@@ -434,10 +434,15 @@ export interface Asset {
   originalName: string | null;
   mimeType: string | null;
   fileSize: number | null;
+  storageKey: string | null;
   albumId: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
-  url: string | null;
+}
+
+/** Chemin BFF qui relaie l'objet MinIO (les URLs présignées ne sont pas joignables). */
+export function assetFileHref(projectId: string, asset: Pick<Asset, 'id' | 'storageKey'>) {
+  return asset.storageKey ? `/api/btp-asset/${projectId}/${asset.id}` : null;
 }
 
 export interface DelaiOverviewRow {
