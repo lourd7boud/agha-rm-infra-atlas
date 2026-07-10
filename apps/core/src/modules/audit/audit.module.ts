@@ -54,12 +54,18 @@ export class AuditInterceptor implements NestInterceptor {
   }
 
   private record(request: AuditedRequest, outcome: string): void {
+    // Multer (multipart) leaves body as a null-prototype object — and empty
+    // bodies as undefined. Both crash drizzle's is() (`null.constructor`), so
+    // normalize to a plain object before the jsonb insert.
+    const body = request.body;
+    const payload =
+      body && typeof body === 'object' ? { ...(body as Record<string, unknown>) } : {};
     const entry = {
       actor: request.user?.username ?? 'anonymous',
       method: request.method,
       path: request.originalUrl ?? request.url,
       outcome,
-      payload: request.body ?? null,
+      payload,
     };
     if (!this.db) {
       this.logger.log(JSON.stringify(entry));
