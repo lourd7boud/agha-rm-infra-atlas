@@ -1,0 +1,260 @@
+// Module Bons de commande (/bdc) — veille des avis d'achat par bon de commande
+// du portail PMMP + l'espace de chiffrage de l'agent chargé. Routes /api/bdc/*.
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Inject,
+  Logger,
+  Module,
+  NotFoundException,
+  Param,
+  Patch,
+  Post,
+  Query,
+  StreamableFile,
+} from '@nestjs/common';
+import ExcelJS from 'exceljs';
+import { z } from 'zod';
+import { getDb } from '../../db/client';
+import { Roles } from '../auth/auth.module';
+import { BdcCrawler } from './bdc.crawler';
+import {
+  BDC_REPOSITORY,
+  DrizzleBdcRepository,
+  unavailableBdcRepository,
+  type BdcRepository,
+} from './bdc.repository';
+
+const MARCHES_ROLES = ['direction', 'marches', 'admin-si'] as const;
+
+const intEnv = (raw: string | undefined, fallback: number): number => {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+};
+
+const ligneSchema = z.object({
+  idx: z.number().int().min(0),
+  designation: z.string().max(2000),
+  unite: z.string().max(40).nullish(),
+  quantite: z.number().nonnegative().max(1_000_000_000),
+  tvaPct: z.number().min(0).max(100),
+  prixUnitaireHt: z.number().min(0).max(1_000_000_000),
+  source: z.enum(['manuel', 'catalogue', 'historique', 'estimation']),
+  sourceRef: z.string().max(200).nullish(),
+  margeAppliquee: z.boolean().optional(),
+  note: z.string().max(1000).nullish(),
+});
+
+const reponsePatchSchema = z
+  .object({
+    margePct: z.number().min(0).max(1000),
+    lignes: z.array(ligneSchema).max(500),
+    statut: z.enum(['brouillon', 'prete', 'deposee', 'gagnee', 'perdue']),
+    notes: z.string().max(4000),
+  })
+  .partial()
+  .refine((p) => Object.keys(p).length > 0, { message: 'Aucun champ à modifier' });
+
+@Controller('bdc')
+export class BdcController {
+  private readonly logger = new Logger('Bdc');
+  private readonly crawler = new BdcCrawler();
+
+  constructor(@Inject(BDC_REPOSITORY) private readonly repo: BdcRepository) {}
+
+  @Get('avis')
+  async listAvis(
+    @Query('statut') statut?: string,
+    @Query('categorie') categorie?: string,
+    @Query('search') search?: string,
+    @Query('aVenir') aVenir?: string,
+    @Query('page') pageStr?: string,
+    @Query('limit') limitStr?: string,
+  ) {
+    const page = Math.max(1, Number(pageStr) || 1);
+    const limit = Math.min(100, Math.max(1, Number(limitStr) || 20));
+    const [{ items, total }, stats] = await Promise.all([
+      this.repo.listAvis({
+        statut: statut || undefined,
+        categorie: categorie || undefined,
+        search: search || undefined,
+        aVenirSeulement: aVenir === '1' || aVenir === 'true',
+        page,
+        limit,
+      }),
+      this.repo.stats(),
+    ]);
+    return { items, total, page, limit, stats };
+  }
+
+  @Get('avis/:id')
+  async getAvis(@Param('id') id: string) {
+    const avis = await this.repo.getAvis(id);
+    if (!avis) throw new NotFoundException('Avis introuvable');
+    const reponse = await this.repo.getReponse(id);
+    return { avis, reponse };
+  }
+
+  /** Espace de chiffrage — crée la réponse au besoin (seed depuis articles). */
+  @Roles(...MARCHES_ROLES)
+  @Post('avis/:id/reponse')
+  async ensureReponse(@Param('id') id: string) {
+    const avis = await this.repo.getAvis(id);
+    if (!avis) throw new NotFoundException('Avis introuvable');
+    return this.repo.ensureReponse(id);
+  }
+
+  @Roles(...MARCHES_ROLES)
+  @Patch('avis/:id/reponse')
+  async saveReponse(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = reponsePatchSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const updated = await this.repo.saveReponse(id, parsed.data);
+    if (!updated) throw new NotFoundException('Avis introuvable');
+    return updated;
+  }
+
+  /** Génère le bordereau de prix rempli (XLSX) — le devis de la société. */
+  @Roles(...MARCHES_ROLES)
+  @Get('avis/:id/bordereau.xlsx')
+  async bordereau(@Param('id') id: string): Promise<StreamableFile> {
+    const avis = await this.repo.getAvis(id);
+    if (!avis) throw new NotFoundException('Avis introuvable');
+    const reponse = await this.repo.ensureReponse(id);
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'ATLAS — AGHA RM INFRA';
+    const ws = wb.addWorksheet('Bordereau des prix');
+    ws.mergeCells('A1:F1');
+    ws.getCell('A1').value = `Bon de commande ${avis.reference} — ${avis.acheteur}`;
+    ws.getCell('A1').font = { bold: true, size: 13 };
+    ws.mergeCells('A2:F2');
+    ws.getCell('A2').value = avis.objet;
+    ws.getCell('A2').font = { italic: true, size: 10 };
+
+    const header = ws.addRow([
+      'N°',
+      'Désignation',
+      'Unité',
+      'Qté',
+      'P.U. HT (DH)',
+      'Montant HT (DH)',
+    ]);
+    header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    header.eachCell((cell) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3357' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+    for (const ligne of reponse.lignes) {
+      const row = ws.addRow([
+        ligne.idx + 1,
+        ligne.designation,
+        ligne.unite ?? '',
+        ligne.quantite,
+        ligne.prixVenteHt,
+        ligne.montantHt,
+      ]);
+      row.getCell(5).numFmt = '#,##0.00';
+      row.getCell(6).numFmt = '#,##0.00';
+    }
+    const totalHtRow = ws.addRow(['', '', '', '', 'Total HT', reponse.totalHt]);
+    const totalTvaRow = ws.addRow(['', '', '', '', 'TVA', reponse.totalTva]);
+    const totalTtcRow = ws.addRow(['', '', '', '', 'Total TTC', reponse.totalTtc]);
+    for (const row of [totalHtRow, totalTvaRow, totalTtcRow]) {
+      row.getCell(5).font = { bold: true };
+      row.getCell(6).font = { bold: true };
+      row.getCell(6).numFmt = '#,##0.00';
+    }
+    ws.columns = [
+      { width: 6 },
+      { width: 60 },
+      { width: 10 },
+      { width: 10 },
+      { width: 16 },
+      { width: 18 },
+    ];
+
+    const safe = avis.reference.replace(/[^\w-]+/g, '_');
+    const buffer = await wb.xlsx.writeBuffer();
+    return new StreamableFile(Buffer.from(buffer), {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: `attachment; filename="bordereau_bdc_${safe}.xlsx"`,
+    });
+  }
+
+  /** Balayage manuel: rafraîchit la liste + complète les détails manquants. */
+  @Roles(...MARCHES_ROLES)
+  @Post('sweep')
+  async sweep(@Body() body: unknown) {
+    const parsed = z
+      .object({
+        pages: z.number().int().min(1).max(50).optional(),
+        details: z.number().int().min(0).max(60).optional(),
+      })
+      .safeParse(body ?? {});
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const maxPages = parsed.data.pages ?? intEnv(process.env.BDC_SWEEP_PAGES, 3);
+    const maxDetails = parsed.data.details ?? intEnv(process.env.BDC_SWEEP_DETAILS, 20);
+
+    let inserted = 0;
+    let updated = 0;
+    let pages = 0;
+    for await (const { liste } of this.crawler.crawlListe(maxPages)) {
+      pages += 1;
+      if (liste.items.length === 0) break;
+      const res = await this.repo.upsertAvisFromListe(
+        liste.items.map((i) => ({
+          portalId: i.portalId,
+          reference: i.reference,
+          objet: i.objet,
+          acheteur: i.acheteur,
+          statut: i.statut,
+          datePublication: null,
+          dateLimite: i.dateLimite,
+          lieu: i.lieu,
+        })),
+      );
+      inserted += res.inserted;
+      updated += res.updated;
+    }
+
+    // Compléter les détails (articles) des avis récents non encore détaillés.
+    const pending = await this.repo.avisSansDetail(maxDetails);
+    let details = 0;
+    if (pending.length > 0) {
+      const byPortal = await this.crawler.fetchDetailsBatch(pending.map((p) => p.portalId));
+      for (const [portalId, detail] of byPortal) {
+        await this.repo.saveAvisDetail(portalId, {
+          categorie: detail.categorie,
+          naturePrestation: detail.naturePrestation,
+          pieces: detail.pieces,
+          articles: detail.articles,
+          datePublication: detail.datePublication,
+          dateLimite: detail.dateLimite,
+        });
+        details += 1;
+      }
+    }
+    this.logger.log(`BDC sweep: ${pages} pages, +${inserted} avis, ${details} détails`);
+    return { pages, inserted, updated, details };
+  }
+}
+
+export const bdcRepositoryProvider = {
+  provide: BDC_REPOSITORY,
+  useFactory: (): BdcRepository => {
+    const url = process.env.DATABASE_URL;
+    if (url) return new DrizzleBdcRepository(getDb(url));
+    new Logger('BdcModule').warn('DATABASE_URL not set — BdcRepository unavailable');
+    return unavailableBdcRepository<BdcRepository>('BdcRepository');
+  },
+};
+
+@Module({
+  controllers: [BdcController],
+  providers: [bdcRepositoryProvider],
+  exports: [bdcRepositoryProvider],
+})
+export class BdcModule {}

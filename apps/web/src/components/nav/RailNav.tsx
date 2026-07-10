@@ -17,11 +17,6 @@ interface NavItem {
 
 const ITEMS: readonly NavItem[] = [
   { href: '/', label: 'Command Center', icon: 'command' },
-  { href: '/tenders', label: 'Marchés Publics', icon: 'tenders' },
-  { href: '/tenders/lists', label: 'Listes', icon: 'boxes' },
-  { href: '/tenders/searches', label: 'Recherches sauvegardées', icon: 'search' },
-  { href: '/tenders/ai', label: 'Assistant IA', icon: 'agents' },
-  { href: '/expert', label: 'Agent AGHA', icon: 'intel' },
   { href: '/projects', label: 'Projets & Chantiers', icon: 'chantiers' },
   { href: '/stock', label: 'Stock & Matériaux', icon: 'boxes' },
   { href: '/equipment', label: 'Matériel & Équipements', icon: 'equipment' },
@@ -29,9 +24,21 @@ const ITEMS: readonly NavItem[] = [
   { href: '/finance', label: 'Finance', icon: 'tresorerie' },
   { href: '/people', label: 'Personnel', icon: 'personnel' },
   { href: '/vault', label: 'Documents & GED', icon: 'documents' },
+  { href: '/agents', label: 'Salle des Agents', icon: 'agents' },
+];
+
+/** Marchés & Prospection — LE cœur métier: veille, analyse et réponse aux
+ *  appels d'offres + bons de commande. Un seul groupe repliable pour tout ce
+ *  qui touche à la chasse aux marchés (permissions fines à venir). */
+const MARCHES: readonly NavItem[] = [
+  { href: '/tenders', label: 'Inventaire des marchés', icon: 'tenders' },
+  { href: '/tenders/bc', label: 'Bons de commande', icon: 'quote' },
+  { href: '/tenders/lists', label: 'Listes', icon: 'boxes' },
+  { href: '/tenders/searches', label: 'Recherches sauvegardées', icon: 'search' },
+  { href: '/tenders/ai', label: 'Assistant IA', icon: 'agents' },
+  { href: '/expert', label: 'Agent AGHA', icon: 'intel' },
   { href: '/intel', label: 'Concurrence', icon: 'intel' },
   { href: '/buyers', label: 'Acheteurs', icon: 'analytics' },
-  { href: '/agents', label: 'Salle des Agents', icon: 'agents' },
 ];
 
 /** Commercial / Ventes — private-client devis, BL, factures (separate from the
@@ -96,6 +103,7 @@ export function RailNav({
   const path = usePathname();
   const horizontal = orientation === 'horizontal';
   const onCompta = path === '/compta' || path.startsWith('/compta/');
+  const onMarches = MARCHES.some((i) => path === i.href || path.startsWith(`${i.href}/`));
   // Repli persistant du groupe Comptabilité (ouvert d'office sur ses pages) —
   // initialisé fermé côté serveur, hydraté depuis localStorage au montage.
   const [comptaOpen, setComptaOpen] = useState(false);
@@ -113,8 +121,27 @@ export function RailNav({
       return next;
     });
   };
+  // Groupe Marchés & Prospection — même mécanique, OUVERT par défaut (c'est
+  // le cœur métier) tant que l'utilisateur ne l'a pas replié lui-même.
+  const [marchesOpen, setMarchesOpen] = useState(false);
+  useEffect(() => {
+    if (onMarches) {
+      setMarchesOpen(true);
+      return;
+    }
+    setMarchesOpen(window.localStorage.getItem('atlas.nav.marches') !== '0');
+  }, [onMarches]);
+  const toggleMarches = () => {
+    setMarchesOpen((open) => {
+      const next = !open;
+      window.localStorage.setItem('atlas.nav.marches', next ? '1' : '0');
+      return next;
+    });
+  };
   // Combined href list (top items + groups) for the longest-prefix check.
-  const allHrefs = [...ITEMS, ...SALES, ...(comptaVisible ? COMPTA : [])].map((i) => i.href);
+  const allHrefs = [...ITEMS, ...MARCHES, ...SALES, ...(comptaVisible ? COMPTA : [])].map(
+    (i) => i.href,
+  );
 
   function renderItem(item: NavItem) {
     const active = isActive(path, item.href, allHrefs);
@@ -169,6 +196,45 @@ export function RailNav({
       }
     >
       {ITEMS.map(renderItem)}
+
+      {/* Marchés & Prospection — le cœur métier, groupe repliable. */}
+      {!horizontal && (
+        <div className="mt-5">
+          <button
+            type="button"
+            onClick={toggleMarches}
+            aria-expanded={marchesOpen}
+            className={`group flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition ${
+              onMarches && !marchesOpen
+                ? 'bg-cyan-soft/40 text-ink'
+                : 'text-muted hover:bg-rail-2 hover:text-ink'
+            }`}
+          >
+            <Icon
+              name="tenders"
+              size={18}
+              className={onMarches ? 'text-cyan' : 'text-faint group-hover:text-muted'}
+            />
+            <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/80">
+              Marchés & Prospection
+            </span>
+            <span
+              className={`ml-auto text-faint transition-transform duration-200 ${
+                marchesOpen ? 'rotate-90' : ''
+              }`}
+              aria-hidden
+            >
+              ›
+            </span>
+          </button>
+          {marchesOpen && (
+            <div className="relative ml-4 mt-0.5 flex flex-col gap-0.5 border-l border-line/70 pl-1.5">
+              {MARCHES.map(renderItem)}
+            </div>
+          )}
+        </div>
+      )}
+      {horizontal && MARCHES.slice(0, 3).map(renderItem)}
 
       {/* Comptabilité — groupe repliable, réservé aux rôles habilités. */}
       {comptaVisible && !horizontal && (

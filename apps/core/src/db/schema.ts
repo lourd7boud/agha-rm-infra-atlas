@@ -16,3 +16,4 @@ export * from './schema/stock';
 export * from './schema/sales';
 export * from './schema/equipment';
 export * from './schema/compta';
+export * from './schema/bdc';
