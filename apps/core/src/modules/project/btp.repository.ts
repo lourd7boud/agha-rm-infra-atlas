@@ -78,6 +78,8 @@ export interface BtpProjectRecord {
   ligneBudgetaire: string | null;
   chapitre: string | null;
   arrets: ArretTravaux[];
+  modeObtention: string;
+  acquisition: Record<string, unknown>;
   deletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -111,6 +113,8 @@ export interface BtpProjectFichePatch {
   chapitre?: string | null;
   arrets?: ArretTravaux[];
   status?: string;
+  modeObtention?: string;
+  acquisition?: Record<string, unknown>;
 }
 
 export interface BtpPortfolioFilters {
@@ -372,6 +376,8 @@ function mapProject(row: typeof projects.$inferSelect): BtpProjectRecord {
     ligneBudgetaire: row.ligneBudgetaire ?? null,
     chapitre: row.chapitre ?? null,
     arrets: (row.arrets as ArretTravaux[]) ?? [],
+    modeObtention: row.modeObtention ?? 'ao_direct',
+    acquisition: (row.acquisition as Record<string, unknown>) ?? {},
     deletedAt: row.deletedAt ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -574,6 +580,8 @@ export class DrizzleBtpExecutionRepository implements BtpExecutionRepository {
         ligneBudgetaire: input.ligneBudgetaire,
         chapitre: input.chapitre,
         arrets: input.arrets ?? [],
+        modeObtention: input.modeObtention ?? 'ao_direct',
+        acquisition: input.acquisition ?? {},
       })
       .returning();
     if (!row) throw new BtpTransitionError('Création du marché échouée');
@@ -609,6 +617,8 @@ export class DrizzleBtpExecutionRepository implements BtpExecutionRepository {
       'chapitre',
       'arrets',
       'status',
+      'modeObtention',
+      'acquisition',
     ];
     for (const key of direct) {
       if (patch[key] !== undefined) set[key] = patch[key];

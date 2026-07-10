@@ -279,6 +279,19 @@ export class ComptaCoreController {
     }
   }
 
+  /** Dépenses chantier (terrain) → écritures comptables, garde anti-doublon. */
+  @Post('ecritures/generer-depenses')
+  async genererDepenses(@Body() body: unknown, @Req() req: AuthedRequest) {
+    const parsed = z.object({ annee: anneeSchema }).safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    try {
+      const crees = await this.compta.genererEcrituresDepenses(parsed.data.annee, actorFrom(req));
+      return { crees };
+    } catch (error) {
+      toComptaHttp(error);
+    }
+  }
+
   // Livres.
   @Get('livres/grand-livre')
   async grandLivre(@Query('compte') compte?: string, @Query('annee') anneeStr?: string) {

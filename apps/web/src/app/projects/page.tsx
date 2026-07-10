@@ -2,7 +2,13 @@
 // URL (GET form), data comes from /api/btp/projects in one call.
 import Link from 'next/link';
 import { apiGet } from '@/lib/api';
-import { fmtDate, fmtMad, PROJECT_STATUS_BADGES, type BtpPortfolio } from '@/lib/btp';
+import {
+  fmtDate,
+  fmtMad,
+  MODE_OBTENTION_BADGES,
+  PROJECT_STATUS_BADGES,
+  type BtpPortfolio,
+} from '@/lib/btp';
 import { Pager } from '@/components/ui/Pager';
 
 export const metadata = { title: 'Projets BTP — ATLAS' };
@@ -197,10 +203,23 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Sea
               >
                 <div className="flex items-start justify-between gap-3">
                   <span className="font-mono text-sm font-bold text-cyan">{project.reference}</span>
-                  <span
-                    className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${badge.classes}`}
-                  >
-                    {badge.label}
+                  <span className="flex flex-wrap justify-end gap-1">
+                    {project.modeObtention && project.modeObtention !== 'ao_direct' && (
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${(MODE_OBTENTION_BADGES[project.modeObtention] ?? { classes: 'bg-sand text-muted' }).classes}`}
+                      >
+                        {
+                          (MODE_OBTENTION_BADGES[project.modeObtention] ?? {
+                            label: project.modeObtention,
+                          }).label
+                        }
+                      </span>
+                    )}
+                    <span
+                      className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${badge.classes}`}
+                    >
+                      {badge.label}
+                    </span>
                   </span>
                 </div>
                 <p className="mt-2 line-clamp-2 min-h-10 text-sm font-semibold leading-snug text-ink-2">

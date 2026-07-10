@@ -3,15 +3,31 @@
 // Component fetching exactly what it needs.
 import Link from 'next/link';
 import { apiGet } from '@/lib/api';
-import { fmtMad, PROJECT_STATUS_BADGES, type BtpProjectDetail } from '@/lib/btp';
+import {
+  fmtMad,
+  MODE_OBTENTION_BADGES,
+  PROJECT_STATUS_BADGES,
+  type BtpProjectDetail,
+} from '@/lib/btp';
 import { ApercuTab } from './btp/ApercuTab';
 import { BordereauTab, DecomptesTab, ExportTab, MetresTab } from './btp/ExecutionTabs';
 import { RevisionTab } from './btp/RevisionTab';
 import { AvenantsTab, OdsTab, PenalitesTab, ValidationsTab } from './btp/RegistresTabs';
 import { DocumentsTab, PhotosTab } from './btp/MediaTabs';
-import { JournalTab, RessourcesTab } from './btp/RessourcesTab';
+import {
+  AttachementsTab,
+  ConsommationsTab,
+  DepensesTab,
+  MaterielTab,
+  PointageTab,
+  RapportsTab,
+  TerrainApercuTab,
+} from './btp/TerrainTabs';
 
-const TABS = [
+// Deux mondes, un marché: l'ADMINISTRATIF (bordereau → métrés → décomptes,
+// registres, documents) que gère le bureau, et le TERRAIN (rapports, pointage,
+// matériel, matériaux, dépenses, attachements, photos) que saisit le chantier.
+const ADMIN_TABS = [
   { key: 'apercu', label: "Vue d'ensemble" },
   { key: 'bordereau', label: 'Bordereau' },
   { key: 'metres', label: 'Métrés' },
@@ -21,14 +37,28 @@ const TABS = [
   { key: 'ods', label: 'ODS' },
   { key: 'penalites', label: 'Pénalités' },
   { key: 'validations', label: 'Validations' },
-  { key: 'photos', label: 'Photos' },
   { key: 'documents', label: 'Documents' },
-  { key: 'journal', label: 'Journal' },
-  { key: 'ressources', label: 'Ressources' },
   { key: 'export', label: 'Export' },
 ] as const;
 
-type TabKey = (typeof TABS)[number]['key'];
+const TERRAIN_TABS = [
+  { key: 't-apercu', label: 'Vue terrain' },
+  { key: 'rapports', label: 'Rapports' },
+  { key: 'pointage', label: 'Pointage' },
+  { key: 'materiel', label: 'Matériel' },
+  { key: 'consommations', label: 'Matériaux' },
+  { key: 'depenses', label: 'Dépenses' },
+  { key: 'attachements', label: 'Attachements' },
+  { key: 'photos', label: 'Photos' },
+] as const;
+
+type TabKey = (typeof ADMIN_TABS)[number]['key'] | (typeof TERRAIN_TABS)[number]['key'];
+
+/** Anciennes URLs (?tab=journal / ressources) → leurs équivalents terrain. */
+const LEGACY_TABS: Record<string, TabKey> = {
+  journal: 'rapports',
+  ressources: 'pointage',
+};
 
 const ACTION_ERROR_MESSAGES: Record<string, string> = {
   invalid: 'Requête refusée : vérifiez les champs saisis.',
@@ -45,12 +75,21 @@ export default async function ProjectDetailPage({
 }) {
   const { id } = await params;
   const query = await searchParams;
-  const tab: TabKey = (TABS.find((t) => t.key === query.tab)?.key ?? 'apercu') as TabKey;
+  const requested = LEGACY_TABS[query.tab ?? ''] ?? query.tab;
+  const isTerrainTab = TERRAIN_TABS.some((t) => t.key === requested);
+  const isAdminTab = ADMIN_TABS.some((t) => t.key === requested);
+  const section: 'admin' | 'terrain' =
+    isTerrainTab || (query.section === 'terrain' && !isAdminTab) ? 'terrain' : 'admin';
+  const tab: TabKey = (
+    isTerrainTab || isAdminTab ? requested : section === 'terrain' ? 't-apercu' : 'apercu'
+  ) as TabKey;
+  const sectionTabs = section === 'terrain' ? TERRAIN_TABS : ADMIN_TABS;
   const project = await apiGet<BtpProjectDetail>(`/btp/projects/${id}`);
   const badge = PROJECT_STATUS_BADGES[project.status] ?? {
     label: project.status,
     classes: 'bg-sand text-muted',
   };
+  const modeBadge = MODE_OBTENTION_BADGES[project.modeObtention] ?? null;
   const errorMessage = query.error
     ? `${query.error} — ${ACTION_ERROR_MESSAGES[query.code ?? 'failed'] ?? ACTION_ERROR_MESSAGES.failed}`
     : undefined;
@@ -83,6 +122,11 @@ export default async function ProjectDetailPage({
             <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badge.classes}`}>
               {badge.label}
             </span>
+            {modeBadge && (
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${modeBadge.classes}`}>
+                {modeBadge.label}
+              </span>
+            )}
             {project.delai.enArret && (
               <span className="rounded-full bg-clay-soft px-3 py-1 text-xs font-semibold text-clay">
                 Travaux arrêtés
@@ -167,15 +211,35 @@ export default async function ProjectDetailPage({
         </div>
       )}
 
-      {/* Onglets */}
-      <nav className="mt-6 flex gap-1 overflow-x-auto border-b border-line pb-px">
-        {TABS.map((t) => {
+      {/* Sections: Administratif (bureau) / Terrain (chantier) */}
+      <div className="mt-6 inline-flex rounded-xl border border-line bg-paper-2 p-1 shadow-sm">
+        <Link
+          href={`/projects/${id}?section=admin&tab=apercu`}
+          className={`rounded-lg px-5 py-2 text-sm font-bold transition ${
+            section === 'admin' ? 'bg-cyan text-paper shadow' : 'text-muted hover:text-ink'
+          }`}
+        >
+          🏢 Administratif
+        </Link>
+        <Link
+          href={`/projects/${id}?section=terrain&tab=t-apercu`}
+          className={`rounded-lg px-5 py-2 text-sm font-bold transition ${
+            section === 'terrain' ? 'bg-cyan text-paper shadow' : 'text-muted hover:text-ink'
+          }`}
+        >
+          🏗️ Terrain
+        </Link>
+      </div>
+
+      {/* Onglets de la section */}
+      <nav className="mt-4 flex gap-1 overflow-x-auto border-b border-line pb-px">
+        {sectionTabs.map((t) => {
           const active = t.key === tab;
-          const count = counts[t.key];
+          const count = counts[t.key as TabKey];
           return (
             <Link
               key={t.key}
-              href={`/projects/${id}?tab=${t.key}`}
+              href={`/projects/${id}?section=${section}&tab=${t.key}`}
               className={`whitespace-nowrap rounded-t-lg border-x border-t px-3.5 py-2 text-xs font-semibold transition ${
                 active
                   ? 'border-line bg-paper-2 text-cyan'
@@ -204,11 +268,16 @@ export default async function ProjectDetailPage({
         {tab === 'ods' && <OdsTab project={project} />}
         {tab === 'penalites' && <PenalitesTab project={project} />}
         {tab === 'validations' && <ValidationsTab project={project} />}
-        {tab === 'photos' && <PhotosTab project={project} />}
         {tab === 'documents' && <DocumentsTab project={project} />}
-        {tab === 'journal' && <JournalTab project={project} />}
-        {tab === 'ressources' && <RessourcesTab project={project} />}
         {tab === 'export' && <ExportTab project={project} />}
+        {tab === 't-apercu' && <TerrainApercuTab project={project} />}
+        {tab === 'rapports' && <RapportsTab project={project} />}
+        {tab === 'pointage' && <PointageTab project={project} />}
+        {tab === 'materiel' && <MaterielTab project={project} />}
+        {tab === 'consommations' && <ConsommationsTab project={project} />}
+        {tab === 'depenses' && <DepensesTab project={project} />}
+        {tab === 'attachements' && <AttachementsTab project={project} />}
+        {tab === 'photos' && <PhotosTab project={project} />}
       </div>
     </div>
   );

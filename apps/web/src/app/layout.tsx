@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { Inter, IBM_Plex_Mono } from 'next/font/google';
 import { auth, signOut } from '@/auth';
-import { AtlasLogo } from '@/components/brand/AtlasLogo';
+import { ArmiLogo } from '@/components/brand/ArmiLogo';
 import { RailNav } from '@/components/nav/RailNav';
 import { Icon } from '@/components/ui/Icon';
 import './globals.css';
@@ -82,7 +82,7 @@ export default async function RootLayout({
           <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-line bg-rail lg:flex">
             <div className="brand-seam h-0.5 w-full" />
             <div className="px-5 py-6">
-              <AtlasLogo variant="rail" />
+              <ArmiLogo variant="rail" />
               <p className="mt-2 pl-px text-[10px] uppercase tracking-[0.2em] text-faint/70">
                 Enterprise Operating System
               </p>
@@ -125,7 +125,7 @@ export default async function RootLayout({
           <header className="border-b border-line bg-rail lg:hidden">
             <div className="brand-seam h-0.5 w-full" />
             <div className="flex items-center justify-between px-4 py-3">
-              <AtlasLogo variant="rail" markSize={30} />
+              <ArmiLogo variant="rail" markSize={30} />
               {logoutButton(
                 'flex items-center gap-2 rounded-md px-3 py-1.5 text-sm text-muted transition hover:bg-rail-2 hover:text-ink',
               )}

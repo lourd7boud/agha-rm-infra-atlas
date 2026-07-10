@@ -57,6 +57,14 @@ export const projects = project.table('project', {
   // Arrêts de travaux: [{ id, dateArret, dateReprise?, motif }] — feeds the
   // délai effectif (date fin initiale + jours d'arrêt).
   arrets: jsonb('arrets').notNull().default('[]'),
+  // Comment NOTRE société a obtenu ce marché — pilote le wizard de création et
+  // les champs affichés. ao_direct | bon_commande | sous_traitance |
+  // groupement | marche_prive (validé à l'edge, zod).
+  modeObtention: text('mode_obtention').notNull().default('ao_direct'),
+  // Payload spécifique au mode: titulaire principal + part (sous-traitance),
+  // membres/quote-parts/mandataire (groupement), client + devis (privé),
+  // n° BC (bon de commande ≤500k DH), mode de passation détaillé (direct).
+  acquisition: jsonb('acquisition').notNull().default('{}'),
   // Original btpdb ids, kept for traceability/idempotence of migrated rows.
   legacyUserId: uuid('legacy_user_id'),
   legacyProjectId: uuid('legacy_project_id'),
@@ -153,6 +161,12 @@ export const dailyLogs = project.table(
     meteo: text('meteo'),
     blocages: text('blocages'),
     incidentsSecurite: integer('incidents_securite').notNull().default(0),
+    // ── Rapport de chantier enrichi (0047) — saisie terrain par le chef ──
+    heuresTravail: numeric('heures_travail', { precision: 4, scale: 1 }),
+    visites: text('visites'),
+    avancement: text('avancement'),
+    // ids d'assets photo (project_asset) joints au rapport du jour.
+    photoIds: jsonb('photo_ids').notNull().default('[]'),
     createdBy: text('created_by').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -160,6 +174,85 @@ export const dailyLogs = project.table(
     // Daily logs are always read per chantier — keep that list query off a seq scan.
     index('daily_log_project_id_idx').on(table.projectId),
   ],
+);
+
+// ── Saisie terrain (0047) — le chef de chantier alimente le suivi réel ──────
+// Matériel/engins utilisés sur le chantier: heures machine + carburant +
+// location. equipmentId relie (sans FK dure) au module /equipment quand
+// l'engin est référencé; `engin` reste le libellé affiché.
+export const chantierMateriel = project.table(
+  'chantier_materiel',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id),
+    date: date('date', { mode: 'date' }).notNull(),
+    engin: text('engin').notNull(),
+    equipmentId: uuid('equipment_id'),
+    regime: text('regime').notNull().default('propre'), // propre | location
+    heuresUtilisation: numeric('heures_utilisation', { precision: 6, scale: 1 }),
+    carburantL: numeric('carburant_l', { precision: 8, scale: 1 }),
+    coutCarburantMad: numeric('cout_carburant_mad', { precision: 12, scale: 2 })
+      .notNull()
+      .default('0'),
+    coutLocationMad: numeric('cout_location_mad', { precision: 12, scale: 2 })
+      .notNull()
+      .default('0'),
+    note: text('note'),
+    saisiPar: text('saisi_par').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('chantier_materiel_project_date_idx').on(table.projectId, table.date)],
+);
+
+// Consommations matériaux (sortie réelle sur chantier): article libre +
+// quantité + coût; bonLivraison/fournisseur tracent la provenance.
+export const chantierConsommations = project.table(
+  'chantier_consommation',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id),
+    date: date('date', { mode: 'date' }).notNull(),
+    article: text('article').notNull(),
+    unite: text('unite').notNull().default('u'),
+    quantite: numeric('quantite', { precision: 12, scale: 3 }).notNull(),
+    prixUnitaireMad: numeric('prix_unitaire_mad', { precision: 12, scale: 2 }),
+    coutMad: numeric('cout_mad', { precision: 12, scale: 2 }).notNull().default('0'),
+    fournisseur: text('fournisseur'),
+    bonLivraison: text('bon_livraison'),
+    note: text('note'),
+    saisiPar: text('saisi_par').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('chantier_consommation_project_date_idx').on(table.projectId, table.date)],
+);
+
+// Attachement terrain — quantités RÉALISÉES par ligne du bordereau, saisies
+// par le chef de chantier. ligneId référence l'id de la ligne dans le jsonb du
+// bordereau (designation/unite snapshotées); l'administratif les INTÈGRE
+// ensuite dans le métré officiel (statut saisi → integre).
+export const chantierAttachements = project.table(
+  'chantier_attachement',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id),
+    date: date('date', { mode: 'date' }).notNull(),
+    ligneId: text('ligne_id').notNull(),
+    numeroPrix: text('numero_prix'),
+    designation: text('designation').notNull(),
+    unite: text('unite').notNull(),
+    quantite: numeric('quantite', { precision: 14, scale: 3 }).notNull(),
+    note: text('note'),
+    statut: text('statut').notNull().default('saisi'), // saisi | integre
+    saisiPar: text('saisi_par').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('chantier_attachement_project_date_idx').on(table.projectId, table.date)],
 );
 
 // Tâches de chantier — the physical work-breakdown for a project. Progress here

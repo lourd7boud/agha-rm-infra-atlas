@@ -643,8 +643,9 @@ export class BtpAssetsController {
     return this.assets.countAssets(projectId);
   }
 
-  /** Multi-file upload (photos / PV / documents) → MinIO, rows in Postgres. */
-  @Roles(...WRITE_ROLES)
+  /** Multi-file upload (photos / PV / documents) → MinIO, rows in Postgres.
+   *  Le rôle `chantier` uploade aussi: photos de rapport + justificatifs. */
+  @Roles(...WRITE_ROLES, 'chantier')
   @Post('assets/upload')
   @UseInterceptors(FilesInterceptor('files', 20, { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   async upload(

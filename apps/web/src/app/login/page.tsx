@@ -1,7 +1,7 @@
 import Image from 'next/image';
 import { redirect } from 'next/navigation';
 import { auth, signIn } from '@/auth';
-import { AtlasLogo } from '@/components/brand/AtlasLogo';
+import { ArmiLogo } from '@/components/brand/ArmiLogo';
 import { AtlasMark } from '@/components/brand/AtlasMark';
 import { Icon } from '@/components/ui/Icon';
 import { TopoBackground } from '@/components/ui/TopoBackground';
@@ -41,7 +41,7 @@ export default async function LoginPage() {
         <div className="absolute inset-0 bg-gradient-to-t from-rail via-rail/55 to-rail/15" />
         <div className="brand-seam absolute inset-x-0 top-0 h-1" />
         <div className="relative flex h-full flex-col justify-between p-12 text-paper">
-          <AtlasLogo variant="rail" markSize={42} />
+          <ArmiLogo variant="rail" markSize={42} />
           <div className="max-w-lg">
             <p className="mb-4 text-xs font-semibold uppercase tracking-[0.3em] text-ochre">
               Système d&apos;exploitation d&apos;entreprise
@@ -77,7 +77,7 @@ export default async function LoginPage() {
         <TopoBackground opacity={0.04} />
         <div className="relative w-full max-w-sm">
           <div className="mb-8 lg:hidden">
-            <AtlasLogo variant="light" />
+            <ArmiLogo variant="light" />
           </div>
           <div className="rounded-xl border border-line bg-paper-2 p-8 shadow-raised">
             <AtlasMark size={46} />

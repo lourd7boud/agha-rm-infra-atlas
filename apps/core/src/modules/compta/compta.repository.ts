@@ -13,8 +13,10 @@ import {
   clients as salesClients,
   ecritureLignes,
   ecritures,
+  expenses,
   invoices as salesInvoices,
   journaux,
+  projects,
 } from '../../db/schema';
 import {
   computeBalance,
@@ -187,6 +189,8 @@ export interface ComptaRepository {
   validerEcriture(id: string): Promise<EcritureRecord>;
   deleteEcriture(id: string): Promise<boolean>;
   genererEcrituresVentes(annee: number, createdBy: string | null): Promise<number>;
+  /** Dépenses chantier/terrain (finance.expense) → écritures CAI/BQ/ACH. */
+  genererEcrituresDepenses(annee: number, createdBy: string | null): Promise<number>;
 
   grandLivre(params: { compteCode: string; annee: number }): Promise<GrandLivreLigne[]>;
   balance(annee: number): Promise<BalanceRow[]>;
@@ -210,6 +214,30 @@ export function unavailableComptaRepository<T extends object>(name: string): T {
     },
   });
 }
+
+// ── Pont dépenses chantier → plan CGNC (comptes tous présents au seed) ──────
+const DEPENSE_COMPTES: Record<string, string> = {
+  carburant: '61255',
+  materiaux: '6121',
+  location_materiel: '6131',
+  main_oeuvre: '6135',
+  transport: '6142',
+  petit_outillage: '61253',
+  reparation: '6133',
+  repas: '6143',
+  administratif: '6125',
+  taxes: '6161',
+  sous_traitance: '6126',
+  autre: '6125',
+};
+
+const DEPENSE_CONTREPARTIES: Record<string, string> = {
+  especes: '5161',
+  carte: '5141',
+  virement: '5141',
+  cheque: '5141',
+  credit: '4411',
+};
 
 // ── Mappers ──────────────────────────────────────────────────────────────────
 
@@ -724,6 +752,68 @@ export class DrizzleComptaRepository implements ComptaRepository {
           createdBy,
           'vente',
           invoice.id,
+        ),
+      );
+      crees += 1;
+    }
+    return crees;
+  }
+
+  async genererEcrituresDepenses(annee: number, createdBy: string | null): Promise<number> {
+    const exercice = await this.ensureExercice(annee);
+    if (exercice.statut === 'cloture') {
+      throw new ComptaError(`L'exercice ${annee} est clôturé.`, 409);
+    }
+    const rows = await this.db
+      .select({
+        id: expenses.id,
+        label: expenses.label,
+        amountMad: expenses.amountMad,
+        method: expenses.method,
+        reference: expenses.reference,
+        spentAt: expenses.spentAt,
+        category: expenses.category,
+        projetRef: projects.reference,
+      })
+      .from(expenses)
+      .leftJoin(projects, eq(projects.id, expenses.projectId))
+      .where(
+        and(
+          sql`extract(year from ${expenses.spentAt}) = ${annee}`,
+          sql`not exists (
+            select 1 from "compta"."ecriture" e
+            where e.source = 'depense' and e.source_id = ${expenses.id}
+              and e.deleted_at is null
+          )`,
+        ),
+      )
+      .orderBy(asc(expenses.spentAt));
+
+    let crees = 0;
+    for (const dep of rows) {
+      const montant = num(dep.amountMad);
+      if (montant <= 0) continue;
+      const compteCharge = DEPENSE_COMPTES[dep.category] ?? '6125';
+      const contrepartie = DEPENSE_CONTREPARTIES[dep.method ?? 'especes'] ?? '5161';
+      const journalCode =
+        contrepartie === '4411' ? 'ACH' : contrepartie === '5141' ? 'BQ' : 'CAI';
+      await this.db.transaction((tx) =>
+        this.insertEcritureTx(
+          tx,
+          exercice.id,
+          {
+            journalCode,
+            dateEcriture: dep.spentAt,
+            pieceRef: dep.reference ?? undefined,
+            libelle: `Dépense${dep.projetRef ? ` chantier ${dep.projetRef}` : ''} — ${dep.label}`,
+            lignes: [
+              { compteCode: compteCharge, debit: montant, credit: 0 },
+              { compteCode: contrepartie, debit: 0, credit: montant },
+            ],
+          },
+          createdBy,
+          'depense',
+          dep.id,
         ),
       );
       crees += 1;

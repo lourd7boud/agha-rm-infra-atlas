@@ -56,10 +56,189 @@ export interface BtpProject {
   ligneBudgetaire: string | null;
   chapitre: string | null;
   arrets: ArretTravaux[];
+  modeObtention: ModeObtention;
+  acquisition: Record<string, unknown>;
   deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
+
+// ─── Acquisition (mode d'obtention du marché) ────────────────────────────────
+export type ModeObtention =
+  | 'ao_direct'
+  | 'bon_commande'
+  | 'sous_traitance'
+  | 'groupement'
+  | 'marche_prive';
+
+export interface NotreEntreprise {
+  societe: string;
+  formeJuridique: string;
+  rc: string;
+  cnss: string;
+  patente: string;
+  identifiantFiscal: string;
+  ice: string;
+  siege: string;
+}
+
+// ─── Terrain (saisie chantier) ───────────────────────────────────────────────
+export interface TerrainCouts {
+  mainOeuvreMad: number;
+  materielMad: number;
+  consommationsMad: number;
+  depensesMad: number;
+  totalMad: number;
+  decompteCumuleTtcMad: number;
+  margeBruteMad: number;
+  repartitionPct: {
+    mainOeuvre: number;
+    materiel: number;
+    consommations: number;
+    depenses: number;
+  };
+  coutSurMarchePct: number;
+}
+
+export interface TerrainCounts {
+  rapports: number;
+  materiel: number;
+  consommations: number;
+  attachements: number;
+  attachementsASaisir: number;
+  depenses: number;
+}
+
+export interface TerrainRapport {
+  id: string;
+  projectId: string;
+  reportDate: string;
+  effectifs: number;
+  travauxRealises: string;
+  materiel: string | null;
+  meteo: string | null;
+  blocages: string | null;
+  incidentsSecurite: number;
+  heuresTravail: number | null;
+  visites: string | null;
+  avancement: string | null;
+  photoIds: string[];
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface TerrainMateriel {
+  id: string;
+  date: string;
+  engin: string;
+  equipmentId: string | null;
+  regime: string;
+  heuresUtilisation: number | null;
+  carburantL: number | null;
+  coutCarburantMad: number;
+  coutLocationMad: number;
+  note: string | null;
+  saisiPar: string;
+}
+
+export interface TerrainConsommation {
+  id: string;
+  date: string;
+  article: string;
+  unite: string;
+  quantite: number;
+  prixUnitaireMad: number | null;
+  coutMad: number;
+  fournisseur: string | null;
+  bonLivraison: string | null;
+  note: string | null;
+  saisiPar: string;
+}
+
+export interface TerrainAttachement {
+  id: string;
+  date: string;
+  ligneId: string;
+  numeroPrix: string | null;
+  designation: string;
+  unite: string;
+  quantite: number;
+  note: string | null;
+  statut: string;
+  saisiPar: string;
+}
+
+export interface TerrainDepense {
+  id: string;
+  category: string;
+  label: string;
+  amountMad: number;
+  method: string | null;
+  reference: string | null;
+  spentAt: string;
+  notes: string | null;
+  justificatifAssetId: string | null;
+  saisiPar: string | null;
+  createdAt: string;
+}
+
+export interface TerrainCrewMember {
+  assignmentId: string;
+  employeeId: string;
+  fullName: string;
+  metier: string;
+  rateType: string | null;
+  rateAmountMad: number | null;
+}
+
+export interface TerrainPointage {
+  id: string;
+  assignmentId: string;
+  employeeName: string;
+  metier: string;
+  workDate: string;
+  daysWorked: number;
+  notes: string | null;
+  coutMad: number;
+}
+
+export interface TerrainOverview {
+  couts: TerrainCouts;
+  counts: TerrainCounts;
+  derniersRapports: TerrainRapport[];
+}
+
+export const METEO_LABELS: Record<string, string> = {
+  soleil: '☀️ Soleil',
+  nuageux: '⛅ Nuageux',
+  pluie: '🌧 Pluie',
+  vent: '💨 Vent',
+  canicule: '🥵 Canicule',
+  froid: '❄️ Froid',
+};
+
+export const DEPENSE_CATEGORIE_LABELS: Record<string, string> = {
+  carburant: 'Carburant',
+  materiaux: 'Matériaux',
+  location_materiel: 'Location matériel',
+  main_oeuvre: "Main d'œuvre",
+  transport: 'Transport',
+  petit_outillage: 'Petit outillage',
+  reparation: 'Réparation',
+  repas: 'Repas & réception',
+  administratif: 'Administratif',
+  taxes: 'Taxes',
+  sous_traitance: 'Sous-traitance',
+  autre: 'Autre',
+};
+
+export const DEPENSE_METHODE_LABELS: Record<string, string> = {
+  especes: 'Espèces',
+  carte: 'Carte',
+  virement: 'Virement',
+  cheque: 'Chèque',
+  credit: 'Crédit fournisseur',
+};
 
 export interface BtpPortfolio {
   items: BtpProject[];
@@ -485,6 +664,14 @@ export const PROJECT_STATUS_BADGES: Record<string, BadgeSpec> = {
   suspendu: { label: 'Suspendu', classes: 'bg-clay-soft text-clay' },
   receptionne: { label: 'Réceptionné', classes: 'bg-emerald-soft text-emerald' },
   clos: { label: 'Clos', classes: 'bg-sand text-muted' },
+};
+
+export const MODE_OBTENTION_BADGES: Record<ModeObtention, BadgeSpec> = {
+  ao_direct: { label: 'Adjudicataire', classes: 'bg-cyan-soft text-cyan' },
+  bon_commande: { label: 'Bon de commande', classes: 'bg-emerald-soft text-emerald' },
+  sous_traitance: { label: 'Sous-traitance', classes: 'bg-ochre-soft text-ochre' },
+  groupement: { label: 'Groupement', classes: 'bg-clay-soft text-clay' },
+  marche_prive: { label: 'Marché privé', classes: 'bg-sand text-muted' },
 };
 
 export const DECOMPTE_STATUS_BADGES: Record<string, BadgeSpec> = {

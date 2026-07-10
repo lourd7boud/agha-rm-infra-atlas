@@ -18,6 +18,7 @@ import {
   validateFormula,
 } from './btp-revision.domain';
 import { computeDelaiInfo, computePenalite } from './btp-registres.domain';
+import { computeCoutsTerrain, coutPointage, parseAcquisition } from './btp-terrain.domain';
 
 describe('btp-finance rounding primitives', () => {
   it('trunc2 cuts, round2 rounds half-up', () => {
@@ -254,5 +255,57 @@ describe('délais & pénalités', () => {
     expect(capped.montantPenalite).toBe(150000);
     expect(capped.montantPlafond).toBe(100000);
     expect(capped.montantApplique).toBe(100000);
+  });
+});
+
+describe('terrain — coûts réels & acquisition', () => {
+  it('agrège les coûts, la répartition et la marge brute', () => {
+    const couts = computeCoutsTerrain({
+      mainOeuvreMad: 40_000,
+      materielMad: 25_000,
+      consommationsMad: 30_000,
+      depensesMad: 5_000,
+      decompteCumuleTtcMad: 150_000,
+      montantMarcheMad: 400_500,
+    });
+    expect(couts.totalMad).toBe(100_000);
+    expect(couts.margeBruteMad).toBe(50_000);
+    expect(couts.repartitionPct.mainOeuvre).toBe(40);
+    expect(couts.repartitionPct.depenses).toBe(5);
+    expect(couts.coutSurMarchePct).toBe(24.97);
+  });
+
+  it('coût pointage: taux jour direct et salaire mensuel /26', () => {
+    expect(coutPointage(1, 'jour', 150)).toBe(150);
+    expect(coutPointage(0.5, 'jour', 150)).toBe(75);
+    expect(coutPointage(1, 'mois', 5200)).toBe(200);
+    expect(coutPointage(1, null, null)).toBe(0);
+  });
+
+  it('parseAcquisition: défauts ao_direct + plafond bon de commande', () => {
+    const direct = parseAcquisition('ao_direct', {});
+    expect(direct.ok).toBe(true);
+    if (direct.ok) {
+      expect(direct.value.modePassation).toBe('ao_ouvert');
+      expect(direct.value.retenueGarantiePct).toBe(7);
+    }
+    const bcOk = parseAcquisition('bon_commande', { numeroBc: 'BC-12/2026', montantBcMad: 480000 });
+    expect(bcOk.ok).toBe(true);
+    const bcOver = parseAcquisition('bon_commande', {
+      numeroBc: 'BC-13/2026',
+      montantBcMad: 600000,
+    });
+    expect(bcOver.ok).toBe(false); // > 500 000 DH — décret 2-22-431 art. 91
+  });
+
+  it('parseAcquisition: groupement exige membres et type', () => {
+    const bad = parseAcquisition('groupement', { typeGroupement: 'conjoint' });
+    expect(bad.ok).toBe(false);
+    const good = parseAcquisition('groupement', {
+      typeGroupement: 'solidaire',
+      notreRole: 'mandataire',
+      membres: [{ societe: 'AGHA RM INFRA', partPct: 60 }, { societe: 'X BTP', partPct: 40 }],
+    });
+    expect(good.ok).toBe(true);
   });
 });

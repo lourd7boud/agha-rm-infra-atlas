@@ -657,3 +657,224 @@ export async function moveAssetToAlbum(formData: FormData) {
   revalidatePath(`/projects/${id}`);
   done(target);
 }
+
+// ─── Terrain — saisie chantier ───────────────────────────────────────────────
+
+export async function createRapportChantier(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=rapports`);
+  try {
+    await apiPost(`/btp/projects/${id}/terrain/rapports`, {
+      reportDate: str(formData, 'reportDate'),
+      effectifs: num(formData, 'effectifs') ?? 0,
+      travauxRealises: str(formData, 'travauxRealises'),
+      materiel: opt(formData, 'materiel'),
+      meteo: opt(formData, 'meteo'),
+      blocages: opt(formData, 'blocages'),
+      incidentsSecurite: num(formData, 'incidentsSecurite') ?? 0,
+      heuresTravail: num(formData, 'heuresTravail'),
+      visites: opt(formData, 'visites'),
+      avancement: opt(formData, 'avancement'),
+    });
+  } catch (error) {
+    fail(target, 'createRapportChantier', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}
+
+export async function deleteRapportChantier(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const rapportId = str(formData, 'rapportId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=rapports`);
+  try {
+    await apiDelete(`/btp/projects/${id}/terrain/rapports/${rapportId}`);
+  } catch (error) {
+    fail(target, 'deleteRapportChantier', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}
+
+export async function createPointage(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=pointage`);
+  try {
+    await apiPost(`/btp/projects/${id}/terrain/pointage`, {
+      assignmentId: str(formData, 'assignmentId'),
+      workDate: str(formData, 'workDate'),
+      daysWorked: num(formData, 'daysWorked') ?? 1,
+      notes: opt(formData, 'notes'),
+    });
+  } catch (error) {
+    fail(target, 'createPointage', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}
+
+export async function createMaterielChantier(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=materiel`);
+  try {
+    await apiPost(`/btp/projects/${id}/terrain/materiel`, {
+      date: str(formData, 'date'),
+      engin: str(formData, 'engin'),
+      regime: opt(formData, 'regime') ?? 'propre',
+      heuresUtilisation: num(formData, 'heuresUtilisation'),
+      carburantL: num(formData, 'carburantL'),
+      coutCarburantMad: num(formData, 'coutCarburantMad') ?? 0,
+      coutLocationMad: num(formData, 'coutLocationMad') ?? 0,
+      note: opt(formData, 'note'),
+    });
+  } catch (error) {
+    fail(target, 'createMaterielChantier', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}
+
+export async function deleteMaterielChantier(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const ligneId = str(formData, 'ligneId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=materiel`);
+  try {
+    await apiDelete(`/btp/projects/${id}/terrain/materiel/${ligneId}`);
+  } catch (error) {
+    fail(target, 'deleteMaterielChantier', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}
+
+export async function createConsommation(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=consommations`);
+  try {
+    await apiPost(`/btp/projects/${id}/terrain/consommations`, {
+      date: str(formData, 'date'),
+      article: str(formData, 'article'),
+      unite: opt(formData, 'unite') ?? 'u',
+      quantite: num(formData, 'quantite') ?? 0,
+      prixUnitaireMad: num(formData, 'prixUnitaireMad'),
+      coutMad: num(formData, 'coutMad') ?? 0,
+      fournisseur: opt(formData, 'fournisseur'),
+      bonLivraison: opt(formData, 'bonLivraison'),
+      note: opt(formData, 'note'),
+    });
+  } catch (error) {
+    fail(target, 'createConsommation', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}
+
+export async function deleteConsommation(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const ligneId = str(formData, 'ligneId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=consommations`);
+  try {
+    await apiDelete(`/btp/projects/${id}/terrain/consommations/${ligneId}`);
+  } catch (error) {
+    fail(target, 'deleteConsommation', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}
+
+export async function createDepenseChantier(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=depenses`);
+  try {
+    // Justificatif photo (facultatif): d'abord l'asset, puis la dépense liée.
+    let justificatifAssetId: string | undefined;
+    const justificatif = formData.get('justificatif');
+    if (justificatif instanceof File && justificatif.size > 0) {
+      const upload = new FormData();
+      upload.append('files', justificatif);
+      upload.append('type', justificatif.type.startsWith('image/') ? 'photo' : 'document');
+      upload.append('description', `Justificatif — ${str(formData, 'label')}`);
+      const created = await apiUpload<Array<{ id: string }>>(
+        `/btp/projects/${id}/assets/upload`,
+        upload,
+      );
+      justificatifAssetId = created[0]?.id;
+    }
+    await apiPost(`/btp/projects/${id}/terrain/depenses`, {
+      spentAt: str(formData, 'spentAt'),
+      category: str(formData, 'category'),
+      label: str(formData, 'label'),
+      amountMad: num(formData, 'amountMad') ?? 0,
+      method: opt(formData, 'method'),
+      reference: opt(formData, 'reference'),
+      notes: opt(formData, 'notes'),
+      justificatifAssetId,
+    });
+  } catch (error) {
+    fail(target, 'createDepenseChantier', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}
+
+export async function deleteDepenseChantier(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const depenseId = str(formData, 'depenseId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=depenses`);
+  try {
+    await apiDelete(`/btp/projects/${id}/terrain/depenses/${depenseId}`);
+  } catch (error) {
+    fail(target, 'deleteDepenseChantier', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}
+
+export async function createAttachementTerrain(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=attachements`);
+  try {
+    // Le select encode la ligne du bordereau: id:::numero:::unite:::designation
+    // — un seul champ pour le chef, le snapshot se déduit ici.
+    const [ligneId, numeroPrix, unite, ...designationParts] = str(formData, 'ligne').split(':::');
+    await apiPost(`/btp/projects/${id}/terrain/attachements`, {
+      date: str(formData, 'date'),
+      ligneId: ligneId || 'inconnu',
+      numeroPrix: numeroPrix || undefined,
+      designation: designationParts.join(':::') || '—',
+      unite: unite || 'u',
+      quantite: num(formData, 'quantite') ?? 0,
+      note: opt(formData, 'note'),
+    });
+  } catch (error) {
+    fail(target, 'createAttachementTerrain', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}
+
+export async function integrerAttachement(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const attachementId = str(formData, 'attachementId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=attachements`);
+  try {
+    await apiPost(`/btp/projects/${id}/terrain/attachements/${attachementId}/integrer`);
+  } catch (error) {
+    fail(target, 'integrerAttachement', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}
+
+export async function deleteAttachementTerrain(formData: FormData) {
+  const id = str(formData, 'projectId');
+  const attachementId = str(formData, 'attachementId');
+  const target = backTo(formData, `/projects/${id}?section=terrain&tab=attachements`);
+  try {
+    await apiDelete(`/btp/projects/${id}/terrain/attachements/${attachementId}`);
+  } catch (error) {
+    fail(target, 'deleteAttachementTerrain', error);
+  }
+  revalidatePath(`/projects/${id}`);
+  done(target);
+}

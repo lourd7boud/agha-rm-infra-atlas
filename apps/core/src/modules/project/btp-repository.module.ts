@@ -16,6 +16,11 @@ import {
   unavailableBtpRepository,
   type BtpExecutionRepository,
 } from './btp.repository';
+import {
+  BTP_TERRAIN_REPOSITORY,
+  DrizzleBtpTerrainRepository,
+  type BtpTerrainRepository,
+} from './btp-terrain.repository';
 
 /**
  * Leaf module owning the three BTP repository tokens (exécution, registres,
@@ -60,16 +65,28 @@ export const btpAssetsRepositoryProvider = {
   },
 };
 
+export const btpTerrainRepositoryProvider = {
+  provide: BTP_TERRAIN_REPOSITORY,
+  useFactory: (): BtpTerrainRepository => {
+    const url = process.env.DATABASE_URL;
+    if (url) return new DrizzleBtpTerrainRepository(getDb(url));
+    logMissingDb('BtpTerrainRepository');
+    return unavailableBtpRepository<BtpTerrainRepository>('BtpTerrainRepository');
+  },
+};
+
 @Module({
   providers: [
     btpExecutionRepositoryProvider,
     btpRegistresRepositoryProvider,
     btpAssetsRepositoryProvider,
+    btpTerrainRepositoryProvider,
   ],
   exports: [
     btpExecutionRepositoryProvider,
     btpRegistresRepositoryProvider,
     btpAssetsRepositoryProvider,
+    btpTerrainRepositoryProvider,
   ],
 })
 export class BtpRepositoryModule {}

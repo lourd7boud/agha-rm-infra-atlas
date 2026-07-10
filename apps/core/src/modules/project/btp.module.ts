@@ -34,6 +34,13 @@ import { toHttp, WRITE_ROLES } from './btp-http.helpers';
 import { computeDelaiInfo } from './btp-registres.domain';
 import { calculateDecompteRevision, type IndexValues } from './btp-revision.domain';
 import { round2, toDecimal, toNumber } from './btp-finance.domain';
+import { BtpEntrepriseController, BtpTerrainController } from './btp-terrain.controller';
+import {
+  MODES_OBTENTION,
+  NOTRE_ENTREPRISE,
+  parseAcquisition,
+  type ModeObtention,
+} from './btp-terrain.domain';
 
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 
@@ -68,6 +75,10 @@ const ficheSchema = z.object({
   ligneBudgetaire: z.string().max(300).optional(),
   chapitre: z.string().max(300).optional(),
   status: z.enum(['preparation', 'en_cours', 'suspendu', 'receptionne', 'clos']).optional(),
+  // Mode d'obtention du marché + payload spécifique (validé par mode dans
+  // create/updateFiche via parseAcquisition — pas ici, le schéma dépend du mode).
+  modeObtention: z.enum(MODES_OBTENTION).optional(),
+  acquisition: z.record(z.string(), z.unknown()).optional(),
 });
 
 const fichePatchSchema = ficheSchema
@@ -226,7 +237,21 @@ export class BtpProjectsController {
   async create(@Body() body: unknown) {
     const parsed = ficheSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
-    return this.execution.createProject(parsed.data);
+    const mode: ModeObtention = parsed.data.modeObtention ?? 'ao_direct';
+    const acquisition = parseAcquisition(mode, parsed.data.acquisition);
+    if (!acquisition.ok) throw new BadRequestException(acquisition.error.flatten());
+    // NOUS sommes l'attributaire (direct/BC) → identité de notre société,
+    // sauf si la fiche fournit explicitement d'autres valeurs.
+    const nous = mode === 'ao_direct' || mode === 'bon_commande';
+    return this.execution.createProject({
+      ...parsed.data,
+      modeObtention: mode,
+      acquisition: acquisition.value,
+      societe: parsed.data.societe ?? (nous ? NOTRE_ENTREPRISE.societe : undefined),
+      rc: parsed.data.rc ?? (nous ? NOTRE_ENTREPRISE.rc : undefined),
+      cnss: parsed.data.cnss ?? (nous ? NOTRE_ENTREPRISE.cnss : undefined),
+      patente: parsed.data.patente ?? (nous ? NOTRE_ENTREPRISE.patente : undefined),
+    });
   }
 
   /** Autocomplete data for société / AT / MOE (derived from existing fiches). */
@@ -313,7 +338,17 @@ export class BtpProjectsController {
   async patch(@Param('id') id: string, @Body() body: unknown) {
     const parsed = fichePatchSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
-    const updated = await this.execution.updateFiche(id, parsed.data as never);
+    const patch = { ...parsed.data } as Record<string, unknown>;
+    // Le payload acquisition se valide contre le mode (patché ou existant).
+    if (patch.modeObtention !== undefined || patch.acquisition !== undefined) {
+      const current = await this.findOr404(id);
+      const mode = (patch.modeObtention ?? current.modeObtention) as ModeObtention;
+      const acquisition = parseAcquisition(mode, patch.acquisition ?? current.acquisition);
+      if (!acquisition.ok) throw new BadRequestException(acquisition.error.flatten());
+      patch.modeObtention = mode;
+      patch.acquisition = acquisition.value;
+    }
+    const updated = await this.execution.updateFiche(id, patch as never);
     if (!updated) throw new NotFoundException(`Marché introuvable: ${id}`);
     return updated;
   }
@@ -618,6 +653,8 @@ export class BtpExecutionController {
     BtpExecutionController,
     BtpRegistresController,
     BtpAssetsController,
+    BtpTerrainController,
+    BtpEntrepriseController,
   ],
   providers: [BtpExportService],
   exports: [BtpRepositoryModule],

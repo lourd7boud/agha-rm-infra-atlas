@@ -75,6 +75,10 @@ export const expenses = finance.table(
     supplierId: uuid('supplier_id').references(() => suppliers.id),
     spentAt: date('spent_at', { mode: 'date' }).notNull(),
     notes: text('notes'),
+    // ── Saisie terrain (0047): photo du reçu (project_asset) + auteur — la
+    // plus petite dépense chantier garde son justificatif et sa trace.
+    justificatifAssetId: uuid('justificatif_asset_id'),
+    saisiPar: text('saisi_par'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
