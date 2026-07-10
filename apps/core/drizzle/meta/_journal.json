@@ -323,6 +323,13 @@
       "when": 1784100300000,
       "tag": "0045_btp_rebuild",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1784100400000,
+      "tag": "0046_compta",
+      "breakpoints": true
     }
   ]
 }

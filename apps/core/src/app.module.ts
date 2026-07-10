@@ -5,6 +5,7 @@ import { AgentsModule } from './modules/agents/agents.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule, Public } from './modules/auth/auth.module';
 import { BrainModule } from './modules/brain/brain.module';
+import { ComptaModule } from './modules/compta/compta.module';
 import { DigestModule } from './modules/digest/digest.module';
 import { EquipmentModule } from './modules/equipment/equipment.module';
 import { ExpertModule } from './modules/expert/expert.module';
@@ -50,6 +51,7 @@ export class HealthController {
     AuditModule,
     BrainModule,
     BtpModule,
+    ComptaModule,
     DigestModule,
     EquipmentModule,
     ExpertModule,
