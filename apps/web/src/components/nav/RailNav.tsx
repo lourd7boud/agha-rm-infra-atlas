@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import { Icon, type IconName } from '../ui/Icon';
 
 interface NavItem {
@@ -42,6 +43,23 @@ const SALES: readonly NavItem[] = [
   { href: '/sales/invoices', label: 'Factures', icon: 'invoice' },
 ];
 
+/** Comptabilité — section repliable dédiée (accès direction/finance/admin-si
+ *  et rôle `comptable` pour les cabinets externes). Un seul groupe pour une
+ *  future gestion fine des permissions. */
+const COMPTA: readonly NavItem[] = [
+  { href: '/compta', label: 'Tableau de bord', icon: 'command' },
+  { href: '/compta/ecritures', label: 'Écritures & journaux', icon: 'documents' },
+  { href: '/compta/plan', label: 'Plan comptable', icon: 'boxes' },
+  { href: '/compta/livres', label: 'Livres & états', icon: 'analytics' },
+  { href: '/compta/tva', label: 'TVA', icon: 'invoice' },
+  { href: '/compta/impots', label: 'Impôts & échéancier', icon: 'tenders' },
+  { href: '/compta/social', label: 'CNSS & paie', icon: 'personnel' },
+  { href: '/compta/immobilisations', label: 'Immobilisations', icon: 'equipment' },
+  { href: '/compta/banques', label: 'Banques', icon: 'tresorerie' },
+  { href: '/compta/legal', label: 'Statut légal & docs', icon: 'vault' },
+  { href: '/compta/parametres', label: 'Paramètres fiscaux', icon: 'settings' },
+];
+
 /** Planned modules — shown for breadth, not yet routed. */
 const SOON: readonly { label: string; icon: IconName }[] = [
   { label: 'Opérations Terrain', icon: 'terrain' },
@@ -69,13 +87,34 @@ function isActive(
 
 export function RailNav({
   orientation = 'vertical',
+  comptaVisible = false,
 }: {
   orientation?: 'vertical' | 'horizontal';
+  /** True pour les rôles direction / finance / admin-si / comptable. */
+  comptaVisible?: boolean;
 }) {
   const path = usePathname();
   const horizontal = orientation === 'horizontal';
-  // Combined href list (top items + sales group) for the longest-prefix check.
-  const allHrefs = [...ITEMS, ...SALES].map((i) => i.href);
+  const onCompta = path === '/compta' || path.startsWith('/compta/');
+  // Repli persistant du groupe Comptabilité (ouvert d'office sur ses pages) —
+  // initialisé fermé côté serveur, hydraté depuis localStorage au montage.
+  const [comptaOpen, setComptaOpen] = useState(false);
+  useEffect(() => {
+    if (onCompta) {
+      setComptaOpen(true);
+      return;
+    }
+    setComptaOpen(window.localStorage.getItem('atlas.nav.compta') === '1');
+  }, [onCompta]);
+  const toggleCompta = () => {
+    setComptaOpen((open) => {
+      const next = !open;
+      window.localStorage.setItem('atlas.nav.compta', next ? '1' : '0');
+      return next;
+    });
+  };
+  // Combined href list (top items + groups) for the longest-prefix check.
+  const allHrefs = [...ITEMS, ...SALES, ...(comptaVisible ? COMPTA : [])].map((i) => i.href);
 
   function renderItem(item: NavItem) {
     const active = isActive(path, item.href, allHrefs);
@@ -130,6 +169,45 @@ export function RailNav({
       }
     >
       {ITEMS.map(renderItem)}
+
+      {/* Comptabilité — groupe repliable, réservé aux rôles habilités. */}
+      {comptaVisible && !horizontal && (
+        <div className={`mt-5 ${onCompta ? '' : ''}`}>
+          <button
+            type="button"
+            onClick={toggleCompta}
+            aria-expanded={comptaOpen}
+            className={`group flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition ${
+              onCompta && !comptaOpen
+                ? 'bg-cyan-soft/40 text-ink'
+                : 'text-muted hover:bg-rail-2 hover:text-ink'
+            }`}
+          >
+            <Icon
+              name="tresorerie"
+              size={18}
+              className={onCompta ? 'text-cyan' : 'text-faint group-hover:text-muted'}
+            />
+            <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/80">
+              Comptabilité
+            </span>
+            <span
+              className={`ml-auto text-faint transition-transform duration-200 ${
+                comptaOpen ? 'rotate-90' : ''
+              }`}
+              aria-hidden
+            >
+              ›
+            </span>
+          </button>
+          {comptaOpen && (
+            <div className="relative ml-4 mt-0.5 flex flex-col gap-0.5 border-l border-line/70 pl-1.5">
+              {COMPTA.map(renderItem)}
+            </div>
+          )}
+        </div>
+      )}
+      {comptaVisible && horizontal && COMPTA.slice(0, 4).map(renderItem)}
 
       {!horizontal && (
         <p className="mt-5 mb-1 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/70">

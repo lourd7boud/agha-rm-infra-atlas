@@ -54,6 +54,11 @@ export default async function RootLayout({
 
   const name = session.user.name ?? session.user.email ?? 'Utilisateur';
   const role = session.roles?.[0];
+  // La section Comptabilité n'apparaît que pour les rôles habilités (données
+  // sensibles) — mêmes rôles que la garde API COMPTA_ROLES côté core.
+  const comptaVisible = (session.roles ?? []).some((r) =>
+    ['direction', 'finance', 'admin-si', 'comptable'].includes(r),
+  );
 
   const logoutButton = (extra: string) => (
     <form
@@ -83,7 +88,7 @@ export default async function RootLayout({
               </p>
             </div>
             <div className="flex-1 overflow-y-auto px-3">
-              <RailNav />
+              <RailNav comptaVisible={comptaVisible} />
             </div>
             <div className="mx-3 mb-3 rounded-lg border border-cyan-soft/60 bg-cyan-soft/20 p-3">
               <div className="flex items-center gap-2">
@@ -126,7 +131,7 @@ export default async function RootLayout({
               )}
             </div>
             <div className="px-2 pb-2">
-              <RailNav orientation="horizontal" />
+              <RailNav orientation="horizontal" comptaVisible={comptaVisible} />
             </div>
           </header>
 
