@@ -29,8 +29,21 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     cpus: 0.5
-    mem_limit: 96m
-    command: ["redis-server", "--appendonly", "yes"]
+    # 96m OOM-killed redis in a loop once the BullMQ/worker keyspace grew past
+    # ~85 MB (events: oom→die→start every few seconds, RestartCount 500+).
+    # 320m container ceiling + 256mb redis-side cap: noeviction makes redis
+    # refuse writes instead of being SIGKILLed — queues must not lose keys.
+    mem_limit: 320m
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--maxmemory",
+        "256mb",
+        "--maxmemory-policy",
+        "noeviction",
+      ]
     volumes:
       - redisdata:/data
     healthcheck:
