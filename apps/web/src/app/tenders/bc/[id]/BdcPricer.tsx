@@ -7,7 +7,7 @@
 import { useMemo, useState, useTransition } from 'react';
 import type { BdcAvis, BdcLigne, BdcReponse, PrixSource } from '@/lib/bdc';
 import { SOURCE_LABELS } from '@/lib/bdc';
-import { sauverReponse } from '../actions';
+import { proposerPrixAuto, sauverReponse } from '../actions';
 
 const r2 = (n: number): number => Math.round(n * 100) / 100;
 
@@ -60,6 +60,25 @@ export function BdcPricer({ avis, reponse }: Props) {
       setTimeout(() => setSaved(null), 4000);
     });
 
+  const autoPrice = () =>
+    startTransition(async () => {
+      try {
+        // Le prix saisi à la main prime: on sauvegarde d'abord l'état courant,
+        // le moteur ne complète ensuite que les lignes restées à 0.
+        await sauverReponse(avis.id, { margePct, lignes, notes });
+        const { reponse: updated, resume } = await proposerPrixAuto(avis.id);
+        setLignes(updated.lignes);
+        setSaved(
+          resume.proposees > 0
+            ? `⚡ ${resume.proposees} prix proposés (${resume.catalogue} catalogue, ${resume.historique} historique) — ${resume.restantes} à compléter`
+            : `Aucune correspondance fiable (${resume.candidatsInternes + resume.candidatsCatalogue} prix connus comparés) — chiffrage manuel requis`,
+        );
+      } catch {
+        setSaved('Chiffrage automatique indisponible — réessayez');
+      }
+      setTimeout(() => setSaved(null), 8000);
+    });
+
   return (
     <div className="rounded-xl border border-line bg-paper-2 shadow-sm">
       {/* Barre de commande de l'agent */}
@@ -84,7 +103,16 @@ export function BdcPricer({ avis, reponse }: Props) {
         </label>
         <span className="text-[11px] text-faint">(appliquée aux lignes « coût + marge »)</span>
         <div className="ml-auto flex items-center gap-2">
-          {saved && <span className="text-xs font-semibold text-emerald">{saved}</span>}
+          {saved && <span className="max-w-xs text-xs font-semibold text-emerald">{saved}</span>}
+          <button
+            type="button"
+            onClick={autoPrice}
+            disabled={pending}
+            title="Propose un prix pour chaque article à 0 depuis le catalogue fournisseurs et vos prix historiques (BPU, devis, réponses passées)"
+            className="rounded-lg border border-cyan bg-cyan-soft/30 px-4 py-2 text-sm font-bold text-cyan transition hover:bg-cyan-soft/60 disabled:opacity-50"
+          >
+            {pending ? '…' : '⚡ Chiffrer automatiquement'}
+          </button>
           <button
             type="button"
             onClick={save}
@@ -180,6 +208,14 @@ export function BdcPricer({ avis, reponse }: Props) {
                       </option>
                     ))}
                   </select>
+                  {l.sourceRef && (
+                    <div
+                      className="mt-1 max-w-[150px] truncate text-[10px] text-faint"
+                      title={l.sourceRef}
+                    >
+                      {l.sourceRef}
+                    </div>
+                  )}
                 </td>
                 <td className="py-2 pr-5 text-right align-top font-mono font-semibold tabular-nums">
                   {fmt(l.montantHt ?? 0)}

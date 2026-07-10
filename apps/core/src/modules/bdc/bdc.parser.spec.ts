@@ -3,7 +3,15 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseBdcDetail, parseBdcListe, parseDateFr } from './bdc.parser';
-import { computeReponse, seedLignesFromArticles } from './bdc-pricing.domain';
+import {
+  appliquerPropositions,
+  computeReponse,
+  proposerPrixPourLignes,
+  scoreDesignations,
+  seedLignesFromArticles,
+  tokenize,
+  type PriceCandidate,
+} from './bdc-pricing.domain';
 
 const fixture = (name: string): string =>
   readFileSync(join(__dirname, 'fixtures', name), 'utf8');
@@ -116,5 +124,63 @@ describe('computeReponse (moteur de chiffrage)', () => {
     expect(lignes[0]!.quantite).toBe(12);
     expect(lignes[1]!.quantite).toBe(1);
     expect(lignes[1]!.tvaPct).toBe(20);
+  });
+});
+
+describe('proposition automatique de prix (matching)', () => {
+  it('tokenize: accents, stopwords BTP, frontières lettre/chiffre, pluriels', () => {
+    expect(tokenize('Fourniture de Béton armé C25/30 en fondation')).toEqual([
+      'beton', 'arme', '25', '30', 'fondation',
+    ]);
+    // CPJ45 ≡ CPJ 45, 50kg ≡ 50 kg, sacs ≡ sac — variations réelles du BTP.
+    expect(tokenize('Ciment CPJ45 sacs 50kg')).toEqual(tokenize('ciment cpj 45 sac 50 kg'));
+    expect(tokenize('   ')).toEqual([]);
+  });
+
+  it('scoreDesignations: 0 sans intersection, ~1 identique', () => {
+    expect(scoreDesignations(tokenize('ciment cpj45'), tokenize('sable de mer'))).toBe(0);
+    const same = scoreDesignations(tokenize('ciment cpj45 sac 50kg'), tokenize('Ciment CPJ45 sac 50 kg'));
+    expect(same).toBeGreaterThan(0.85);
+  });
+
+  it('proposer: choisit le bon candidat, respecte le seuil, marque la provenance', () => {
+    const lignes = seedLignesFromArticles([
+      { designation: 'Ciment CPJ 45 en sacs de 50 kg', unite: 'SAC', quantite: 100, tvaPct: 20 },
+      { designation: 'Objet introuvable zzz', unite: 'U', quantite: 1, tvaPct: 20 },
+    ]);
+    const candidates: PriceCandidate[] = [
+      { designation: 'Sable de concassage 0/5', prixHt: 120, source: 'catalogue', sourceRef: 'LF Sable' },
+      { designation: 'Ciment CPJ45 — sac 50kg', unite: 'sac', prixHt: 68, source: 'catalogue', sourceRef: 'LF Ciment' },
+      { designation: 'Ciment colle', prixHt: 90, source: 'historique', sourceRef: 'BPU 54/2025' },
+    ];
+    const proposals = proposerPrixPourLignes(
+      lignes,
+      [
+        { designation: 'Ciment CPJ 45 en sacs de 50 kg', unite: 'SAC' },
+        { designation: 'Objet introuvable zzz', unite: 'U' },
+      ],
+      candidates,
+    );
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]!.idx).toBe(0);
+    expect(proposals[0]!.prixUnitaireHt).toBe(68);
+    expect(proposals[0]!.source).toBe('catalogue');
+    expect(proposals[0]!.margeAppliquee).toBe(true); // coût fournisseur → marge
+    expect(proposals[0]!.score).toBeGreaterThanOrEqual(0.42);
+  });
+
+  it('appliquer: ne touche jamais un prix déjà saisi', () => {
+    const lignes = [
+      { idx: 0, designation: 'A', quantite: 1, tvaPct: 20, prixUnitaireHt: 55, source: 'manuel' as const },
+      { idx: 1, designation: 'B', quantite: 1, tvaPct: 20, prixUnitaireHt: 0, source: 'manuel' as const },
+    ];
+    const next = appliquerPropositions(lignes, [
+      { idx: 0, prixUnitaireHt: 99, source: 'historique', sourceRef: 'X', margeAppliquee: false, score: 0.9 },
+      { idx: 1, prixUnitaireHt: 42, source: 'historique', sourceRef: 'BPU 07/2026', margeAppliquee: false, score: 0.8 },
+    ]);
+    expect(next[0]!.prixUnitaireHt).toBe(55); // intouché
+    expect(next[1]!.prixUnitaireHt).toBe(42);
+    expect(next[1]!.sourceRef).toBe('BPU 07/2026');
+    expect(lignes[1]!.prixUnitaireHt).toBe(0); // immutabilité
   });
 });

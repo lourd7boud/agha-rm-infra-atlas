@@ -1,14 +1,15 @@
 // Accès données bdc — avis d'achat (mirror portail) + réponse chiffrée de
 // l'agent chargé. Token + interface + implémentation Drizzle (Postgres only).
-import { and, desc, eq, gte, ilike, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
-import { bdcAvis, bdcReponses } from '../../db/schema';
+import { bdcAvis, bdcReponses, bordereaux, projects, quoteLines, quotes } from '../../db/schema';
 import type { BdcArticle, BdcPiece } from './bdc.parser';
 import {
   computeReponse,
   seedLignesFromArticles,
   type LigneReponse,
   type LigneReponseInput,
+  type PriceCandidate,
 } from './bdc-pricing.domain';
 
 export const BDC_REPOSITORY = Symbol('BDC_REPOSITORY');
@@ -101,6 +102,8 @@ export interface BdcRepository {
     avisId: string,
     patch: { margePct?: number; lignes?: LigneReponseInput[]; statut?: string; notes?: string },
   ): Promise<ReponseRecord | null>;
+  /** Prix connus de la société: BPU des marchés, devis clients, réponses BDC. */
+  collectPriceCandidates(excludeAvisId?: string): Promise<PriceCandidate[]>;
 }
 
 function mapAvis(
@@ -262,6 +265,79 @@ export class DrizzleBdcRepository implements BdcRepository {
       .where(isNull(bdcAvis.detailFetchedAt))
       .orderBy(desc(bdcAvis.firstSeenAt))
       .limit(limit);
+  }
+
+  async collectPriceCandidates(excludeAvisId?: string): Promise<PriceCandidate[]> {
+    const candidates: PriceCandidate[] = [];
+    const pushCandidate = (
+      designation: unknown,
+      unite: unknown,
+      prixHt: number,
+      sourceRef: string,
+    ) => {
+      if (typeof designation !== 'string' || designation.trim().length < 3) return;
+      if (!(prixHt > 0)) return;
+      candidates.push({
+        designation: designation.slice(0, 400),
+        unite: typeof unite === 'string' ? unite : null,
+        prixHt,
+        source: 'historique',
+        sourceRef: sourceRef.slice(0, 200),
+      });
+    };
+
+    // 1. BPU des marchés — les prix de vente réellement pratiqués au bordereau.
+    const bpus = await this.db
+      .select({ reference: projects.reference, lignes: bordereaux.lignes })
+      .from(bordereaux)
+      .innerJoin(projects, eq(projects.id, bordereaux.projectId));
+    for (const bpu of bpus) {
+      const lignes = Array.isArray(bpu.lignes) ? (bpu.lignes as Record<string, unknown>[]) : [];
+      for (const ligne of lignes) {
+        pushCandidate(
+          ligne.designation,
+          ligne.unite,
+          num(ligne.prixUnitaire),
+          `BPU ${bpu.reference}`,
+        );
+      }
+    }
+
+    // 2. Devis clients (module Ventes) — prix privés récents.
+    const devisLignes = await this.db
+      .select({
+        designation: quoteLines.designation,
+        unit: quoteLines.unit,
+        prix: quoteLines.unitPriceMad,
+        reference: quotes.reference,
+      })
+      .from(quoteLines)
+      .innerJoin(quotes, eq(quotes.id, quoteLines.quoteId));
+    for (const ligne of devisLignes) {
+      pushCandidate(ligne.designation, ligne.unit, num(ligne.prix), `Devis ${ligne.reference}`);
+    }
+
+    // 3. Réponses BDC passées — l'agent apprend de ses propres chiffrages.
+    const reponses = await this.db
+      .select({ reference: bdcAvis.reference, lignes: bdcReponses.lignes })
+      .from(bdcReponses)
+      .innerJoin(bdcAvis, eq(bdcAvis.id, bdcReponses.avisId))
+      .where(excludeAvisId ? ne(bdcReponses.avisId, excludeAvisId) : undefined);
+    for (const reponse of reponses) {
+      const lignes = Array.isArray(reponse.lignes)
+        ? (reponse.lignes as Record<string, unknown>[])
+        : [];
+      for (const ligne of lignes) {
+        pushCandidate(
+          ligne.designation,
+          ligne.unite,
+          num(ligne.prixVenteHt ?? ligne.prixUnitaireHt),
+          `BC ${reponse.reference}`,
+        );
+      }
+    }
+
+    return candidates;
   }
 
   async getReponse(avisId: string): Promise<ReponseRecord | null> {

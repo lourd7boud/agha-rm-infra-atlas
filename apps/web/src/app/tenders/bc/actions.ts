@@ -5,7 +5,8 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { apiPatch, apiPost, AtlasApiError } from '@/lib/api';
 import { isRedirectError } from '@/lib/next-redirect';
-import type { BdcLigne, BdcReponse } from '@/lib/bdc';
+import type { BdcLigne, BdcProposerResume, BdcReponse } from '@/lib/bdc';
+import { MARKETPLACE_CATALOG } from '@/lib/marketplace-catalog';
 
 function fail(target: string, action: string, error: unknown): never {
   if (isRedirectError(error)) throw error;
@@ -38,6 +39,58 @@ export async function creerReponse(formData: FormData) {
   }
   revalidatePath(target);
   redirect(target);
+}
+
+interface CatalogueCandidate {
+  designation: string;
+  unite: string | null;
+  prixHt: number;
+  source: 'catalogue';
+  sourceRef: string;
+}
+
+/** Aplatis une seule fois: 139 variantes marketplace → candidats de prix. */
+let catalogueCandidatesCache: CatalogueCandidate[] | null = null;
+function catalogueCandidates(): CatalogueCandidate[] {
+  if (catalogueCandidatesCache) return catalogueCandidatesCache;
+  const flat: CatalogueCandidate[] = [];
+  for (const category of MARKETPLACE_CATALOG) {
+    for (const product of category.products) {
+      for (const variante of product.variantes) {
+        const prixHt = variante.price ?? variante.offers[0]?.price ?? null;
+        if (!prixHt || prixHt <= 0) continue;
+        const designation = variante.name.toLowerCase().includes(product.name.toLowerCase())
+          ? variante.name
+          : `${product.name} ${variante.name}`;
+        flat.push({
+          designation: designation.slice(0, 400),
+          unite: variante.unit || null,
+          prixHt,
+          source: 'catalogue',
+          sourceRef: `Catalogue LF: ${variante.name}`.slice(0, 200),
+        });
+      }
+    }
+  }
+  catalogueCandidatesCache = flat;
+  return flat;
+}
+
+/**
+ * Chiffrage automatique — le core matche l'historique société (BPU, devis,
+ * réponses BDC) + les candidats catalogue envoyés d'ici. Retourne la réponse
+ * sauvegardée et le résumé des propositions.
+ */
+export async function proposerPrixAuto(
+  avisId: string,
+): Promise<{ reponse: BdcReponse; resume: BdcProposerResume }> {
+  const result = await apiPost<{ reponse: BdcReponse; resume: BdcProposerResume }>(
+    `/bdc/avis/${avisId}/proposer`,
+    { candidatesExtra: catalogueCandidates() },
+    { timeoutMs: 60_000 },
+  );
+  revalidatePath(`/tenders/bc/${avisId}`);
+  return result;
 }
 
 /** Sauvegarde du chiffrage (appelée par le client BdcPricer). */

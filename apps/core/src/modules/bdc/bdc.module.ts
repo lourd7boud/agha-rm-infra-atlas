@@ -19,6 +19,7 @@ import ExcelJS from 'exceljs';
 import { z } from 'zod';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
+import { appliquerPropositions, proposerPrixPourLignes } from './bdc-pricing.domain';
 import { BdcCrawler } from './bdc.crawler';
 import {
   BDC_REPOSITORY,
@@ -56,6 +57,21 @@ const reponsePatchSchema = z
   })
   .partial()
   .refine((p) => Object.keys(p).length > 0, { message: 'Aucun champ à modifier' });
+
+// Candidats de prix externes (catalogue fournisseurs côté web) — le core
+// garde le matching et la sauvegarde (source de vérité).
+const candidateSchema = z.object({
+  designation: z.string().min(3).max(400),
+  unite: z.string().max(40).nullish(),
+  prixHt: z.number().positive().max(100_000_000),
+  source: z.enum(['catalogue', 'historique']),
+  sourceRef: z.string().min(1).max(200),
+});
+
+const proposerSchema = z.object({
+  candidatesExtra: z.array(candidateSchema).max(2000).optional(),
+  minScore: z.number().min(0.2).max(0.95).optional(),
+});
 
 @Controller('bdc')
 export class BdcController {
@@ -114,6 +130,49 @@ export class BdcController {
     const updated = await this.repo.saveReponse(id, parsed.data);
     if (!updated) throw new NotFoundException('Avis introuvable');
     return updated;
+  }
+
+  /**
+   * Chiffrage automatique — rapproche chaque article NON chiffré des prix
+   * connus: historique société (BPU marchés, devis, réponses BDC) collecté en
+   * base + candidats catalogue envoyés par le web. Ne touche jamais un prix
+   * déjà saisi; le résultat est sauvegardé (recalcul des totaux côté core).
+   */
+  @Roles(...MARCHES_ROLES)
+  @Post('avis/:id/proposer')
+  async proposer(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = proposerSchema.safeParse(body ?? {});
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const avis = await this.repo.getAvis(id);
+    if (!avis) throw new NotFoundException('Avis introuvable');
+    const reponse = await this.repo.ensureReponse(id);
+
+    const historique = await this.repo.collectPriceCandidates(id);
+    const candidates = [...historique, ...(parsed.data.candidatesExtra ?? [])];
+    const propositions = proposerPrixPourLignes(
+      reponse.lignes,
+      avis.articles,
+      candidates,
+      parsed.data.minScore,
+    );
+    const lignes = appliquerPropositions(reponse.lignes, propositions);
+    const saved = await this.repo.saveReponse(id, { lignes });
+    if (!saved) throw new NotFoundException('Avis introuvable');
+
+    const parSource = (source: string) =>
+      propositions.filter((p) => p.source === source).length;
+    const resume = {
+      proposees: propositions.length,
+      catalogue: parSource('catalogue'),
+      historique: parSource('historique'),
+      restantes: saved.lignes.filter((l) => l.prixUnitaireHt <= 0).length,
+      candidatsInternes: historique.length,
+      candidatsCatalogue: parsed.data.candidatesExtra?.length ?? 0,
+    };
+    this.logger.log(
+      `BDC proposer ${avis.reference}: ${resume.proposees} prix (${resume.catalogue} catalogue, ${resume.historique} historique), ${resume.restantes} restants`,
+    );
+    return { reponse: saved, resume, propositions };
   }
 
   /** Génère le bordereau de prix rempli (XLSX) — le devis de la société. */

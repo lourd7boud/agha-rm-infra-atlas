@@ -103,6 +103,15 @@ export const SOURCE_LABELS: Record<PrixSource, string> = {
   estimation: 'Estimation',
 };
 
+export interface BdcProposerResume {
+  proposees: number;
+  catalogue: number;
+  historique: number;
+  restantes: number;
+  candidatsInternes: number;
+  candidatsCatalogue: number;
+}
+
 /** Jours restants avant la date limite (négatif = dépassée). */
 export function joursRestants(dateLimite: string | null): number | null {
   if (!dateLimite) return null;
