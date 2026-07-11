@@ -91,15 +91,23 @@ export default async function BdcPage({
             l&apos;agent chargé chiffre, la société dépose.
           </p>
         </div>
-        <form action={syncBdc}>
-          <input type="hidden" name="backTo" value={baseQs({})} />
-          <button
-            type="submit"
-            className="rounded-lg bg-cyan px-5 py-2.5 text-sm font-bold text-paper transition hover:opacity-90"
+        <div className="flex items-center gap-2">
+          <Link
+            href="/tenders/bc/resultats"
+            className="rounded-lg border border-line px-4 py-2.5 text-sm font-semibold text-muted transition hover:border-cyan hover:text-cyan"
           >
-            ⟳ Synchroniser le portail
-          </button>
-        </form>
+            🎯 Résultats &amp; Concurrence
+          </Link>
+          <form action={syncBdc}>
+            <input type="hidden" name="backTo" value={baseQs({})} />
+            <button
+              type="submit"
+              className="rounded-lg bg-cyan px-5 py-2.5 text-sm font-bold text-paper transition hover:opacity-90"
+            >
+              ⟳ Synchroniser le portail
+            </button>
+          </form>
+        </div>
       </div>
 
       {query.synced && (

@@ -2,8 +2,16 @@
 // l'agent chargé. Token + interface + implémentation Drizzle (Postgres only).
 import { and, desc, eq, gte, ilike, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
-import { bdcAvis, bdcReponses, bordereaux, projects, quoteLines, quotes } from '../../db/schema';
-import type { BdcArticle, BdcPiece } from './bdc.parser';
+import {
+  bdcAvis,
+  bdcReponses,
+  bdcResultats,
+  bordereaux,
+  projects,
+  quoteLines,
+  quotes,
+} from '../../db/schema';
+import type { BdcArticle, BdcPiece, BdcResultatItem } from './bdc.parser';
 import {
   computeReponse,
   seedLignesFromArticles,
@@ -104,6 +112,56 @@ export interface BdcRepository {
   ): Promise<ReponseRecord | null>;
   /** Prix connus de la société: BPU des marchés, devis clients, réponses BDC. */
   collectPriceCandidates(excludeAvisId?: string): Promise<PriceCandidate[]>;
+  // ── Résultats (intelligence concurrents) ──
+  upsertResultats(items: BdcResultatItem[]): Promise<number>;
+  /** Pose avis_id + bascule le statut des avis matchés (référence+acheteur). */
+  linkResultatsToAvis(): Promise<number>;
+  listResultats(params: ResultatListParams): Promise<{ items: ResultatRecord[]; total: number }>;
+  statsResultats(): Promise<ResultatStats>;
+  intelligenceAcheteur(acheteur: string): Promise<IntelligenceAcheteur>;
+}
+
+export interface ResultatRecord {
+  id: string;
+  reference: string;
+  objet: string;
+  acheteur: string;
+  dateResultat: Date | null;
+  nbDevis: number | null;
+  issue: string;
+  attributaire: string | null;
+  montantTtc: number | null;
+  avisId: string | null;
+}
+
+export interface ResultatListParams {
+  search?: string;
+  acheteur?: string;
+  issue?: string;
+  page: number;
+  limit: number;
+}
+
+export interface ResultatStats {
+  total: number;
+  attribues: number;
+  infructueux: number;
+  montantTotal: number;
+  acheteurs: number;
+  attributaires: number;
+}
+
+export interface IntelligenceAcheteur {
+  acheteur: string;
+  nbResultats: number;
+  nbAttribues: number;
+  nbInfructueux: number;
+  devisMoyens: number | null;
+  montantMedian: number | null;
+  montantMin: number | null;
+  montantMax: number | null;
+  topAttributaires: Array<{ nom: string; victoires: number; montantTotal: number }>;
+  derniers: ResultatRecord[];
 }
 
 function mapAvis(
@@ -338,6 +396,173 @@ export class DrizzleBdcRepository implements BdcRepository {
     }
 
     return candidates;
+  }
+
+  // ── Résultats (intelligence concurrents) ──────────────────────────────────
+
+  async upsertResultats(items: BdcResultatItem[]): Promise<number> {
+    let inserted = 0;
+    for (const item of items) {
+      if (!item.reference || !item.acheteur) continue;
+      const rows = await this.db
+        .insert(bdcResultats)
+        .values({
+          reference: item.reference,
+          objet: item.objet,
+          acheteur: item.acheteur,
+          dateResultat: item.dateResultat ?? undefined,
+          nbDevis: item.nbDevis ?? undefined,
+          issue: item.issue,
+          attributaire: item.attributaire,
+          montantTtc: item.montantTtc != null ? String(item.montantTtc) : undefined,
+        })
+        .onConflictDoNothing({
+          target: [bdcResultats.reference, bdcResultats.acheteur, bdcResultats.dateResultat],
+        })
+        .returning({ id: bdcResultats.id });
+      inserted += rows.length;
+    }
+    return inserted;
+  }
+
+  async linkResultatsToAvis(): Promise<number> {
+    // Clé scopée acheteur (leçon lifecycle: les références se répètent).
+    const linked = await this.db.execute(sql`
+      with matched as (
+        update bdc.resultat r
+        set avis_id = a.id
+        from bdc.avis a
+        where r.avis_id is null
+          and a.reference = r.reference
+          and a.acheteur = r.acheteur
+        returning r.avis_id, r.issue
+      )
+      update bdc.avis a
+      set statut = case when m.issue = 'attribue' then 'attribue' else 'cloture' end,
+          updated_at = now()
+      from matched m
+      where a.id = m.avis_id and a.statut in ('en_cours', 'cloture')
+    `);
+    return Number((linked as { rowCount?: number }).rowCount ?? 0);
+  }
+
+  async listResultats(
+    params: ResultatListParams,
+  ): Promise<{ items: ResultatRecord[]; total: number }> {
+    const conds = [];
+    if (params.issue) conds.push(eq(bdcResultats.issue, params.issue));
+    if (params.acheteur) conds.push(ilike(bdcResultats.acheteur, params.acheteur));
+    if (params.search) {
+      const q = `%${params.search}%`;
+      conds.push(
+        or(
+          ilike(bdcResultats.objet, q),
+          ilike(bdcResultats.acheteur, q),
+          ilike(bdcResultats.reference, q),
+          ilike(bdcResultats.attributaire, q),
+        ),
+      );
+    }
+    const where = conds.length ? and(...conds) : undefined;
+    const [countRow] = await this.db
+      .select({ count: sql<string>`count(*)` })
+      .from(bdcResultats)
+      .where(where);
+    const rows = await this.db
+      .select()
+      .from(bdcResultats)
+      .where(where)
+      .orderBy(desc(bdcResultats.dateResultat))
+      .limit(params.limit)
+      .offset((params.page - 1) * params.limit);
+    return {
+      items: rows.map((r) => ({
+        id: r.id,
+        reference: r.reference,
+        objet: r.objet,
+        acheteur: r.acheteur,
+        dateResultat: r.dateResultat,
+        nbDevis: r.nbDevis,
+        issue: r.issue,
+        attributaire: r.attributaire,
+        montantTtc: r.montantTtc == null ? null : num(r.montantTtc),
+        avisId: r.avisId,
+      })),
+      total: num(countRow?.count),
+    };
+  }
+
+  async statsResultats(): Promise<ResultatStats> {
+    const [row] = await this.db
+      .select({
+        total: sql<string>`count(*)`,
+        attribues: sql<string>`count(*) filter (where ${bdcResultats.issue} = 'attribue')`,
+        infructueux: sql<string>`count(*) filter (where ${bdcResultats.issue} = 'infructueux')`,
+        montantTotal: sql<string>`coalesce(sum(${bdcResultats.montantTtc}), 0)`,
+        acheteurs: sql<string>`count(distinct ${bdcResultats.acheteur})`,
+        attributaires: sql<string>`count(distinct ${bdcResultats.attributaire})`,
+      })
+      .from(bdcResultats);
+    return {
+      total: num(row?.total),
+      attribues: num(row?.attribues),
+      infructueux: num(row?.infructueux),
+      montantTotal: num(row?.montantTotal),
+      acheteurs: num(row?.acheteurs),
+      attributaires: num(row?.attributaires),
+    };
+  }
+
+  async intelligenceAcheteur(acheteur: string): Promise<IntelligenceAcheteur> {
+    const [agg] = await this.db
+      .select({
+        nbResultats: sql<string>`count(*)`,
+        nbAttribues: sql<string>`count(*) filter (where ${bdcResultats.issue} = 'attribue')`,
+        nbInfructueux: sql<string>`count(*) filter (where ${bdcResultats.issue} = 'infructueux')`,
+        devisMoyens: sql<string>`round(avg(${bdcResultats.nbDevis}), 1)`,
+        montantMedian: sql<string>`percentile_cont(0.5) within group (order by ${bdcResultats.montantTtc}) filter (where ${bdcResultats.montantTtc} is not null)`,
+        montantMin: sql<string>`min(${bdcResultats.montantTtc})`,
+        montantMax: sql<string>`max(${bdcResultats.montantTtc})`,
+      })
+      .from(bdcResultats)
+      .where(eq(bdcResultats.acheteur, acheteur));
+
+    const top = await this.db
+      .select({
+        nom: bdcResultats.attributaire,
+        victoires: sql<string>`count(*)`,
+        montantTotal: sql<string>`coalesce(sum(${bdcResultats.montantTtc}), 0)`,
+      })
+      .from(bdcResultats)
+      .where(and(eq(bdcResultats.acheteur, acheteur), eq(bdcResultats.issue, 'attribue')))
+      .groupBy(bdcResultats.attributaire)
+      .orderBy(desc(sql`count(*)`))
+      .limit(5);
+
+    const { items: derniers } = await this.listResultats({
+      acheteur,
+      page: 1,
+      limit: 5,
+    });
+
+    return {
+      acheteur,
+      nbResultats: num(agg?.nbResultats),
+      nbAttribues: num(agg?.nbAttribues),
+      nbInfructueux: num(agg?.nbInfructueux),
+      devisMoyens: agg?.devisMoyens == null ? null : num(agg.devisMoyens),
+      montantMedian: agg?.montantMedian == null ? null : num(agg.montantMedian),
+      montantMin: agg?.montantMin == null ? null : num(agg.montantMin),
+      montantMax: agg?.montantMax == null ? null : num(agg.montantMax),
+      topAttributaires: top
+        .filter((t) => t.nom)
+        .map((t) => ({
+          nom: t.nom as string,
+          victoires: num(t.victoires),
+          montantTotal: num(t.montantTotal),
+        })),
+      derniers,
+    };
   }
 
   async getReponse(avisId: string): Promise<ReponseRecord | null> {

@@ -243,7 +243,40 @@ export class BdcController {
     });
   }
 
-  /** Balayage manuel: rafraîchit la liste + complète les détails manquants. */
+  /** Résultats miroir (intelligence concurrents) — liste + stats. */
+  @Get('resultats')
+  async listResultats(
+    @Query('search') search?: string,
+    @Query('acheteur') acheteur?: string,
+    @Query('issue') issue?: string,
+    @Query('page') pageStr?: string,
+    @Query('limit') limitStr?: string,
+  ) {
+    const page = Math.max(1, Number(pageStr) || 1);
+    const limit = Math.min(100, Math.max(1, Number(limitStr) || 20));
+    const [{ items, total }, stats] = await Promise.all([
+      this.repo.listResultats({
+        search: search || undefined,
+        acheteur: acheteur || undefined,
+        issue: issue || undefined,
+        page,
+        limit,
+      }),
+      this.repo.statsResultats(),
+    ]);
+    return { items, total, page, limit, stats };
+  }
+
+  /** Le dossier d'un acheteur: médiane, fourchette, gagnants récurrents. */
+  @Get('intelligence')
+  async intelligence(@Query('acheteur') acheteur?: string) {
+    if (!acheteur || acheteur.trim().length < 3) {
+      throw new BadRequestException('Paramètre `acheteur` requis');
+    }
+    return this.repo.intelligenceAcheteur(acheteur.trim());
+  }
+
+  /** Balayage manuel: liste + détails manquants + résultats récents. */
   @Roles(...MARCHES_ROLES)
   @Post('sweep')
   async sweep(@Body() body: unknown) {
@@ -251,11 +284,13 @@ export class BdcController {
       .object({
         pages: z.number().int().min(1).max(50).optional(),
         details: z.number().int().min(0).max(60).optional(),
+        resultats: z.number().int().min(0).max(60).optional(),
       })
       .safeParse(body ?? {});
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const maxPages = parsed.data.pages ?? intEnv(process.env.BDC_SWEEP_PAGES, 3);
     const maxDetails = parsed.data.details ?? intEnv(process.env.BDC_SWEEP_DETAILS, 20);
+    const maxResultats = parsed.data.resultats ?? intEnv(process.env.BDC_SWEEP_RESULTATS, 3);
 
     let inserted = 0;
     let updated = 0;
@@ -296,8 +331,22 @@ export class BdcController {
         details += 1;
       }
     }
-    this.logger.log(`BDC sweep: ${pages} pages, +${inserted} avis, ${details} détails`);
-    return { pages, inserted, updated, details };
+    // Résultats récents (intelligence): upsert incrémental + lien vers avis.
+    let resultatsInseres = 0;
+    let resultatsPages = 0;
+    if (maxResultats > 0) {
+      for await (const { resultats } of this.crawler.crawlResultats(maxResultats)) {
+        resultatsPages += 1;
+        if (resultats.items.length === 0) break;
+        resultatsInseres += await this.repo.upsertResultats(resultats.items);
+      }
+      await this.repo.linkResultatsToAvis();
+    }
+
+    this.logger.log(
+      `BDC sweep: ${pages} pages, +${inserted} avis, ${details} détails, +${resultatsInseres} résultats (${resultatsPages} p.)`,
+    );
+    return { pages, inserted, updated, details, resultatsInseres, resultatsPages };
   }
 }
 

@@ -2,7 +2,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parseBdcDetail, parseBdcListe, parseDateFr } from './bdc.parser';
+import {
+  parseBdcDetail,
+  parseBdcListe,
+  parseBdcResultats,
+  parseDateFr,
+  parseMontantMad,
+} from './bdc.parser';
 import {
   appliquerPropositions,
   computeReponse,
@@ -66,6 +72,42 @@ describe('parseBdcDetail', () => {
     expect(article.quantite).toBe(150);
     expect(article.tvaPct).toBe(20);
     expect(article.caracteristiques.split('\n').length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe('parseBdcResultats (intelligence concurrents)', () => {
+  const resultats = parseBdcResultats(fixture('bdc-resultats.html'));
+
+  it('lit le total du gisement et les cartes', () => {
+    expect(resultats.total).toBe(303733);
+    expect(resultats.items.length).toBe(10);
+  });
+
+  it('parse un résultat ATTRIBUÉ (gagnant + montant + concurrence)', () => {
+    const simac = resultats.items.find((r) => r.attributaire === 'SIMAC')!;
+    expect(simac.reference).toBe('008/2026CRIMA');
+    expect(simac.acheteur).toBe('Commune rurale de RIMA');
+    expect(simac.issue).toBe('attribue');
+    expect(simac.nbDevis).toBe(16);
+    expect(simac.montantTtc).toBe(9930);
+    expect(simac.dateResultat?.toISOString()).toBe('2026-07-10T22:28:00.000Z'); // 23:28 UTC+1
+  });
+
+  it('parse un résultat INFRUCTUEUX (pas de gagnant, concurrence connue)', () => {
+    const infructueux = resultats.items.find((r) => r.reference === '7/6/FNC/2026')!;
+    expect(infructueux.issue).toBe('infructueux');
+    expect(infructueux.attributaire).toBeNull();
+    expect(infructueux.montantTtc).toBeNull();
+    expect(infructueux.nbDevis).toBe(12);
+  });
+});
+
+describe('parseMontantMad', () => {
+  it('gère espaces/NBSP milliers et virgule décimale', () => {
+    expect(parseMontantMad('9 930,00 MAD')).toBe(9930);
+    expect(parseMontantMad(`1${String.fromCharCode(0x00a0)}234${String.fromCharCode(0x202f)}567,89`)).toBe(1234567.89);
+    expect(parseMontantMad('n/a')).toBeNull();
+    expect(parseMontantMad(null)).toBeNull();
   });
 });
 

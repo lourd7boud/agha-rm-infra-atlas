@@ -2,12 +2,14 @@
 // pièces jointes, et le chiffrage article par article (BdcPricer).
 import Link from 'next/link';
 import { apiGet } from '@/lib/api';
+import { fmtMad } from '@/lib/btp';
 import {
   BDC_STATUT_BADGES,
   joursRestants,
   PORTAL_BDC_BASE,
   REPONSE_STATUT_BADGES,
   type BdcAvis,
+  type BdcIntelligence,
   type BdcReponse,
 } from '@/lib/bdc';
 import { creerReponse, setReponseStatut } from '../actions';
@@ -35,6 +37,10 @@ export default async function BdcDetailPage({
   const { avis, reponse } = await apiGet<{ avis: BdcAvis; reponse: BdcReponse | null }>(
     `/bdc/avis/${id}`,
   );
+  // Le dossier concurrence de cet acheteur (silencieux si miroir vide).
+  const intel = await apiGet<BdcIntelligence>(
+    `/bdc/intelligence?acheteur=${encodeURIComponent(avis.acheteur)}`,
+  ).catch(() => null);
   const badge = BDC_STATUT_BADGES[avis.statut] ?? {
     label: avis.statut,
     classes: 'bg-sand text-muted',
@@ -131,6 +137,81 @@ export default async function BdcDetailPage({
               📎 {piece.label}
             </a>
           ))}
+        </div>
+      )}
+
+      {/* 🎯 Intelligence acheteur — le dossier concurrence avant de chiffrer */}
+      {intel && intel.nbResultats > 0 && (
+        <div className="mt-6 rounded-xl border border-cyan/30 bg-cyan-soft/10 p-5 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-cyan">
+              🎯 Intelligence acheteur — {intel.acheteur}
+            </h2>
+            <Link
+              href={`/tenders/bc/resultats?q=${encodeURIComponent(intel.acheteur)}`}
+              className="text-xs font-semibold text-cyan hover:underline"
+            >
+              Voir tout l&apos;historique →
+            </Link>
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-faint">
+                BC publiés · attribués
+              </p>
+              <p className="mt-0.5 font-mono text-lg font-black tabular-nums">
+                {intel.nbResultats} · {intel.nbAttribues}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-faint">
+                Concurrence moyenne
+              </p>
+              <p className="mt-0.5 font-mono text-lg font-black tabular-nums">
+                {intel.devisMoyens != null ? `${intel.devisMoyens} devis` : '—'}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-faint">
+                Montant médian gagnant
+              </p>
+              <p className="mt-0.5 font-mono text-lg font-black tabular-nums text-cyan">
+                {intel.montantMedian != null ? fmtMad(intel.montantMedian) : '—'}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-faint">
+                Fourchette des attributions
+              </p>
+              <p className="mt-0.5 font-mono text-sm font-bold tabular-nums">
+                {intel.montantMin != null && intel.montantMax != null
+                  ? `${fmtMad(intel.montantMin)} — ${fmtMad(intel.montantMax)}`
+                  : '—'}
+              </p>
+            </div>
+          </div>
+          {intel.topAttributaires.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-widest text-faint">
+                Gagnants récurrents
+              </span>
+              {intel.topAttributaires.map((t) => (
+                <span
+                  key={t.nom}
+                  className="rounded-full bg-paper-2 px-3 py-1 text-xs font-semibold"
+                  title={`${t.victoires} victoire(s) — ${fmtMad(t.montantTotal)} au total`}
+                >
+                  🏆 {t.nom} ×{t.victoires}
+                </span>
+              ))}
+            </div>
+          )}
+          {intel.nbInfructueux > 0 && (
+            <p className="mt-2 text-xs text-muted">
+              ⚠ {intel.nbInfructueux} avis déclarés infructueux chez cet acheteur — un devis
+              conforme et complet a toutes ses chances.
+            </p>
+          )}
         </div>
       )}
 

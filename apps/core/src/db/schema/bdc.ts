@@ -42,6 +42,36 @@ export const bdcAvis = bdc.table(
   ],
 );
 
+// Résultats publiés (intelligence concurrents): gagnant + montant TTC + nb de
+// devis reçus, ou « infructueux ». Clé naturelle scopée acheteur (les
+// références se répètent d'un acheteur à l'autre).
+export const bdcResultats = bdc.table(
+  'resultat',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    reference: text('reference').notNull(),
+    objet: text('objet').notNull(),
+    acheteur: text('acheteur').notNull(),
+    dateResultat: timestamp('date_resultat', { withTimezone: true }),
+    nbDevis: integer('nb_devis'),
+    issue: text('issue').notNull().default('infructueux'), // attribue | infructueux
+    attributaire: text('attributaire'),
+    montantTtc: numeric('montant_ttc', { precision: 14, scale: 2 }),
+    avisId: uuid('avis_id'),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('bdc_resultat_ref_acheteur_date_uniq').on(
+      table.reference,
+      table.acheteur,
+      table.dateResultat,
+    ),
+    index('bdc_resultat_acheteur_idx').on(table.acheteur),
+    index('bdc_resultat_attributaire_idx').on(table.attributaire),
+    index('bdc_resultat_date_idx').on(table.dateResultat),
+  ],
+);
+
 // La réponse de l'agent chargé — un chiffrage par avis (unique), avec la
 // provenance de chaque prix: [{ idx, prixUnitaireHt, source, sourceRef, note }].
 export const bdcReponses = bdc.table(

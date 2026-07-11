@@ -7,7 +7,14 @@
 // ?page=N). On rejoue donc le postback UNE fois pour amorcer la session, puis
 // on pagine en GET simple avec le cookie jar.
 import { parseFormInputs } from '../watch/prado';
-import { parseBdcDetail, parseBdcListe, type BdcDetail, type BdcListe } from './bdc.parser';
+import {
+  parseBdcDetail,
+  parseBdcListe,
+  parseBdcResultats,
+  type BdcDetail,
+  type BdcListe,
+  type BdcResultats,
+} from './bdc.parser';
 
 const BASE = 'https://www.marchespublics.gov.ma';
 const SEARCH_URL = `${BASE}/index.php?page=entreprise.EntrepriseAdvancedSearch&AllCons&searchAnnCons`;
@@ -127,6 +134,24 @@ export class BdcCrawler {
       const liste = parseBdcListe(await client.get(url));
       yield { page, liste };
       if (liste.items.length === 0) break;
+    }
+  }
+
+  /**
+   * Balaye les N premières pages des RÉSULTATS (les plus récents d'abord) —
+   * le gisement intelligence: gagnant, montant, nombre de devis reçus.
+   */
+  async *crawlResultats(
+    maxPages: number,
+  ): AsyncGenerator<{ page: number; resultats: BdcResultats }> {
+    const client = new CookieClient(this.fetchImpl, this.timeoutMs);
+    await openBdcSession(client);
+    const base = `${BDC_LISTE}resultat`;
+    for (let page = 1; page <= maxPages; page += 1) {
+      const url = page > 1 ? `${base}?page=${page}` : base;
+      const resultats = parseBdcResultats(await client.get(url));
+      yield { page, resultats };
+      if (resultats.items.length === 0) break;
     }
   }
 

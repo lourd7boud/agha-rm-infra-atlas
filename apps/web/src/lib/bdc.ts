@@ -103,6 +103,55 @@ export const SOURCE_LABELS: Record<PrixSource, string> = {
   estimation: 'Estimation',
 };
 
+// ── Résultats & intelligence concurrents ────────────────────────────────────
+export interface BdcResultat {
+  id: string;
+  reference: string;
+  objet: string;
+  acheteur: string;
+  dateResultat: string | null;
+  nbDevis: number | null;
+  issue: string;
+  attributaire: string | null;
+  montantTtc: number | null;
+  avisId: string | null;
+}
+
+export interface BdcResultatStats {
+  total: number;
+  attribues: number;
+  infructueux: number;
+  montantTotal: number;
+  acheteurs: number;
+  attributaires: number;
+}
+
+export interface BdcResultatsPayload {
+  items: BdcResultat[];
+  total: number;
+  page: number;
+  limit: number;
+  stats: BdcResultatStats;
+}
+
+export interface BdcIntelligence {
+  acheteur: string;
+  nbResultats: number;
+  nbAttribues: number;
+  nbInfructueux: number;
+  devisMoyens: number | null;
+  montantMedian: number | null;
+  montantMin: number | null;
+  montantMax: number | null;
+  topAttributaires: Array<{ nom: string; victoires: number; montantTotal: number }>;
+  derniers: BdcResultat[];
+}
+
+export const ISSUE_BADGES: Record<string, { label: string; classes: string }> = {
+  attribue: { label: 'Attribué', classes: 'bg-emerald-soft text-emerald' },
+  infructueux: { label: 'Infructueux', classes: 'bg-clay-soft text-clay' },
+};
+
 export interface BdcProposerResume {
   proposees: number;
   catalogue: number;

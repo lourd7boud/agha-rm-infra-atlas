@@ -119,6 +119,74 @@ export function parseBdcListe(html: string): BdcListe {
   return { total, items };
 }
 
+// ── Résultats des avis d'achat (intelligence concurrents) ───────────────────
+
+export interface BdcResultatItem {
+  reference: string;
+  objet: string;
+  acheteur: string;
+  dateResultat: Date | null;
+  nbDevis: number | null;
+  issue: 'attribue' | 'infructueux';
+  attributaire: string | null;
+  montantTtc: number | null;
+}
+
+export interface BdcResultats {
+  total: number | null;
+  items: BdcResultatItem[];
+}
+
+/**
+ * « 9 930,00 MAD » → 9930.00 — séparateurs de milliers espace/NBSP/NNBSP.
+ * En JS, \s couvre déjà U+00A0 et U+202F (leçon NBSP: aucun littéral
+ * non-ASCII en source — l'outillage local les aplatirait).
+ */
+export function parseMontantMad(raw: string | null): number | null {
+  if (!raw) return null;
+  const cleaned = raw
+    .replace(/\s/g, '')
+    .replace(/[^0-9,.-]/g, '')
+    .replace(/\.(?=\d{3}(\D|$))/g, '')
+    .replace(',', '.');
+  const value = Number(cleaned);
+  return Number.isFinite(value) && value > 0 ? Math.round(value * 100) / 100 : null;
+}
+
+/** Liste des résultats (/bdc/entreprise/consultation/resultat?page=N). */
+export function parseBdcResultats(html: string): BdcResultats {
+  const totalMatch = /Nombre de r.sultats\s*:\s*(\d+)/.exec(html);
+  const total = totalMatch ? Number(totalMatch[1]) : null;
+
+  const items: BdcResultatItem[] = [];
+  const blocks = html.split(/entreprise__card/).slice(1);
+  for (const block of blocks) {
+    const reference = /R.f.rence\s*:\s*([^<]+)</.exec(block);
+    if (!reference) continue;
+    const objet = /Objet\s*:\s*<\/span>\s*([^<]+)/.exec(block);
+    const acheteur = /Acheteur\s*:\s*<\/span>\s*([^<]+)/.exec(block);
+    const dateResultat =
+      /Date de publication du r.sultat\s*:\s*<\/span>\s*([\d/]+)(?:\s+([\d:]+))?/.exec(block);
+    const nbDevis = /Nombre de devis re.us\s*:\s*<span[^>]*>\s*(\d+)/.exec(block);
+    const attributaire = /Entreprise attributaire\s*:\s*<span[^>]*>\s*([^<]+)/.exec(block);
+    const montant = /Montant TTC\s*:\s*<span[^>]*>\s*([^<]+)/.exec(block);
+    const infructueux = /infructueux/i.test(block);
+
+    const attributaireNom = attributaire ? clean(grp(attributaire, 1)) : null;
+    items.push({
+      reference: clean(grp(reference, 1)),
+      objet: objet ? clean(grp(objet, 1)) : '',
+      acheteur: acheteur ? clean(grp(acheteur, 1)) : '',
+      dateResultat: parseDateFr(dateResultat?.[1] ?? null, dateResultat?.[2] ?? null),
+      nbDevis: nbDevis ? Number(grp(nbDevis, 1)) : null,
+      issue: attributaireNom && !infructueux ? 'attribue' : 'infructueux',
+      attributaire: attributaireNom,
+      montantTtc: montant ? parseMontantMad(grp(montant, 1)) : null,
+    });
+  }
+  return { total, items };
+}
+
 /** Valeur qui suit un libellé (`<span>Label</span> … valeur`), tolérante. */
 function fieldAfter(html: string, labelPattern: string): string | null {
   const re = new RegExp(`${labelPattern}\\s*<\\/[a-z0-9]+>\\s*(?:<[^>]+>\\s*)*([^<]+)`, 'i');
