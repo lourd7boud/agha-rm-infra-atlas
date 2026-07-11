@@ -32,6 +32,7 @@ const ITEMS: readonly NavItem[] = [
  *  qui touche à la chasse aux marchés (permissions fines à venir). */
 const MARCHES: readonly NavItem[] = [
   { href: '/tenders', label: 'Inventaire des marchés', icon: 'tenders' },
+  { href: '/tenders/radar', label: 'Radar proactif', icon: 'activity' },
   { href: '/tenders/bc', label: 'Bons de commande', icon: 'quote' },
   { href: '/tenders/lists', label: 'Listes', icon: 'boxes' },
   { href: '/tenders/searches', label: 'Recherches sauvegardées', icon: 'search' },

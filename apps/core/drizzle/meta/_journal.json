@@ -351,6 +351,13 @@
       "when": 1784100700000,
       "tag": "0049_bdc_resultats",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1784100800000,
+      "tag": "0050_radar",
+      "breakpoints": true
     }
   ]
 }

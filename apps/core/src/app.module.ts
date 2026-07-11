@@ -18,6 +18,7 @@ import { PeopleModule } from './modules/people/people.module';
 import { PortalModule } from './modules/portal/portal.module';
 import { BtpModule } from './modules/project/btp.module';
 import { ProjectModule } from './modules/project/project.module';
+import { RadarModule } from './modules/radar/radar.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { StockModule } from './modules/stock/stock.module';
 import { SupplyModule } from './modules/supply/supply.module';
@@ -64,6 +65,7 @@ export class HealthController {
     PeopleModule,
     PortalModule,
     ProjectModule,
+    RadarModule,
     SalesModule,
     StockModule,
     SupplyModule,
