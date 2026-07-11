@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     antiword \
     catdoc \
     unrtf \
+    unar \
     wget \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -33,6 +34,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # converters for the legacy Office binaries some buyers still ship — the
 # "never fail on any format" net (see dossier-binary.ts). Total ~5 MB, far
 # lighter than LibreOffice, and they only run as a last resort.
+# unar: unpacks RAR (v4/v5) DCE archives — older buyers ship .rar dossiers that
+# fflate (ZIP-only) can't read; dossier-archive.ts normalizes RAR → ZIP.
 
 WORKDIR /app
 

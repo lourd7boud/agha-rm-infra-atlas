@@ -36,6 +36,9 @@ import {
   type TenderRepository,
 } from './tender.repository';
 import { runPool } from './ai-enrichment';
+import { OBJECT_STORAGE, type ObjectStorage } from '../vault/storage';
+import { normalizeArchiveToZip } from './dossier-archive';
+import { toDossierMarkdown, DOSSIER_MARKDOWN_CHARS } from './dossier-markdown';
 
 export interface DossierExtractionResult {
   tenderId: string;
@@ -155,6 +158,11 @@ export class DossierExtractionService {
   constructor(
     @Inject(TENDER_REPOSITORY) private readonly repository: TenderRepository,
     @Optional() @Inject(LLM_CLIENT) private readonly llm: LlmClient | null,
+    // Object storage for the DCE-archive cache: read the cached zip first (so a
+    // dead portal link on an OLD tender is not fatal), and persist newly
+    // downloaded archives so re-extraction never depends on the portal again.
+    // @Optional() so extraction still works (portal-only) when storage is absent.
+    @Optional() @Inject(OBJECT_STORAGE) private readonly storage: ObjectStorage | null = null,
   ) {}
 
   private requireLlm(): LlmClient {
@@ -162,6 +170,17 @@ export class DossierExtractionService {
       throw new ServiceUnavailableException('LLM non configuré (clé manquante)');
     }
     return this.llm;
+  }
+
+  /** Reads all bytes of a stored object (MinIO stream → buffer). */
+  private async readObjectBytes(key: string): Promise<Uint8Array> {
+    if (!this.storage) throw new Error('no object storage');
+    const obj = await this.storage.getObject(key);
+    const chunks: Buffer[] = [];
+    for await (const chunk of obj.body as AsyncIterable<Buffer | Uint8Array>) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return new Uint8Array(Buffer.concat(chunks));
   }
 
   async extractTender(
@@ -184,24 +203,64 @@ export class DossierExtractionService {
     }
 
     const ref = parsePortalRef(tender.sourceUrl);
-    if (!ref) {
-      throw new BadRequestException(
-        'Aucun lien portail exploitable pour ce marché (sourceUrl manquant)',
-      );
-    }
 
-    // In-memory download — NOT cached to MinIO, so a full-catalogue sweep never
-    // accumulates ~40 GB of zips on the shared VPS disk.
-    const dossier = await downloadDce(ref, dceIdentityFromEnv());
-    if (dossier.bytes.length > MAX_DCE_ZIP_BYTES) {
+    // Source the DCE archive. Prefer the MinIO-cached copy (from a prior
+    // extraction or a "Télécharger le dossier"): OLD/closed tenders often have a
+    // DEAD portal link, so re-downloading 404s — the cache lets us (re-)extract
+    // anyway. Only hit the portal when there is no cache, and persist what we
+    // download so the next run never depends on the portal again.
+    const cachedKey =
+      tender.raw && typeof tender.raw === 'object'
+        ? ((tender.raw as Record<string, unknown>).dossier as
+            | { objectKey?: unknown }
+            | undefined)?.objectKey
+        : undefined;
+    let rawBytes: Uint8Array;
+    if (typeof cachedKey === 'string' && this.storage) {
+      rawBytes = await this.readObjectBytes(cachedKey);
+    } else {
+      if (!ref) {
+        throw new BadRequestException(
+          'Aucun lien portail exploitable pour ce marché (sourceUrl manquant)',
+        );
+      }
+      const dossier = await downloadDce(ref, dceIdentityFromEnv());
+      rawBytes = dossier.bytes;
+      // Persist the archive so a later re-run (or a now-dead portal link) reuses
+      // it instead of re-downloading. Best-effort: a cache failure never fails
+      // the extraction (we already hold the bytes in memory for this run).
+      if (this.storage) {
+        try {
+          const objectKey = `dossiers/${id}.zip`;
+          await this.storage.put(objectKey, Buffer.from(rawBytes), dossier.mime);
+          await this.repository.updateEnrichment(id, {}, {
+            dossier: {
+              objectKey,
+              filename: dossier.filename,
+              sizeBytes: rawBytes.length,
+              downloadedAt: new Date().toISOString(),
+            },
+          });
+        } catch (e) {
+          this.logger.warn(
+            `dossier cache put failed (${tender.reference}): ${(e as Error).message}`,
+          );
+        }
+      }
+    }
+    if (rawBytes.length > MAX_DCE_ZIP_BYTES) {
       throw new ServiceUnavailableException(
-        `Dossier trop volumineux (${Math.round(dossier.bytes.length / 1e6)} Mo) — extraction ignorée`,
+        `Dossier trop volumineux (${Math.round(rawBytes.length / 1e6)} Mo) — extraction ignorée`,
       );
     }
+    // Normalize RAR → ZIP so every downstream ZIP-only reader (text, bordereau,
+    // vision) works unchanged; ZIP passes through untouched.
+    const archiveBytes = await normalizeArchiveToZip(rawBytes);
+
     // 1) Fast digital pass — pdf-parse + DOCX text only, NO tesseract (which is
     //    the slow CPU-bound step). Digital DCEs are resolved here cheaply.
     const { text, files } = await extractDossierText(
-      dossier.bytes,
+      archiveBytes,
       pdfParseExtract,
       defaultBinaryExtractor,
     );
@@ -215,7 +274,7 @@ export class DossierExtractionService {
     //     variable — the structured rows are the ground truth and replace any
     //     LLM-paraphrased BPU below. Cheap (~ms) and never throws — null when
     //     no XLSX bordereau is in the archive.
-    const bordereau = extractBordereauFromDce(dossier.bytes);
+    const bordereau = extractBordereauFromDce(archiveBytes);
 
     let fresh: DossierExtraction;
     let sourceNames: string[];
@@ -256,7 +315,7 @@ export class DossierExtractionService {
           !(bordereau && bordereau.items.length > 0);
         if (needEstimation || needCaution || needBpu) {
           try {
-            const vis = await buildVisionInput(dossier.bytes);
+            const vis = await buildVisionInput(archiveBytes);
             if (vis.images.length > 0) {
               const visFresh = await aiExtractDossierVision(
                 llm,
@@ -310,7 +369,7 @@ export class DossierExtractionService {
         //    model OCR + understand + extract in one call (datao-grade; replaces
         //    the slow tesseract path). Throws only when nothing could be rendered.
         mode = 'vision';
-        const vis = await buildVisionInput(dossier.bytes);
+        const vis = await buildVisionInput(archiveBytes);
         if (vis.images.length === 0) {
           throw new ServiceUnavailableException(
             `Dossier illisible (aucun texte ni page rendue) — ${files.length} fichiers`,
@@ -407,9 +466,14 @@ export class DossierExtractionService {
     // path already captured the figures) — an empty excerpt must never clobber a
     // richer one a prior digital extraction stored.
     const dossierTextExcerpt = text.trim().slice(0, DOSSIER_TEXT_EXCERPT_CHARS);
+    // Markdown view of the SAME extracted text (## per-file headers, GFM tables
+    // for the bordereau) — what the chat agent reads best. Larger budget than the
+    // plain excerpt since it is the primary dossier context for the agent.
+    const dossierMarkdown = toDossierMarkdown(text).slice(0, DOSSIER_MARKDOWN_CHARS);
     await this.repository.updateEnrichment(id, amounts, {
       dossierExtraction: extraction,
       ...(dossierTextExcerpt.length > 0 ? { dossierText: dossierTextExcerpt } : {}),
+      ...(dossierMarkdown.length > 0 ? { dossierMarkdown } : {}),
     });
 
     this.logger.log(

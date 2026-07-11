@@ -72,10 +72,11 @@ const MAX_QUESTION_CHARS = 1500;
  *  Gemini/Haiku model handles ~12k tokens of context comfortably, and the
  *  higher-value blocks are emitted BEFORE the raw DCE dump so truncation only
  *  ever bites the least-critical prose. */
-const MAX_CONTEXT_CHARS = 40_000;
-/** Sub-budget for the raw DCE text block specifically, so the structured blocks
- *  (fiche, extraction, archive, coffre-fort) are always fully present. */
-const MAX_DOSSIER_TEXT_CHARS = 20_000;
+const MAX_CONTEXT_CHARS = 46_000;
+/** Sub-budget for the DCE Markdown block specifically, so the structured blocks
+ *  (fiche, extraction, archive, coffre-fort) are always fully present. Sized so
+ *  the agent sees a large slice of the dossier prose/tables (Opus handles it). */
+const MAX_DOSSIER_TEXT_CHARS = 28_000;
 /** How many rows/lines each archive/vault block prints — bounded for cost. */
 const MAX_PARTICIPANTS_SHOWN = 15;
 const MAX_LIKELY_COMPETITORS_SHOWN = 10;
@@ -183,7 +184,13 @@ export function readDossierText(
   raw: Record<string, unknown> | null | undefined,
 ): string | null {
   if (!raw || typeof raw !== 'object') return null;
-  const t = (raw as Record<string, unknown>).dossierText;
+  const r = raw as Record<string, unknown>;
+  // Prefer the Markdown view (## per-file headers + GFM bordereau tables) that
+  // the extraction now persists — the agent reads it best. Fall back to the
+  // plain text excerpt for tenders extracted before dossierMarkdown existed.
+  const md = r.dossierMarkdown;
+  if (typeof md === 'string' && md.trim().length > 0) return md;
+  const t = r.dossierText;
   return typeof t === 'string' && t.trim().length > 0 ? t : null;
 }
 
