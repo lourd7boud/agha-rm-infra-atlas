@@ -1,24 +1,78 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 interface ChatMsg {
   role: 'user' | 'assistant';
   content: string;
 }
 
+/** localStorage namespace — bump the version suffix to invalidate old threads. */
+const STORAGE_PREFIX = 'atlas.tenderChat.v1.';
+
+/** Reads a persisted thread for a tender, tolerating absent/corrupt storage
+ *  (private mode, quota, hand-edits) by degrading to an empty thread. */
+function loadThread(tenderId: string): ChatMsg[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(STORAGE_PREFIX + tenderId);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (m): m is ChatMsg =>
+        !!m &&
+        typeof m === 'object' &&
+        ((m as ChatMsg).role === 'user' || (m as ChatMsg).role === 'assistant') &&
+        typeof (m as ChatMsg).content === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** Persists (or clears) a tender's thread. Non-fatal on any storage failure. */
+function saveThread(tenderId: string, messages: ChatMsg[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (messages.length === 0) {
+      window.localStorage.removeItem(STORAGE_PREFIX + tenderId);
+    } else {
+      window.localStorage.setItem(STORAGE_PREFIX + tenderId, JSON.stringify(messages));
+    }
+  } catch {
+    /* quota exceeded / storage disabled — the in-memory thread still works. */
+  }
+}
+
 /**
  * Per-tender chat panel — datao's "agent IA va parcourir le dossier" surface.
- * State is local to the drawer (so closing the drawer clears the thread, like
- * datao's Nouveau chat button). Hits POST /api/tenders/:id/chat which is
- * single-flight on the backend (no streaming, < 5s typical) and grounded only
- * in the tender's stored context — never the web.
+ * The thread is PERSISTED in localStorage keyed by tender id, so closing the
+ * drawer (or reloading the page) and coming back restores the conversation
+ * instead of starting over. "Nouveau chat" clears it explicitly. Hits POST
+ * /api/tenders/:id/chat/stream (SSE), grounded only in the tender's stored
+ * context — never the web.
  */
 export function TenderChat({ tenderId, reference }: { tenderId: string; reference: string }) {
-  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  // Lazy init from storage so a reopened drawer paints the thread with no flash.
+  const [messages, setMessages] = useState<ChatMsg[]>(() => loadThread(tenderId));
   const [input, setInput] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Switching to a different tender in the same component instance: load that
+  // tender's stored thread (and reset the transient UI state).
+  useEffect(() => {
+    setMessages(loadThread(tenderId));
+    setInput('');
+    setError(null);
+  }, [tenderId]);
+
+  function clearThread(): void {
+    setMessages([]);
+    setError(null);
+    saveThread(tenderId, []);
+  }
 
   async function send(): Promise<void> {
     const q = input.trim();
@@ -83,6 +137,13 @@ export function TenderChat({ tenderId, reference }: { tenderId: string; referenc
       }
       if (sawError) throw new Error(sawError);
       if (!accumulated.trim()) throw new Error('Réponse vide');
+      // Persist the completed exchange so it survives closing/reopening the drawer.
+      const finalMessages: ChatMsg[] = [
+        ...baseline,
+        { role: 'assistant', content: accumulated },
+      ];
+      setMessages(finalMessages);
+      saveThread(tenderId, finalMessages);
     } catch (e) {
       setError((e as Error).message);
       // Roll back the optimistic exchange so the user can edit/retry.
@@ -95,13 +156,26 @@ export function TenderChat({ tenderId, reference }: { tenderId: string; referenc
 
   return (
     <div className="space-y-3">
-      <p className="flex items-start gap-2 rounded-lg bg-cyan-soft/50 px-3 py-2 text-xs text-muted">
-        <span className="rounded bg-cyan px-1 py-0.5 text-[9px] font-bold text-paper">IA</span>
-        Posez une question sur ce marché ({reference}) — l&apos;agent répond
-        uniquement à partir des informations extraites du dossier (objet, lots,
-        BPU, conditions, qualifications…). Ne pas utiliser pour des conseils
-        juridiques.
-      </p>
+      <div className="flex items-start justify-between gap-2">
+        <p className="flex items-start gap-2 rounded-lg bg-cyan-soft/50 px-3 py-2 text-xs text-muted">
+          <span className="rounded bg-cyan px-1 py-0.5 text-[9px] font-bold text-paper">IA</span>
+          Posez une question sur ce marché ({reference}) — l&apos;agent répond
+          uniquement à partir des informations extraites du dossier (objet, lots,
+          BPU, conditions, qualifications…). Ne pas utiliser pour des conseils
+          juridiques.
+        </p>
+        {messages.length > 0 && (
+          <button
+            type="button"
+            onClick={clearThread}
+            disabled={pending}
+            className="shrink-0 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-muted transition hover:bg-paper-2 hover:text-ink disabled:opacity-50"
+            title="Effacer la conversation pour ce marché"
+          >
+            Nouveau chat
+          </button>
+        )}
+      </div>
       {messages.length === 0 && (
         <p className="rounded-md border border-dashed border-line p-4 text-center text-sm text-faint">
           Aucun message. Essayez : « Quelles sont les qualifications exigées ? »
