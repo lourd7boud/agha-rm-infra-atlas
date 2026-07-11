@@ -8,6 +8,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
+  CHAT_LLM_CLIENT,
   LLM_CLIENT,
   type LlmClient,
   type LlmStreamEvent,
@@ -19,6 +20,25 @@ import {
   type TenderRecord,
   type TenderRepository,
 } from './tender.repository';
+import {
+  INTEL_REPOSITORY,
+  type IntelRepository,
+} from '../intel/intel.repository';
+import {
+  VAULT_REPOSITORY,
+  type VaultRepository,
+} from '../vault/vault.repository';
+import {
+  buildTenderCompetitorIntel,
+  type TenderCompetitorIntel,
+} from './competitor-intel.domain';
+import {
+  BID_REQUIRED_KINDS,
+  computeReadiness,
+  type ReadinessDoc,
+} from '../vault/validity';
+import { AGHA_PROFILE } from './company-profile';
+import type { DocumentKind } from '@atlas/contracts';
 
 /**
  * Per-tender AI chat — datao's "Saisissez une question et notre agent IA va
@@ -47,7 +67,18 @@ export interface ChatReply {
 
 const MAX_HISTORY_MESSAGES = 12;
 const MAX_QUESTION_CHARS = 1500;
-const MAX_CONTEXT_CHARS = 18_000;
+/** Overall cap on the grounded context handed to the model. Raised from 18k once
+ *  the DCE text excerpt + archive/competitor + vault blocks were added — a T1
+ *  Gemini/Haiku model handles ~12k tokens of context comfortably, and the
+ *  higher-value blocks are emitted BEFORE the raw DCE dump so truncation only
+ *  ever bites the least-critical prose. */
+const MAX_CONTEXT_CHARS = 40_000;
+/** Sub-budget for the raw DCE text block specifically, so the structured blocks
+ *  (fiche, extraction, archive, coffre-fort) are always fully present. */
+const MAX_DOSSIER_TEXT_CHARS = 20_000;
+/** How many rows/lines each archive/vault block prints — bounded for cost. */
+const MAX_PARTICIPANTS_SHOWN = 15;
+const MAX_LIKELY_COMPETITORS_SHOWN = 10;
 
 /**
  * datao-parity system prompt. The structure, numbered process, and
@@ -74,88 +105,177 @@ function formatFrenchDate(d: Date): string {
 
 export function buildTenderChatSystemPrompt(now: Date): string {
   const today = formatFrenchDate(now);
-  return `Vous êtes un assistant IA expert en analyse d'appels d'offres publics marocains. Votre personnalité est professionnelle, serviable et précise, avec une approche pédagogique pour expliquer les aspects complexes des marchés publics.
+  return `Tu es « ATLAS », l'agent d'intelligence de marchés publics d'AGHA RM INFRA. Tu es un agent INTERNE, réservé aux collaborateurs d'AGHA RM INFRA, dont la mission est d'analyser LE marché public que l'utilisateur consulte et de l'aider à décider et à préparer sa soumission.
 
-CONTEXTE IMPORTANT : L'utilisateur consulte un appel d'offres spécifique sur la plateforme ATLAS. Les documents de cet appel d'offres (fichiers PDF ou Markdown, tels que les Cahiers des Prescriptions Spéciales — CPS) ont été automatiquement chargés et analysés par le système pour vous permettre de répondre aux questions de l'utilisateur.
+═══════════ RÈGLE D'IDENTITÉ (ABSOLUE, PRIORITAIRE SUR TOUT) ═══════════
+- Tu es ATLAS, l'agent d'AGHA RM INFRA. Tu n'es PAS un « modèle de langage » générique.
+- Tu ne dis JAMAIS, sous aucune formulation, que tu es « un grand modèle de langage », que tu es « entraîné » ou « développé » par Google, OpenAI, Anthropic ou toute autre société. Tu ne nommes AUCUN fournisseur de modèle ni aucune technologie sous-jacente. Ce sujet est hors de ton périmètre.
+- Si on te demande qui tu es / quel est ton nom / quel modèle tu utilises / qui t'a créé (« qui es-tu ? », « من أنت ؟ », « c'est quoi ce chat ? », « من صنعك ؟ »...), tu réponds UNIQUEMENT dans cet esprit :
+  FR : « Je suis ATLAS, l'agent d'intelligence de marchés publics d'AGHA RM INFRA. Je suis là pour analyser ce marché avec vous : conditions, pièces à fournir, concurrence probable et niveau de prix. »
+  AR : « أنا ATLAS، وكيل الذكاء الخاص بشركة AGHA RM INFRA لتحليل الصفقات العمومية. أساعدك في تحليل هذه الصفقة: الشروط، الوثائق المطلوبة، المنافسة المحتملة والأثمنة المناسبة. »
+- Tu travailles exclusivement pour AGHA RM INFRA et ses collaborateurs.
+
+═══════════ TES ACCÈS (ce que le système te fournit ci-dessous) ═══════════
+Pour CE marché précis, le contexte fourni plus bas contient, quand c'est disponible :
+1. La FICHE du marché + le CONTENU DU DOSSIER (DCE : avis, RC, CPS, bordereau des prix) — tu peux donc lire et citer le dossier, pas seulement un résumé.
+2. L'ARCHIVE des marchés & résultats de cet acheteur — pour ESTIMER le nombre de concurrents probables et le niveau de prix / rabais habituel.
+3. L'état du DOSSIER ADMINISTRATIF d'AGHA RM INFRA (coffre-fort) — pour dire quelles pièces sont prêtes et lesquelles MANQUENT pour pouvoir soumissionner.
+Tu utilises réellement ces données. Ne dis jamais « je n'ai pas accès » ou « je ne peux pas voir le dossier » quand l'information EST présente dans le contexte : elle t'est fournie pour ça.
 
 La date d'aujourd'hui est le ${today}.
 
-Votre processus de réponse doit inclure :
-1. Analyse et Extraction : Identifier et comprendre toutes les informations pertinentes dans les documents de l'appel d'offres, y compris les nuances, les conditions spécifiques et les délais.
-2. Synthèse Claire : Transformer les données brutes en réponses structurées, concises et directement applicables. Utilisez des listes à puces ou des paragraphes selon la complexité de l'information.
-3. Citations Précises : Pour chaque information fournie, indiquez clairement le nom du fichier source (ex: "CPS_Marche_X.pdf", "Annexe_Technique.md"). Si l'information provient de plusieurs fichiers, mentionnez-les tous. Ne citez jamais de sources techniques (JSON, API, etc.).
-4. Gestion de l'Incomplétude : Si une information est manquante ou ambiguë, soyez transparent :
-   - "Cette information n'est pas précisée dans les documents de l'appel d'offres"
-   - "Les documents mentionnent [information partielle] mais sans détails supplémentaires"
-   - "Il serait conseillé de contacter directement l'organisme acheteur pour cette précision"
-5. Langage Accessible : Évitez tout jargon technique d'extraction de données. Expliquez les termes juridiques ou techniques spécifiques aux marchés publics quand nécessaire.
-6. Pertinence Ciblée : Répondez uniquement à la question posée. Si l'utilisateur demande quelque chose de général, orientez vers les spécificités de cet appel d'offres.
-7. Détection des Urgences : Si vous identifiez des dates limites proches (moins de 7 jours), mentionnez-le clairement en début de réponse.
-8. Gestion des Requêtes Hors-Périmètre : Pour les questions non liées aux appels d'offres, répondez poliment : "Je suis spécialisé dans l'analyse des documents d'appels d'offres. Comment puis-je vous aider concernant cet appel d'offres spécifique ?"
-9. Langue : Répondez par défaut en français. Si l'utilisateur écrit en arabe (script arabe détecté), répondez en arabe standard moderne en gardant les termes techniques du domaine des marchés publics tels qu'ils apparaissent dans les documents.
+═══════════ RÈGLES D'ANALYSE ═══════════
+- Fonde CHAQUE réponse sur le contexte fourni (fiche, DCE, archive, coffre-fort). N'invente jamais un chiffre, une référence, une pièce ou une condition qui n'y figure pas.
+- Quand une information manque réellement dans le contexte, dis-le clairement (« ce point n'est pas précisé dans le dossier ») et indique où la trouver (article du RC, séance de questions, contact de l'acheteur).
+- CONCURRENCE / NOMBRE DE SOUMISSIONNAIRES : présente-les comme des ESTIMATIONS fondées sur l'historique de l'acheteur (« d'après l'historique de cet acheteur… »), jamais comme des certitudes. Nomme les concurrents récurrents et leur fréquence quand ils sont fournis.
+- PRIX : sers-toi du rabais médian gagnant de l'acheteur et du bordereau (BPU) comme repères ; propose une fourchette raisonnée, jamais un prix « garanti ».
+- PIÈCES MANQUANTES : croise l'état du coffre-fort AGHA RM INFRA avec les qualifications/pièces exigées au DCE, et liste précisément ce qui manque ou est à renouveler.
+- URGENCE : si la date limite est à moins de 7 jours, signale-le en tête de réponse.
+- Réponds uniquement sur ce marché et les sujets liés à la soumission. Pour une question sans rapport, recentre poliment sur le marché.
+- Cite tes sources quand c'est utile : nom du fichier du DCE, « historique de l'acheteur », « coffre-fort AGHA RM INFRA ».
 
-Formulation des réponses :
-
-UTILISEZ des formulations comme :
-- "D'après les documents de cet appel d'offres..."
-- "Selon le CPS de ce marché..."
-- "Les documents de l'appel d'offres indiquent que..."
-- "Dans le dossier de cet appel d'offres..."
-- "Le règlement de consultation précise que..."
-
-ÉVITEZ des formulations comme :
-- "D'après les documents que vous m'avez envoyés..."
-- "Selon le fichier que vous avez partagé..."
-- "Dans les documents que vous avez fournis..."
-- "Basé sur votre upload..."
-
-Structure recommandée pour les réponses complexes :
-
-1. Réponse directe (1-2 phrases)
-2. Détails pertinents (organisés par importance)
-3. Source(s) (nom du fichier)
-4. Recommandations pratiques (si applicable)
-5. Alertes (dates limites, conditions importantes)
-
-Cas d'usage spécifiques :
-
-Pour les questions sur les délais :
-- Mentionnez toujours la date limite ET le nombre de jours restants
-- Précisez le mode de soumission (physique/électronique)
-- Rappelez les horaires si mentionnés
-
-Pour les questions sur les critères :
-- Listez les critères dans l'ordre d'importance
-- Indiquez les pondérations si disponibles
-- Expliquez les méthodes d'évaluation
-
-Pour les questions sur les pièces à fournir :
-- Différenciez les pièces obligatoires des facultatives
-- Précisez les formats acceptés
-- Mentionnez les particularités (originaux, copies, etc.)
-
-Pour les questions sur les qualifications :
-- Distinguez les critères techniques des critères financiers
-- Expliquez les seuils minimaux
-- Précisez les justificatifs demandés
-
-Votre engagement :
-Assurer que chaque réponse est 100% fidèle aux documents source, sans aucune invention ou recours à des connaissances externes. Vous êtes le pont entre la complexité de l'appel d'offres et la clarté pour l'utilisateur, en analysant les documents déjà disponibles sur la plateforme.
-
-Ton à adopter : Professionnel mais accessible, comme un consultant expérimenté qui guide un entrepreneur à travers les subtilités des marchés publics. Soyez précis sans être sec, et pédagogique sans être condescendant.
-
-Exemples de réponses types :
-- Question sur une date limite :
-"⚠️ Date limite proche — La soumission des offres doit se faire avant le [date] à [heure], soit dans [X] jours. Selon le règlement de consultation (RC_Marche_2024.pdf), les offres peuvent être déposées physiquement au bureau des marchés ou par voie électronique sur la plateforme [nom]."
-
-- Question sur un critère manquant :
-"Les documents de cet appel d'offres ne précisent pas [information demandée]. Cette information pourrait être disponible lors de la séance d'information (si prévue) ou en contactant directement l'organisme acheteur au [coordonnées si mentionnées dans les documents]."
-
-- Question technique complexe :
-"D'après le CPS (CPS_Marche_Technique.pdf), les spécifications techniques exigent [détail]. Cela signifie concrètement que [explication simplifiée]. Les soumissionnaires doivent donc [action pratique à effectuer]."`;
+═══════════ LANGUE & TON ═══════════
+- Réponds en français par défaut. Si l'utilisateur écrit en arabe (script arabe détecté), réponds en arabe standard moderne, en gardant les termes techniques des marchés publics.
+- Ton : professionnel, précis et pédagogique — comme un consultant chevronné en marchés publics qui accompagne un collègue. Structure les réponses complexes (réponse directe, détails par ordre d'importance, sources, recommandation, alertes).`;
 }
 
-function buildTenderContext(tender: TenderRecord): { text: string; chars: number } {
+/** French labels for the administrative-dossier document kinds the readiness
+ *  engine tracks — so the coffre-fort block reads naturally to a bid manager. */
+const DOC_KIND_LABELS: Partial<Record<DocumentKind, string>> = {
+  attestation_fiscale: 'Attestation fiscale (DGI)',
+  attestation_cnss: 'Attestation CNSS',
+  qualification_classification: 'Certificat de qualification & classification',
+  registre_commerce: 'Registre de commerce',
+  statuts: 'Statuts de la société',
+  pouvoirs_signataire: 'Pouvoirs du signataire',
+};
+
+function docLabel(kind: DocumentKind): string {
+  return DOC_KIND_LABELS[kind] ?? kind;
+}
+
+/**
+ * Renders AGHA RM INFRA's own bidding profile — the agent's self-knowledge
+ * ("who WE are"): our métiers, the classification estimation ceiling and the
+ * treasury's caution capacity. Lets the agent reason about fit/scope ("est-ce
+ * dans notre périmètre ?") and pre-flag over-ceiling markets, grounded in the
+ * versioned AGHA_PROFILE rather than the model's imagination.
+ */
+export function formatCompanyProfileForChat(): string {
+  const p = AGHA_PROFILE;
+  return [
+    '=== PROFIL AGHA RM INFRA (notre entreprise) ===',
+    `Métiers: ${p.domainKeywords.slice(0, 14).join(', ')}…`,
+    `Plafond d'estimation (classification): ${p.maxEstimationMad.toLocaleString('fr-MA')} MAD`,
+    `Capacité de caution provisoire par offre: ${p.maxCautionMad.toLocaleString('fr-MA')} MAD`,
+    `Procédures couvertes: ${p.procedures.join(', ')}`,
+  ].join('\n');
+}
+
+/**
+ * Reads the persisted DCE text excerpt (`raw.dossierText`) — the digital text
+ * layer of the dossier the extraction service stored so the chat can quote the
+ * ACTUAL prose (articles, clauses, conditions), not just the structured summary.
+ * Null when no digital text was captured (e.g. a pure scan, whose figures the
+ * structured extraction already holds).
+ */
+export function readDossierText(
+  raw: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const t = (raw as Record<string, unknown>).dossierText;
+  return typeof t === 'string' && t.trim().length > 0 ? t : null;
+}
+
+/**
+ * Renders the archive/competitor intel into the chat context — the "predict the
+ * competitors and the right price level" capability. CLOSED: the real published
+ * participants + winner. OPEN: predictive intel from this buyer's history (likely
+ * competitors + median winning rebate), honestly labelled as an estimation.
+ */
+export function formatCompetitorIntelForChat(intel: TenderCompetitorIntel): string {
+  const lines: string[] = [
+    "=== ARCHIVE — CONCURRENCE & NIVEAU DE PRIX (historique de l'acheteur) ===",
+  ];
+  if (intel.mode === 'closed') {
+    lines.push(
+      `Résultat DÉJÀ publié pour ce marché — ${intel.participants.length} soumissionnaire(s) connu(s):`,
+    );
+    intel.participants.slice(0, MAX_PARTICIPANTS_SHOWN).forEach((p) =>
+      lines.push(
+        `  - ${p.name}${p.amountMad != null ? ` — ${p.amountMad.toLocaleString('fr-MA')} MAD` : ''}${p.isWinner ? ' [ATTRIBUTAIRE]' : ''}`,
+      ),
+    );
+    return lines.join('\n');
+  }
+  lines.push(
+    `Aucun résultat publié pour ce marché. Estimation d'après l'historique de « ${intel.buyerName} » (${intel.buyerHistoryCount} marché(s) archivé(s)).`,
+  );
+  if (intel.likelyCompetitors.length > 0) {
+    lines.push('Concurrents probables (les plus fréquents chez cet acheteur):');
+    intel.likelyCompetitors.slice(0, MAX_LIKELY_COMPETITORS_SHOWN).forEach((c) =>
+      lines.push(
+        `  - ${c.name} — présent sur ${c.timesSeen} marché(s), ${c.wins} gagné(s)${c.avgAmountMad != null ? `, offre moyenne ${c.avgAmountMad.toLocaleString('fr-MA')} MAD` : ''}`,
+      ),
+    );
+  } else {
+    lines.push('Historique de concurrents insuffisant pour cet acheteur.');
+  }
+  if (intel.buyerMedianRebatePct != null) {
+    lines.push(
+      `Rabais médian gagnant chez cet acheteur: ${intel.buyerMedianRebatePct.toFixed(1)} % sous l'estimation administrative (repère pour fixer le prix).`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Renders AGHA RM INFRA's administrative-dossier readiness — the "which pieces
+ * are missing" capability. Crosses the vault's live documents against the kinds
+ * a travaux dossier requires (BID_REQUIRED_KINDS) and reports ready / to-renew /
+ * expired / missing so the agent can answer "que nous manque-t-il pour soumissionner ?".
+ */
+export function formatVaultReadinessForChat(
+  docs: readonly ReadinessDoc[],
+  now: Date,
+): string {
+  const r = computeReadiness(docs, now);
+  const lines: string[] = ['=== DOSSIER ADMINISTRATIF — COFFRE-FORT AGHA RM INFRA ==='];
+  lines.push(
+    `Prêt à soumissionner sans nouvelle démarche: ${r.ready ? 'OUI' : 'NON'} (score ${r.score}%).`,
+  );
+  const ready = BID_REQUIRED_KINDS.filter(
+    (k) => !r.missing.includes(k) && !r.expired.includes(k) && !r.expiring.includes(k),
+  );
+  if (ready.length > 0) lines.push(`Pièces prêtes: ${ready.map(docLabel).join(', ')}.`);
+  if (r.expiring.length > 0)
+    lines.push(`À renouveler bientôt (encore valides): ${r.expiring.map(docLabel).join(', ')}.`);
+  if (r.expired.length > 0)
+    lines.push(`EXPIRÉES (à refaire avant soumission): ${r.expired.map(docLabel).join(', ')}.`);
+  if (r.missing.length > 0)
+    lines.push(`MANQUANTES (absentes du coffre-fort): ${r.missing.map(docLabel).join(', ')}.`);
+  lines.push(
+    "Rappel: la déclaration sur l'honneur et la caution provisoire sont TOUJOURS à établir spécifiquement pour chaque marché.",
+  );
+  return lines.join('\n');
+}
+
+/** Assembled, pre-loaded groundings the context builder folds in — kept as data
+ *  so `buildTenderContext` stays a pure, testable function (the async loads live
+ *  in the service). */
+export interface TenderChatContextExtras {
+  /** Competitor / archive intel for THIS tender's buyer (buyer-scoped, OOM-safe). */
+  competitorIntel?: TenderCompetitorIntel | null;
+  /** AGHA RM INFRA vault documents (kind + expiry) for the readiness/gap block. */
+  vaultDocs?: readonly ReadinessDoc[] | null;
+  /** Injected "now" so readiness/lifecycle stay request-accurate + testable. */
+  now: Date;
+}
+
+function buildTenderContext(
+  tender: TenderRecord,
+  extras: TenderChatContextExtras,
+): { text: string; chars: number } {
   const lines: string[] = [];
   lines.push(`=== APPEL D'OFFRES ===`);
   lines.push(`Référence: ${tender.reference}`);
@@ -168,6 +288,9 @@ function buildTenderContext(tender: TenderRecord): { text: string; chars: number
   if (tender.cautionProvisoireMad != null) {
     lines.push(`Cautionnement provisoire: ${tender.cautionProvisoireMad} MAD`);
   }
+
+  // Company self-knowledge — constant, always present (the agent's "who WE are").
+  lines.push(`\n${formatCompanyProfileForChat()}`);
 
   const ai = readAiEnrichment(tender.raw);
   if (ai) {
@@ -235,11 +358,56 @@ function buildTenderContext(tender: TenderRecord): { text: string; chars: number
     }
   }
 
+  // Archive / competitor intel (buyer-scoped) — only when there is real signal,
+  // so a brand-new buyer with no history never prints an empty, confusing block.
+  const ci = extras.competitorIntel;
+  if (
+    ci &&
+    (ci.participants.length > 0 ||
+      ci.likelyCompetitors.length > 0 ||
+      ci.buyerHistoryCount > 0)
+  ) {
+    lines.push(`\n${formatCompetitorIntelForChat(ci)}`);
+  }
+
+  // Company document readiness (coffre-fort) — the missing-pieces capability.
+  if (extras.vaultDocs && extras.vaultDocs.length > 0) {
+    lines.push(`\n${formatVaultReadinessForChat(extras.vaultDocs, extras.now)}`);
+  }
+
+  // Raw DCE text LAST (largest, least critical if truncated) with its own
+  // sub-budget so the structured blocks above are always fully present.
+  const dossierText = readDossierText(tender.raw);
+  if (dossierText) {
+    lines.push(
+      `\n=== CONTENU DU DOSSIER (DCE — texte lu du dossier officiel) ===\n${dossierText.slice(0, MAX_DOSSIER_TEXT_CHARS)}`,
+    );
+  }
+
   const full = lines.join('\n');
   // Hard cap on the LLM payload — anything past it is too far down to matter
   // for typical chat questions (and would inflate cost + latency).
   const text = full.length > MAX_CONTEXT_CHARS ? full.slice(0, MAX_CONTEXT_CHARS) : full;
   return { text, chars: text.length };
+}
+
+/**
+ * Assembles the final USER message. CRUCIAL: the system instructions are
+ * prepended INTO the user message, not passed via `system` alone — because some
+ * gateways (the qcode Claude-Code relay behind CHAT_LLM_MODEL=claude-opus-4-8)
+ * IGNORE the `system` field entirely and inject their own coding-assistant
+ * persona. Verified live: system-only → the relay answers "Je suis Claude,
+ * assistant de code"; instructions-in-user-turn → the ATLAS/AGHA RM INFRA
+ * identity is respected (FR + AR). We still pass `system` too, so providers that
+ * DO honor it (Gemini, Anthropic direct) get the role at the system level.
+ */
+export function buildChatPrompt(
+  system: string,
+  context: string,
+  histText: string,
+  question: string,
+): string {
+  return `=== INSTRUCTIONS (à respecter absolument) ===\n${system}\n\n${context}\n\n=== HISTORIQUE ===\n${histText || '(aucun)'}\n\n=== NOUVELLE QUESTION ===\n${question}\n\nRéponds maintenant.`;
 }
 
 @Injectable()
@@ -249,14 +417,82 @@ export class TenderChatService {
   constructor(
     @Inject(TENDER_REPOSITORY) private readonly tenders: TenderRepository,
     @Optional() @Inject(LLM_CLIENT) private readonly llm: LlmClient | null,
+    // Archive/competitor + vault groundings. @Optional() + null-tolerant so the
+    // chat still answers from the DCE when either source is absent or fails — and
+    // so unit tests can construct the service with just repo + llm.
+    @Optional() @Inject(INTEL_REPOSITORY) private readonly intel: IntelRepository | null = null,
+    @Optional() @Inject(VAULT_REPOSITORY) private readonly vault: VaultRepository | null = null,
+    // Dedicated STRONG chat client (default claude-opus-4-8). Preferred over the
+    // fast/cheap default `llm` when configured (CHAT_LLM_MODEL set); null → the
+    // chat runs on the default client. Last param so existing 2–4 arg unit-test
+    // constructions keep compiling.
+    @Optional() @Inject(CHAT_LLM_CLIENT) private readonly chatLlm: LlmClient | null = null,
   ) {}
+
+  /** The client the chat actually runs on: the dedicated strong model when
+   *  configured, else the default extraction client. */
+  private get effectiveLlm(): LlmClient | null {
+    return this.chatLlm ?? this.llm;
+  }
+
+  /**
+   * Loads the pre-computed groundings (archive/competitor intel + vault readiness)
+   * and folds them, with the tender, into the full chat context. Each load is
+   * best-effort: a failure degrades gracefully to the DCE-only context rather than
+   * failing the whole chat. Buyer-scoped intel (findBidsForBuyer) keeps this
+   * OOM-safe — never the whole 550k-row competitor_bid table.
+   */
+  private async assembleContext(
+    tender: TenderRecord,
+  ): Promise<{ text: string; chars: number }> {
+    const now = new Date();
+    const [competitorIntel, vaultDocs] = await Promise.all([
+      this.loadCompetitorIntel(tender, now),
+      this.loadVaultDocs(),
+    ]);
+    return buildTenderContext(tender, { competitorIntel, vaultDocs, now });
+  }
+
+  private async loadCompetitorIntel(
+    tender: TenderRecord,
+    now: Date,
+  ): Promise<TenderCompetitorIntel | null> {
+    if (!this.intel) return null;
+    try {
+      const bids = await this.intel.findBidsForBuyer(tender.buyerName);
+      return buildTenderCompetitorIntel(
+        {
+          reference: tender.reference,
+          buyerName: tender.buyerName,
+          deadlineAt: tender.deadlineAt,
+        },
+        bids,
+        now,
+      );
+    } catch (e) {
+      this.logger.warn(`chat intel load failed (${tender.reference}): ${(e as Error).message}`);
+      return null;
+    }
+  }
+
+  private async loadVaultDocs(): Promise<ReadinessDoc[] | null> {
+    if (!this.vault) return null;
+    try {
+      const docs = await this.vault.findAll();
+      return docs.map((d) => ({ kind: d.kind, expiresAt: d.expiresAt ?? null }));
+    } catch (e) {
+      this.logger.warn(`chat vault load failed: ${(e as Error).message}`);
+      return null;
+    }
+  }
 
   async ask(
     tenderId: string,
     question: string,
     history: readonly ChatMessage[] = [],
   ): Promise<ChatReply> {
-    if (!this.llm) {
+    const llm = this.effectiveLlm;
+    if (!llm) {
       throw new ServiceUnavailableException('LLM non configuré (clé manquante)');
     }
     const q = question.trim();
@@ -269,7 +505,7 @@ export class TenderChatService {
     const tender = await this.tenders.findById(tenderId);
     if (!tender) throw new NotFoundException(`Tender not found: ${tenderId}`);
 
-    const { text: context, chars } = buildTenderContext(tender);
+    const { text: context, chars } = await this.assembleContext(tender);
 
     // Keep only the most recent turns — chat tabs that grow unboundedly otherwise
     // bloat every subsequent request. The system prompt + context are always
@@ -279,11 +515,12 @@ export class TenderChatService {
       .map((m) => `${m.role === 'user' ? 'Q' : 'R'}: ${m.content}`)
       .join('\n');
 
-    const prompt = `${context}\n\n=== HISTORIQUE ===\n${histText || '(aucun)'}\n\n=== NOUVELLE QUESTION ===\n${q}\n\nRéponds maintenant.`;
+    const system = buildTenderChatSystemPrompt(new Date());
+    const prompt = buildChatPrompt(system, context, histText, q);
 
-    const completion = await this.llm.complete({
+    const completion = await llm.complete({
       tier: 'T1',
-      system: buildTenderChatSystemPrompt(new Date()),
+      system,
       prompt,
       maxTokens: 800,
     });
@@ -312,7 +549,8 @@ export class TenderChatService {
     question: string,
     history: readonly ChatMessage[] = [],
   ): AsyncGenerator<LlmStreamEvent> {
-    if (!this.llm) {
+    const llm = this.effectiveLlm;
+    if (!llm) {
       throw new ServiceUnavailableException('LLM non configuré (clé manquante)');
     }
     const q = question.trim();
@@ -325,31 +563,32 @@ export class TenderChatService {
     const tender = await this.tenders.findById(tenderId);
     if (!tender) throw new NotFoundException(`Tender not found: ${tenderId}`);
 
-    const { text: context, chars } = buildTenderContext(tender);
+    const { text: context, chars } = await this.assembleContext(tender);
     const bounded = history.slice(-MAX_HISTORY_MESSAGES);
     const histText = bounded
       .map((m) => `${m.role === 'user' ? 'Q' : 'R'}: ${m.content}`)
       .join('\n');
-    const prompt = `${context}\n\n=== HISTORIQUE ===\n${histText || '(aucun)'}\n\n=== NOUVELLE QUESTION ===\n${q}\n\nRéponds maintenant.`;
+    const system = buildTenderChatSystemPrompt(new Date());
+    const prompt = buildChatPrompt(system, context, histText, q);
 
     const req = {
       tier: 'T1' as const,
-      system: buildTenderChatSystemPrompt(new Date()),
+      system,
       prompt,
       maxTokens: 800,
     };
 
     let totalDeltaChars = 0;
-    if (this.llm.streamComplete) {
+    if (llm.streamComplete) {
       // Provider supports native streaming (Anthropic stream, Gemini SSE…).
-      for await (const ev of this.llm.streamComplete(req)) {
+      for await (const ev of llm.streamComplete(req)) {
         if (ev.type === 'delta') totalDeltaChars += ev.text.length;
         yield ev;
       }
     } else {
       // Fallback: single non-streaming call → emit one delta + finish so the
       // SSE protocol stays uniform. Costs the same, just no progressive UX.
-      const c = await this.llm.complete(req);
+      const c = await llm.complete(req);
       const text = c.text.trim().slice(0, 4000);
       totalDeltaChars = text.length;
       yield { type: 'delta', text };

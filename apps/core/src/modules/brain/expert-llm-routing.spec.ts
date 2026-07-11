@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   AnthropicLlmClient,
+  createChatLlmClientFromEnv,
   createExpertLlmClientFromEnv,
   GoogleLlmClient,
   isClaudeModel,
@@ -66,5 +67,52 @@ describe('createExpertLlmClientFromEnv', () => {
       EXPERT_LLM_PROVIDER: 'anthropic',
     } as unknown as NodeJS.ProcessEnv;
     expect(createExpertLlmClientFromEnv(env)).toBeNull();
+  });
+});
+
+describe('createChatLlmClientFromEnv', () => {
+  const withChat = (model: string, extra: Record<string, string> = {}) =>
+    ({ ...PROD_LIKE, CHAT_LLM_MODEL: model, ...extra }) as unknown as NodeJS.ProcessEnv;
+
+  test('null when CHAT_LLM_MODEL is unset → chat falls back to the default client', () => {
+    expect(createChatLlmClientFromEnv(PROD_LIKE)).toBeNull();
+  });
+
+  test('claude-opus-4-8 under LLM_PROVIDER=google routes to the Anthropic path (reusing LLM_API_*)', () => {
+    expect(createChatLlmClientFromEnv(withChat('claude-opus-4-8'))).toBeInstanceOf(
+      AnthropicLlmClient,
+    );
+  });
+
+  test('a dedicated CHAT_LLM_API_KEY/BASE still builds the Anthropic client', () => {
+    const client = createChatLlmClientFromEnv(
+      withChat('claude-opus-4-8', {
+        CHAT_LLM_API_KEY: 'chat-key',
+        CHAT_LLM_API_BASE: 'https://api.qcode.cc',
+      }),
+    );
+    expect(client).toBeInstanceOf(AnthropicLlmClient);
+  });
+
+  test('CHAT_LLM_PROVIDER forces the client regardless of model family', () => {
+    expect(
+      createChatLlmClientFromEnv(
+        withChat('claude-opus-4-8', { CHAT_LLM_PROVIDER: 'openrouter' }),
+      ),
+    ).toBeInstanceOf(OpenRouterLlmClient);
+  });
+
+  test('a Gemini chat model routes to the Google client', () => {
+    expect(createChatLlmClientFromEnv(withChat('gemini-2.5-pro'))).toBeInstanceOf(
+      GoogleLlmClient,
+    );
+  });
+
+  test('null when the routed provider has no usable key', () => {
+    const env = {
+      CHAT_LLM_MODEL: 'claude-opus-4-8',
+      CHAT_LLM_PROVIDER: 'anthropic',
+    } as unknown as NodeJS.ProcessEnv;
+    expect(createChatLlmClientFromEnv(env)).toBeNull();
   });
 });

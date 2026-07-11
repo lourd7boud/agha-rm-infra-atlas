@@ -14,6 +14,8 @@ import { z } from 'zod';
 import { Roles } from '../auth/auth.module';
 import { extractAvis } from './extractor';
 import {
+  CHAT_LLM_CLIENT,
+  createChatLlmClientFromEnv,
   createLlmClientFromEnv,
   LLM_CLIENT,
   type LlmClient,
@@ -70,9 +72,33 @@ const llmClientProvider = {
   },
 };
 
+/**
+ * Dedicated STRONG client for the per-tender chat (TenderChatService) — runs the
+ * chat on a top model (default claude-opus-4-8) instead of the fast/cheap
+ * extraction model, since the chat is the surface users judge the "agent" by.
+ * Null when CHAT_LLM_MODEL is unset → the chat falls back to the default client.
+ */
+const chatLlmClientProvider = {
+  provide: CHAT_LLM_CLIENT,
+  useFactory: (): LlmClient | null => {
+    const log = new Logger('BrainModule');
+    const client = createChatLlmClientFromEnv();
+    if (!client) {
+      log.log(
+        'Chat LLM not configured (CHAT_LLM_MODEL unset) — per-tender chat uses the default client',
+      );
+      return null;
+    }
+    log.log(
+      `Chat LLM active: ${process.env.CHAT_LLM_MODEL} — drives the per-tender /tenders chat`,
+    );
+    return client;
+  },
+};
+
 @Module({
   controllers: [BrainController],
-  providers: [llmClientProvider],
-  exports: [llmClientProvider],
+  providers: [llmClientProvider, chatLlmClientProvider],
+  exports: [llmClientProvider, chatLlmClientProvider],
 })
 export class BrainModule {}

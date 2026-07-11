@@ -97,6 +97,15 @@ export interface LlmClient {
 
 export const LLM_CLIENT = Symbol('LLM_CLIENT');
 
+/** DI token for the per-tender chat's DEDICATED strong client (see
+ *  createChatLlmClientFromEnv). Separate from LLM_CLIENT so the chat can run on a
+ *  top model (Opus) while extraction/enrichment stay on the fast/cheap one. */
+export const CHAT_LLM_CLIENT = Symbol('CHAT_LLM_CLIENT');
+
+/** Default model for the per-tender chat when CHAT_LLM_MODEL is left unset —
+ *  the strong Anthropic model, routed over the Anthropic Messages path. */
+export const DEFAULT_CHAT_MODEL = 'claude-opus-4-8';
+
 export interface AnthropicClientOptions {
   apiKey: string;
   baseUrl?: string;
@@ -779,21 +788,35 @@ export function isClaudeModel(model: string): boolean {
 
 type ExpertProvider = 'anthropic' | 'google' | 'openrouter';
 
-function expertProvider(model: string, env: NodeJS.ProcessEnv): ExpertProvider {
-  const explicit = env.EXPERT_LLM_PROVIDER?.toLowerCase();
+/**
+ * Resolves which provider protocol a dedicated (expert/chat) client must speak
+ * for `model`. Precedence: an explicit override (EXPERT_/CHAT_LLM_PROVIDER) wins;
+ * otherwise route by MODEL FAMILY — a Claude model ALWAYS goes over the Anthropic
+ * Messages path even when the default provider is Google (else claude-* hits the
+ * /gemini path and 404s); a gemini-* model over the Google path; an unknown
+ * family mirrors the default provider selection. Shared by the expert and chat
+ * factories so both route identically.
+ */
+function resolveProviderForModel(
+  model: string,
+  env: NodeJS.ProcessEnv,
+  explicitProvider?: string,
+): ExpertProvider {
+  const explicit = explicitProvider?.toLowerCase();
   if (explicit === 'anthropic' || explicit === 'google' || explicit === 'openrouter') {
     return explicit;
   }
-  // Route by MODEL FAMILY first — this is the whole point: a Claude model must
-  // go over the Anthropic path even when the default provider is Google.
   if (isClaudeModel(model)) return 'anthropic';
   if (/gemini/i.test(model)) return 'google';
-  // Unknown family → mirror the default provider selection.
   if (env.LLM_PROVIDER?.toLowerCase() === 'google' && env.OPENROUTER_API_KEY) {
     return 'google';
   }
   if (env.OPENROUTER_API_KEY) return 'openrouter';
   return 'anthropic';
+}
+
+function expertProvider(model: string, env: NodeJS.ProcessEnv): ExpertProvider {
+  return resolveProviderForModel(model, env, env.EXPERT_LLM_PROVIDER);
 }
 
 /**
@@ -841,6 +864,62 @@ export function createExpertLlmClientFromEnv(
     apiKey,
     baseUrl:
       env.EXPERT_LLM_API_BASE ??
+      env.OPENROUTER_API_BASE ??
+      'https://generativelanguage.googleapis.com',
+    tierModels,
+  });
+}
+
+/**
+ * Selects the per-tender chat's DEDICATED client. The chat (TenderChatService) is
+ * a low-volume, high-value surface where the fast/cheap extraction model reads
+ * poorly (identity drift, shallow analysis), so it runs on a STRONG model —
+ * default `claude-opus-4-8` over the Anthropic Messages path (qcode gateway).
+ *
+ * Enabled only when CHAT_LLM_MODEL is set (mirrors the expert's opt-in): unset →
+ * returns null and the chat falls back to the default extraction client. ALL
+ * tiers are pinned to the chat model because the chat calls tier 'T1'. Provider
+ * is inferred from the MODEL FAMILY (Claude → Anthropic path even under
+ * LLM_PROVIDER=google), overridable via CHAT_LLM_PROVIDER. Credentials fall back
+ * CHAT_* → LLM_* → OPENROUTER_* so a single gateway key (e.g. qcode) serves it
+ * without a second credential; set CHAT_LLM_API_KEY/CHAT_LLM_API_BASE to bill it
+ * to a dedicated key. Returns null (→ safe fallback) when no key is resolvable.
+ */
+export function createChatLlmClientFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): LlmClient | null {
+  const model = env.CHAT_LLM_MODEL;
+  if (!model) return null;
+  const tierModels: Record<LlmTier, string> = { T1: model, T2: model, T3: model };
+  const provider = resolveProviderForModel(model, env, env.CHAT_LLM_PROVIDER);
+
+  if (provider === 'anthropic') {
+    const apiKey = env.CHAT_LLM_API_KEY ?? env.LLM_API_KEY ?? env.OPENROUTER_API_KEY;
+    if (!apiKey) return null;
+    return new AnthropicLlmClient({
+      apiKey,
+      baseUrl: env.CHAT_LLM_API_BASE ?? env.LLM_API_BASE,
+      tierModels,
+    });
+  }
+  if (provider === 'openrouter') {
+    const apiKey = env.CHAT_LLM_API_KEY ?? env.OPENROUTER_API_KEY;
+    if (!apiKey) return null;
+    return new OpenRouterLlmClient({
+      apiKey,
+      baseUrl: env.CHAT_LLM_API_BASE ?? env.OPENROUTER_API_BASE,
+      tierModels,
+      appUrl: env.PUBLIC_WEB_URL ?? 'https://atlas.marocinfra.com',
+      appTitle: 'ATLAS - AGHA RM INFRA (chat)',
+    });
+  }
+  // google
+  const apiKey = env.CHAT_LLM_API_KEY ?? env.OPENROUTER_API_KEY ?? env.LLM_API_KEY;
+  if (!apiKey) return null;
+  return new GoogleLlmClient({
+    apiKey,
+    baseUrl:
+      env.CHAT_LLM_API_BASE ??
       env.OPENROUTER_API_BASE ??
       'https://generativelanguage.googleapis.com',
     tierModels,

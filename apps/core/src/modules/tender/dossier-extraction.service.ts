@@ -71,6 +71,18 @@ const EXTRACT_CONCURRENCY = (() => {
 /** Hard ceiling on a downloaded DCE before we even unzip (OOM guard). */
 const MAX_DCE_ZIP_BYTES = 120 * 1024 * 1024;
 
+/**
+ * How many characters of the DCE's digital text layer we persist alongside the
+ * structured extraction (raw.dossierText). This is what lets the per-tender AI
+ * chat (TenderChatService) actually READ the dossier prose — article by article,
+ * conditions, clauses — instead of only the thin structured summary. Bounded so
+ * the JSONB stays reasonable (TOASTed/compressed, never on the /inventory hot
+ * path which projects columns and never detoasts `raw`); the chat re-bounds it
+ * to its own budget. Only persisted when a real text layer exists (digital DCEs);
+ * pure scans keep their structured extraction, which already read the figures.
+ */
+const DOSSIER_TEXT_EXCERPT_CHARS = 24_000;
+
 /** After a failed extraction we stamp raw.dossierExtractAttempt so the batch
  *  stops re-picking the SAME unreadable dossiers first on every sweep (that
  *  clog wasted ~60% of capacity and pinned coverage at ~6%). The row becomes
@@ -389,8 +401,15 @@ export class DossierExtractionService {
           `(DCE proposait ${extraction.estimationMad})`,
       );
     }
+    // Persist a bounded slice of the DCE digital text layer so the per-tender AI
+    // chat can READ the dossier prose (not just the structured summary). Only when
+    // a real text layer exists (`text` is empty for pure scans, where the vision
+    // path already captured the figures) — an empty excerpt must never clobber a
+    // richer one a prior digital extraction stored.
+    const dossierTextExcerpt = text.trim().slice(0, DOSSIER_TEXT_EXCERPT_CHARS);
     await this.repository.updateEnrichment(id, amounts, {
       dossierExtraction: extraction,
+      ...(dossierTextExcerpt.length > 0 ? { dossierText: dossierTextExcerpt } : {}),
     });
 
     this.logger.log(
