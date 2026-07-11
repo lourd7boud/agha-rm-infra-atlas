@@ -76,6 +76,41 @@ Règles STRICTES:
 - Si rien ne correspond, dis-le clairement et propose une variante de filtres.
 - Pas de chiffres financiers fabriqués.`;
 
+/**
+ * Gemini controlled-generation schema — forces the model to emit EXACTLY the
+ * {filters, answer} shape. Without it, gemini-2.5-flash IGNORES the prompt's JSON
+ * spec and hallucinates its own shape ({query, contracts:[…fabricated ids…]}),
+ * which fails the parser → "Réponse IA non-JSON / invalide". The Anthropic and
+ * OpenRouter clients ignore responseSchema and keep steering via the '{' prefill,
+ * so this is safe across providers. (Verified against the live gemini-2.5-flash:
+ * prompt-only JSON → wrong shape; schema → exact {filters, answer}.)
+ */
+const ASSISTANT_RESPONSE_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    filters: {
+      type: 'object',
+      properties: {
+        procedures: { type: 'array', items: { type: 'string' } },
+        categories: { type: 'array', items: { type: 'string' } },
+        secteurs: { type: 'array', items: { type: 'string' } },
+        regions: { type: 'array', items: { type: 'string' } },
+        buyers: { type: 'array', items: { type: 'string' } },
+        search: { type: 'string' },
+        lifecycle: {
+          type: 'string',
+          enum: ['en_cours', 'cloture', 'attribue', 'infructueux'],
+        },
+        budgetOnly: { type: 'boolean' },
+        cautionOnly: { type: 'boolean' },
+      },
+    },
+    answer: { type: 'string' },
+  },
+  required: ['answer', 'filters'],
+  propertyOrdering: ['filters', 'answer'],
+};
+
 /** Tiny ad-hoc validator — avoids a new zod dependency just for two shapes. */
 function parseAssistantOutput(raw: unknown): {
   filters: InventoryFilters;
@@ -200,7 +235,10 @@ export class TenderAssistantService {
       system: SYSTEM_PROMPT,
       prompt,
       prefill: '{',
-      maxTokens: 1500,
+      // Force the exact {filters, answer} shape on Gemini (see schema comment);
+      // 2048 leaves headroom for a real narrative answer alongside thinking tokens.
+      responseSchema: ASSISTANT_RESPONSE_SCHEMA,
+      maxTokens: 2048,
     });
 
     let parsed: unknown;

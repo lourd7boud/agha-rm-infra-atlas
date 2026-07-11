@@ -53,6 +53,9 @@ describe('TenderAssistantService.ask', () => {
     expect(prompt).toContain('FACETS DISPONIBLES');
     expect(prompt).toContain('ÉCHANTILLON');
     expect(prompt).toContain('AO 23/2026/DRETLH');
+    // Gemini controlled-generation schema MUST be sent — without it the model
+    // ignores the prompt's JSON spec and hallucinates its own shape (live-verified).
+    expect(llm.requests[0]!.responseSchema).toBeTruthy();
   });
 
   test('rejects an empty question', async () => {
