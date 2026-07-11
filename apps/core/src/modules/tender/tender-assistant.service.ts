@@ -8,9 +8,11 @@ import {
 } from '@nestjs/common';
 import { LLM_CLIENT, type LlmClient } from '../brain/llm.client';
 import { parseModelJson } from '../brain/extractor';
+import { TtlCache } from '../../lib/ttl-cache';
 import {
   INTEL_REPOSITORY,
   type IntelRepository,
+  type CompetitorBidRecord,
 } from '../intel/intel.repository';
 import {
   TENDER_REPOSITORY,
@@ -20,6 +22,7 @@ import {
   buildInventory,
   type InventoryFilters,
   type InventoryItem,
+  type InventoryRow,
 } from './inventory.domain';
 
 /**
@@ -111,6 +114,26 @@ const ASSISTANT_RESPONSE_SCHEMA: Record<string, unknown> = {
   propertyOrdering: ['filters', 'answer'],
 };
 
+/**
+ * Filter-independent catalogue snapshot every question is grounded on. Cached for
+ * a short window (CATALOGUE_CACHE_TTL_MS) so the two whole-catalogue reads
+ * (findAllInventoryRows over ~97k rows + listResultMarkets over ~585k bids) and
+ * the facet fold run ONCE per window instead of on every question — that whole-
+ * catalogue scan was the bulk of the non-LLM latency. The per-question filter fold
+ * (matchedCount/topRefs) and the LLM call still run live, so answers stay correct;
+ * only the catalogue vocabulary can lag by at most the TTL (invisible for search).
+ */
+interface CatalogueSnapshot {
+  records: readonly InventoryRow[];
+  bids: readonly CompetitorBidRecord[];
+  facetText: string;
+  /** Empty-filter inventory items (≤1000) scanned for the keyword grounding. */
+  items: readonly InventoryItem[];
+}
+
+const CATALOGUE_CACHE_TTL_MS = 60_000;
+const CATALOGUE_CACHE_KEY = 'assistant-catalogue';
+
 /** Tiny ad-hoc validator — avoids a new zod dependency just for two shapes. */
 function parseAssistantOutput(raw: unknown): {
   filters: InventoryFilters;
@@ -148,6 +171,9 @@ function parseAssistantOutput(raw: unknown): {
 @Injectable()
 export class TenderAssistantService {
   private readonly logger = new Logger('TenderAssistant');
+  /** Short-TTL, single-flight cache of the whole-catalogue snapshot (see
+   *  CatalogueSnapshot) — collapses concurrent cold requests to one DB load. */
+  private readonly catalogueCache = new TtlCache<CatalogueSnapshot>();
 
   constructor(
     @Inject(TENDER_REPOSITORY) private readonly tenders: TenderRepository,
@@ -167,41 +193,16 @@ export class TenderAssistantService {
       );
     }
 
-    // Build the catalogue once + extract facet vocabulary + a small relevant
-    // sample (keyword-overlap) to ground the model.
-    //
-    // SCALABLE READ: use the lean read-model loaders — NOT findAll()/listAllBids().
-    // findAll() ships every tender's toasted `raw`/`detail` jsonb (97k rows, 90 kB
-    // max) and listAllBids() the whole 585k-row competitor_bid table; folding both
-    // into JS blew the 792 MB core heap → "FATAL: heap out of memory" → the process
-    // died mid-request and the browser saw an empty 500. findAllInventoryRows()
-    // projects only the columns buildInventory needs (raw never crosses the wire)
-    // and listResultMarkets() is the deduped ~1-row-per-consultation substitute
-    // whose lifecycle facets are byte-identical to the full-bid fold.
-    const now = new Date();
-    const [records, bids] = await Promise.all([
-      this.tenders.findAllInventoryRows(),
-      this.intel.listResultMarkets(),
-    ]);
-    const inv = buildInventory(records, {}, now, { limit: 1000 }, bids);
-    const facetText = [
-      `Catégories: ${inv.facets.categories.map((f) => f.label).join(', ')}`,
-      `Procédures: ${inv.facets.procedures
-        .map((f) => `${f.key}=${f.label}`)
-        .join('; ')}`,
-      `Régions: ${inv.facets.regions
-        .slice(0, 20)
-        .map((f) => f.label)
-        .join(', ')}`,
-      `Secteurs (top 30): ${inv.facets.secteurs
-        .slice(0, 30)
-        .map((f) => f.label)
-        .join(', ')}`,
-      `Top acheteurs: ${inv.facets.buyers
-        .slice(0, 30)
-        .map((f) => f.label)
-        .join(', ')}`,
-    ].join('\n');
+    // Ground the model on the catalogue: facet vocabulary + a keyword sample. The
+    // whole-catalogue read + facet fold live behind a short-TTL cache (see
+    // CatalogueSnapshot / loadCatalogue), so on a warm cache this is ~free and only
+    // the LLM call + the per-question filter fold below run live.
+    const cat = await this.catalogueCache.getOrCompute(
+      CATALOGUE_CACHE_KEY,
+      CATALOGUE_CACHE_TTL_MS,
+      () => this.loadCatalogue(),
+    );
+    const facetText = cat.facetText;
 
     // Tiny keyword sample to ground the narrative — without it the model has no
     // real refs to cite. Falls back to the first 20 active items if no keyword
@@ -211,7 +212,7 @@ export class TenderAssistantService {
       .split(/[\s,.;:!?]+/u)
       .filter((t) => t.length >= 3)
       .slice(0, 8);
-    const scored = inv.items
+    const scored = cat.items
       .map((it) => {
         const hay = `${it.reference} ${it.objet} ${it.buyerName} ${it.region} ${it.location ?? ''} ${it.secteur}`.toLowerCase();
         const hits = tokens.reduce((n, t) => (hay.includes(t) ? n + 1 : n), 0);
@@ -220,7 +221,7 @@ export class TenderAssistantService {
       .filter((x) => x.hits > 0)
       .sort((a, b) => b.hits - a.hits)
       .slice(0, MAX_SAMPLE_ROWS);
-    const sample = scored.length > 0 ? scored : inv.items.slice(0, 20).map((it) => ({ it, hits: 0 }));
+    const sample = scored.length > 0 ? scored : cat.items.slice(0, 20).map((it) => ({ it, hits: 0 }));
     const sampleText = sample
       .map(
         ({ it }) =>
@@ -256,8 +257,9 @@ export class TenderAssistantService {
     }
 
     // Re-run the inventory with the produced filters so the UI sees the exact
-    // count and can show a preview without a second round-trip.
-    const filteredInv = buildInventory(records, out.filters, now, { limit: 1000 }, bids);
+    // count and can show a preview without a second round-trip. Uses the cached
+    // records/bids (≤ TTL stale) with a fresh `now` so lifecycle stays request-accurate.
+    const filteredInv = buildInventory(cat.records, out.filters, new Date(), { limit: 1000 }, cat.bids);
     const matchedCount = filteredInv.filteredCount;
     const topRefs = filteredInv.items
       .slice(0, MAX_PREVIEW_ROWS)
@@ -278,5 +280,37 @@ export class TenderAssistantService {
       topRefs,
       model: completion.model,
     };
+  }
+
+  /** Loads the whole-catalogue snapshot the assistant grounds questions on. Uses
+   *  the lean read-model loaders ONLY — findAllInventoryRows() (projected, no `raw`
+   *  jsonb detoast) + listResultMarkets() (deduped ~1-row-per-consultation) — never
+   *  findAll()/listAllBids(), which shipped the toasted 97k-row jsonb + the whole
+   *  585k-row competitor_bid table and OOM-crashed the 792 MB core. Cached by ask(). */
+  private async loadCatalogue(): Promise<CatalogueSnapshot> {
+    const [records, bids] = await Promise.all([
+      this.tenders.findAllInventoryRows(),
+      this.intel.listResultMarkets(),
+    ]);
+    const inv = buildInventory(records, {}, new Date(), { limit: 1000 }, bids);
+    const facetText = [
+      `Catégories: ${inv.facets.categories.map((f) => f.label).join(', ')}`,
+      `Procédures: ${inv.facets.procedures
+        .map((f) => `${f.key}=${f.label}`)
+        .join('; ')}`,
+      `Régions: ${inv.facets.regions
+        .slice(0, 20)
+        .map((f) => f.label)
+        .join(', ')}`,
+      `Secteurs (top 30): ${inv.facets.secteurs
+        .slice(0, 30)
+        .map((f) => f.label)
+        .join(', ')}`,
+      `Top acheteurs: ${inv.facets.buyers
+        .slice(0, 30)
+        .map((f) => f.label)
+        .join(', ')}`,
+    ].join('\n');
+    return { records, bids, facetText, items: inv.items };
   }
 }

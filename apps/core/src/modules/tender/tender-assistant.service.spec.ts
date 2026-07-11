@@ -94,6 +94,35 @@ describe('TenderAssistantService.ask', () => {
     expect(reply.matchedCount).toBeGreaterThan(0);
   });
 
+  test('caches the catalogue across calls — one whole-catalogue load per TTL window', async () => {
+    let rowLoads = 0;
+    let bidLoads = 0;
+    const origRows = tenders.findAllInventoryRows.bind(tenders);
+    const origBids = intel.listResultMarkets.bind(intel);
+    tenders.findAllInventoryRows = async () => {
+      rowLoads += 1;
+      return origRows();
+    };
+    intel.listResultMarkets = async () => {
+      bidLoads += 1;
+      return origBids();
+    };
+    const svc = new TenderAssistantService(
+      tenders,
+      intel,
+      new FakeLlmClient([
+        JSON.stringify({ filters: { search: 'pont' }, answer: 'A [AO 23/2026/DRETLH].' }),
+        JSON.stringify({ filters: { search: 'irrigation' }, answer: 'B [AO 56/2026/ORMVAO].' }),
+      ]),
+    );
+    await svc.ask('travaux de pont');
+    await svc.ask('travaux irrigation');
+    // Second question served from the cached snapshot — the whole-catalogue reads
+    // fired exactly once, not per request.
+    expect(rowLoads).toBe(1);
+    expect(bidLoads).toBe(1);
+  });
+
   test('throws ServiceUnavailable when no LLM client is configured', async () => {
     await expect(
       new TenderAssistantService(tenders, intel, null).ask('q'),
