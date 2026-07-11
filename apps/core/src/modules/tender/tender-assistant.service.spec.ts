@@ -69,6 +69,28 @@ describe('TenderAssistantService.ask', () => {
     expect(llm.requests[0]!.prompt!).toContain('AO 23/2026/DRETLH');
   });
 
+  test('uses the lean read-model loaders, never the whole-catalogue findAll/listAllBids (OOM guard)', async () => {
+    // The heavy loaders detoast every tender's `raw` jsonb + the whole 585k-row
+    // competitor_bid table, which OOM-crashed the 792 MB core. Poison them so this
+    // test fails the day someone reintroduces the whole-catalogue fold here.
+    tenders.findAll = () => {
+      throw new Error('findAll() must not be called by the assistant (OOM)');
+    };
+    intel.listAllBids = () => {
+      throw new Error('listAllBids() must not be called by the assistant (OOM)');
+    };
+    const llm = new FakeLlmClient([
+      JSON.stringify({ filters: { search: 'pont' }, answer: 'Trouvé : [AO 23/2026/DRETLH].' }),
+    ]);
+
+    const reply = await new TenderAssistantService(tenders, intel, llm).ask(
+      'travaux de pont à Marrakech',
+    );
+
+    expect(reply.answer).toContain('AO 23/2026/DRETLH');
+    expect(reply.matchedCount).toBeGreaterThan(0);
+  });
+
   test('throws ServiceUnavailable when no LLM client is configured', async () => {
     await expect(
       new TenderAssistantService(tenders, intel, null).ask('q'),

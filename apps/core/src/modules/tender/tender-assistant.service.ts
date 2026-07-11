@@ -134,10 +134,19 @@ export class TenderAssistantService {
 
     // Build the catalogue once + extract facet vocabulary + a small relevant
     // sample (keyword-overlap) to ground the model.
+    //
+    // SCALABLE READ: use the lean read-model loaders — NOT findAll()/listAllBids().
+    // findAll() ships every tender's toasted `raw`/`detail` jsonb (97k rows, 90 kB
+    // max) and listAllBids() the whole 585k-row competitor_bid table; folding both
+    // into JS blew the 792 MB core heap → "FATAL: heap out of memory" → the process
+    // died mid-request and the browser saw an empty 500. findAllInventoryRows()
+    // projects only the columns buildInventory needs (raw never crosses the wire)
+    // and listResultMarkets() is the deduped ~1-row-per-consultation substitute
+    // whose lifecycle facets are byte-identical to the full-bid fold.
     const now = new Date();
     const [records, bids] = await Promise.all([
-      this.tenders.findAll(),
-      this.intel.listAllBids(),
+      this.tenders.findAllInventoryRows(),
+      this.intel.listResultMarkets(),
     ]);
     const inv = buildInventory(records, {}, now, { limit: 1000 }, bids);
     const facetText = [
