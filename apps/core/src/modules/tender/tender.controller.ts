@@ -612,14 +612,16 @@ export class TenderController {
   @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
   @Get('tenders')
   async list() {
-    // Records only — the deadline wall never needs competitor_bid, so it must not
-    // ride loadCatalogSnapshot's listAllBids (550k rows). This was the last consumer
-    // keeping that scan alive; with the competitor-intel drawer now scoped, the
-    // whole-bid-table load is gone from the read path entirely.
-    const records = await this.repository.findAll();
-    return [...records]
+    // Lean projection ONLY — findAllInventoryRows() omits the heavy `raw`/`detail`
+    // jsonb, so Postgres never detoasts the whole ~97k-row catalogue for this read.
+    // The old findAll() shipped every toasted blob and folding that into JS
+    // OOM-crashed the 792 MB core (same class as the Assistant IA endpoint bug).
+    // The deadline wall needs only the base columns + daysLeft, ordered by urgency.
+    const now = new Date();
+    const rows = await this.repository.findAllInventoryRows();
+    return [...rows]
       .sort((a, b) => a.deadlineAt.getTime() - b.deadlineAt.getTime())
-      .map(present);
+      .map((row) => ({ ...row, daysLeft: daysUntil(row.deadlineAt, now) }));
   }
 
   /**

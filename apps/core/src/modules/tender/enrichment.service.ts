@@ -184,7 +184,11 @@ export class EnrichmentService {
     const tender = await this.requireTender(id);
     // Market context so the Strategist stops deciding blind: the ouvrage
     // segment + this buyer's demand profile, derived from observed history.
-    const allTenders = await this.repository.findAll();
+    // SCALABLE READ: buildMarketContext only needs the lean 6-column observation
+    // projection (it is typed for BuyerObservationRow[]), so this rides
+    // findBuyerObservationRows() — NOT findAll(), which would detoast every
+    // tender's `raw` jsonb (~97k rows) and OOM-crash the 792 MB core per request.
+    const observations = await this.repository.findBuyerObservationRows();
 
     const dossier = {
       fiche: {
@@ -198,7 +202,7 @@ export class EnrichmentService {
         etatPipeline: tender.pipelineState,
       },
       qualificationAutomatique: tender.qualification,
-      marcheIntel: buildMarketContext(tender, allTenders),
+      marcheIntel: buildMarketContext(tender, observations),
       retroPlanning: buildBackPlan(tender.deadlineAt, new Date()),
       profilEntreprise: {
         plafondEstimationMad: AGHA_PROFILE.maxEstimationMad,
