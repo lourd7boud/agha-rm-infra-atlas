@@ -299,6 +299,32 @@ export const MIN_READABLE_FILE_CHARS = 200;
  *  extraction that blocks the row from ever retrying. */
 export const MIN_READABLE_TOTAL_CHARS = 500;
 
+/**
+ * Extracts the text of ONE dossier document, routing by extension: OOXML Word/
+ * Excel and ODF to the in-house parsers, plaintext verbatim, legacy Office
+ * binaries (.doc/.xls/.ppt/.rtf) to the CLI-tool fallback, everything else (PDF)
+ * to the injected PDF extractor. NEVER throws — a single unreadable document
+ * returns '' so it can't abort a whole-dossier read. Shared by extractDossierText
+ * (budgeted summary) and buildFullDossierMarkdown (full-fidelity chat context).
+ */
+export async function extractDocText(
+  name: string,
+  bytes: Uint8Array,
+  extractPdf: PdfTextExtractor = defaultPdfExtractor,
+  extractBinary: BinaryDocExtractor = noopBinaryExtractor,
+): Promise<string> {
+  try {
+    if (DOCX_NAME.test(name)) return extractDocxText(bytes);
+    if (XLSX_NAME.test(name)) return extractXlsxText(bytes);
+    if (ODF_NAME.test(name)) return extractOdfText(bytes);
+    if (PLAINTEXT_NAME.test(name)) return strFromU8(bytes);
+    if (BINARY_NAME.test(name)) return await extractBinary(bytes, name);
+    return await extractPdf(bytes);
+  } catch {
+    return '';
+  }
+}
+
 export async function extractDossierText(
   zipBytes: Uint8Array,
   extractPdf: PdfTextExtractor = defaultPdfExtractor,
@@ -339,23 +365,7 @@ export async function extractDossierText(
     const bytes = entries[name];
     if (!bytes || bytes.length === 0) continue;
 
-    let raw = '';
-    try {
-      raw = DOCX_NAME.test(name)
-        ? extractDocxText(bytes)
-        : XLSX_NAME.test(name)
-          ? extractXlsxText(bytes)
-          : ODF_NAME.test(name)
-            ? extractOdfText(bytes)
-            : PLAINTEXT_NAME.test(name)
-              ? strFromU8(bytes)
-              : BINARY_NAME.test(name)
-                ? await extractBinary(bytes, name)
-                : await extractPdf(bytes);
-    } catch {
-      // A single unreadable doc must not abort the whole dossier.
-      continue;
-    }
+    const raw = await extractDocText(name, bytes, extractPdf, extractBinary);
     const cleaned = normalize(raw);
     if (!cleaned) continue;
 

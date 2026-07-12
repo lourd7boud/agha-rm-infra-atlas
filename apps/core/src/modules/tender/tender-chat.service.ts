@@ -20,6 +20,7 @@ import {
   type TenderRecord,
   type TenderRepository,
 } from './tender.repository';
+import { DossierService } from './dossier.service';
 import {
   INTEL_REPOSITORY,
   type IntelRepository,
@@ -72,11 +73,12 @@ const MAX_QUESTION_CHARS = 1500;
  *  Gemini/Haiku model handles ~12k tokens of context comfortably, and the
  *  higher-value blocks are emitted BEFORE the raw DCE dump so truncation only
  *  ever bites the least-critical prose. */
-const MAX_CONTEXT_CHARS = 46_000;
-/** Sub-budget for the DCE Markdown block specifically, so the structured blocks
- *  (fiche, extraction, archive, coffre-fort) are always fully present. Sized so
- *  the agent sees a large slice of the dossier prose/tables (Opus handles it). */
-const MAX_DOSSIER_TEXT_CHARS = 28_000;
+const MAX_CONTEXT_CHARS = 120_000;
+/** Sub-budget for the DCE content block. Large so the agent reads the REAL files
+ *  (RC/CPS/BPU, full bordereau), not a digest — Opus's context easily holds this
+ *  (~30k tokens); the structured blocks above are emitted first so they're never
+ *  truncated. Most DCEs fit whole; only the very largest are sliced here. */
+const MAX_DOSSIER_TEXT_CHARS = 100_000;
 /** How many rows/lines each archive/vault block prints — bounded for cost. */
 const MAX_PARTICIPANTS_SHOWN = 15;
 const MAX_LIKELY_COMPETITORS_SHOWN = 10;
@@ -275,6 +277,10 @@ export interface TenderChatContextExtras {
   competitorIntel?: TenderCompetitorIntel | null;
   /** AGHA RM INFRA vault documents (kind + expiry) for the readiness/gap block. */
   vaultDocs?: readonly ReadinessDoc[] | null;
+  /** FULL dossier Markdown (the real file contents, built from the DCE archive)
+   *  — preferred over the persisted excerpt so the agent reads the actual files,
+   *  not a digest. Null when it can't be built (falls back to the raw excerpt). */
+  fullDossierMarkdown?: string | null;
   /** Injected "now" so readiness/lifecycle stay request-accurate + testable. */
   now: Date;
 }
@@ -382,12 +388,14 @@ function buildTenderContext(
     lines.push(`\n${formatVaultReadinessForChat(extras.vaultDocs, extras.now)}`);
   }
 
-  // Raw DCE text LAST (largest, least critical if truncated) with its own
-  // sub-budget so the structured blocks above are always fully present.
-  const dossierText = readDossierText(tender.raw);
+  // DCE content LAST (largest, least critical if truncated) with its own
+  // sub-budget so the structured blocks above are always fully present. Prefer
+  // the FULL dossier Markdown (the real files, built from the archive) so the
+  // agent reads the actual documents, not the persisted summary excerpt.
+  const dossierText = extras.fullDossierMarkdown ?? readDossierText(tender.raw);
   if (dossierText) {
     lines.push(
-      `\n=== CONTENU DU DOSSIER (DCE — texte lu du dossier officiel) ===\n${dossierText.slice(0, MAX_DOSSIER_TEXT_CHARS)}`,
+      `\n=== CONTENU DU DOSSIER (DCE — fichiers réels lus du dossier officiel) ===\n${dossierText.slice(0, MAX_DOSSIER_TEXT_CHARS)}`,
     );
   }
 
@@ -434,6 +442,10 @@ export class TenderChatService {
     // chat runs on the default client. Last param so existing 2–4 arg unit-test
     // constructions keep compiling.
     @Optional() @Inject(CHAT_LLM_CLIENT) private readonly chatLlm: LlmClient | null = null,
+    // Builds/serves the FULL dossier Markdown (real file contents from the DCE
+    // archive) so the agent reads the actual files, not the summary. @Optional()
+    // + null-tolerant: absent → the chat falls back to the persisted excerpt.
+    @Optional() @Inject(DossierService) private readonly dossierService: DossierService | null = null,
   ) {}
 
   /** The client the chat actually runs on: the dedicated strong model when
@@ -453,11 +465,36 @@ export class TenderChatService {
     tender: TenderRecord,
   ): Promise<{ text: string; chars: number }> {
     const now = new Date();
-    const [competitorIntel, vaultDocs] = await Promise.all([
+    const [competitorIntel, vaultDocs, fullDossierMarkdown] = await Promise.all([
       this.loadCompetitorIntel(tender, now),
       this.loadVaultDocs(),
+      this.loadFullDossier(tender),
     ]);
-    return buildTenderContext(tender, { competitorIntel, vaultDocs, now });
+    return buildTenderContext(tender, {
+      competitorIntel,
+      vaultDocs,
+      fullDossierMarkdown,
+      now,
+    });
+  }
+
+  /**
+   * Resolves the FULL dossier Markdown (real file contents) via DossierService —
+   * built once from the DCE archive and cached in MinIO. Best-effort: any failure
+   * (no archive, dead portal link, unreadable) degrades to null so the chat still
+   * answers from the persisted summary excerpt. This is what makes the agent read
+   * the actual project files, including for OLD tenders.
+   */
+  private async loadFullDossier(tender: TenderRecord): Promise<string | null> {
+    if (!this.dossierService) return null;
+    try {
+      return await this.dossierService.getDossierMarkdown(tender.id);
+    } catch (e) {
+      this.logger.warn(
+        `chat full-dossier load failed (${tender.reference}): ${(e as Error).message}`,
+      );
+      return null;
+    }
   }
 
   private async loadCompetitorIntel(

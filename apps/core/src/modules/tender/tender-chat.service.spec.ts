@@ -313,6 +313,26 @@ describe('TenderChatService.ask — agent capabilities', () => {
     expect(req.prompt).toContain('grand modèle de langage');
   });
 
+  test('feeds the FULL dossier files (DossierService) over the persisted excerpt', async () => {
+    const id = await seedTender(repo);
+    // Old-style excerpt persisted on the tender…
+    await repo.updateEnrichment(id, {}, { dossierText: 'ancien extrait résumé' });
+    const llm = new FakeLlmClient(['ok']);
+    // …but DossierService returns the FULL real files → that must win.
+    const dossierService = {
+      getDossierMarkdown: async () =>
+        '## RC.docx\nArticle 7: visite des lieux OBLIGATOIRE le 10/07/2026.',
+    } as unknown as import('./dossier.service').DossierService;
+    const service = new TenderChatService(repo, llm, null, null, null, dossierService);
+
+    await service.ask(id, 'la visite est-elle obligatoire ?');
+
+    const prompt = llm.requests[0]!.prompt!;
+    expect(prompt).toContain('fichiers réels lus du dossier officiel');
+    expect(prompt).toContain('visite des lieux OBLIGATOIRE');
+    expect(prompt).not.toContain('ancien extrait résumé'); // excerpt not used when full files exist
+  });
+
   test('prefers the dedicated strong chat client (Opus) over the default llm', async () => {
     const id = await seedTender(repo);
     const defaultLlm = new FakeLlmClient(['DEFAULT-FAST']);

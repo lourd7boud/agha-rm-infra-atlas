@@ -8,6 +8,10 @@ import {
 } from '@nestjs/common';
 import { unzipSync } from 'fflate';
 import { OBJECT_STORAGE, type ObjectStorage } from '../vault/storage';
+import { normalizeArchiveToZip } from './dossier-archive';
+import { buildFullDossierMarkdown } from './dossier-fulltext';
+import { pdfParseExtract } from './pdf-ocr';
+import { defaultBinaryExtractor } from './dossier-binary';
 
 /** Map a file extension to its standard MIME type. Returns octet-stream for
  *  anything unknown so the browser still downloads it safely. */
@@ -261,5 +265,66 @@ export class DossierService {
       bytes: Buffer.from(found),
       mime: mimeFor(name),
     };
+  }
+
+  /** Collects a stored-object stream into a UTF-8 string. */
+  private async streamToString(
+    body: AsyncIterable<Buffer | Uint8Array>,
+  ): Promise<string> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of body) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  }
+
+  /**
+   * Full-dossier Markdown for the chat agent — the ACTUAL file contents (RC/CPS/
+   * BPU article by article, the full bordereau), NOT the budgeted extraction
+   * summary. Built once from the DCE archive (the cached zip, or a one-time
+   * portal download via ensureDossier) — normalizing RAR→ZIP and reading every
+   * data-bearing file's full text with the CHEAP path (pdf-parse + OOXML, no OCR)
+   * — then cached in MinIO (dossiers/{id}.md) so later chats are a fast fetch.
+   * This is what lets the agent read the real files, even for OLD tenders that
+   * were only ever summarized. Returns null on any failure so the chat falls back
+   * to the stored excerpt.
+   */
+  async getDossierMarkdown(tenderId: string): Promise<string | null> {
+    const mdKey = `dossiers/${tenderId}.md`;
+    // 1) Serve the cached Markdown if we already built it.
+    try {
+      const obj = await this.storage.getObject(mdKey);
+      const md = await this.streamToString(obj.body as AsyncIterable<Buffer | Uint8Array>);
+      if (md.trim().length > 0) return md;
+    } catch {
+      // Not cached yet — build it below.
+    }
+    // 2) Build from the archive (cached zip, or a one-time portal download).
+    try {
+      const dossier = await this.ensureDossier(tenderId);
+      const r = await fetch(dossier.url);
+      if (!r.ok) return null;
+      const zip = await normalizeArchiveToZip(new Uint8Array(await r.arrayBuffer()));
+      const { markdown } = await buildFullDossierMarkdown(
+        zip,
+        pdfParseExtract,
+        defaultBinaryExtractor,
+      );
+      if (!markdown.trim()) return null;
+      await this.storage.put(
+        mdKey,
+        Buffer.from(markdown, 'utf8'),
+        'text/markdown; charset=utf-8',
+      );
+      this.logger.log(
+        `dossier markdown built ${tenderId} → ${markdown.length} chars`,
+      );
+      return markdown;
+    } catch (err) {
+      this.logger.warn(
+        `getDossierMarkdown failed (${tenderId}): ${(err as Error).message}`,
+      );
+      return null;
+    }
   }
 }
