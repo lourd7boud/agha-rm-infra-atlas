@@ -9,6 +9,7 @@ import {
   Delete,
   Get,
   Inject,
+  Logger,
   NotFoundException,
   Param,
   Patch,
@@ -37,6 +38,7 @@ import { computeAcomptesIs } from './compta-fiscal.domain';
 import { computeTvaFromLignes, tvaPeriodeBornes } from './compta-tva.domain';
 import { computeIrMensuel } from './compta-social.domain';
 import { COMPTA_ROLES, actorFrom, toComptaHttp, type AuthedRequest } from './compta-http.helpers';
+import { extractAndCacheLegalDocText } from '../tender/legal-doc-text';
 
 const dateSchema = z
   .string()
@@ -163,6 +165,8 @@ const COMPTA_ALLOWED_MIMES = new Set([
 @Roles(...COMPTA_ROLES)
 @Controller('compta')
 export class ComptaRegistresController {
+  private readonly logger = new Logger('ComptaRegistres');
+
   constructor(
     @Inject(COMPTA_REPOSITORY) private readonly compta: ComptaRepository,
     @Inject(COMPTA_REGISTRES_REPOSITORY) private readonly registres: ComptaRegistresRepository,
@@ -447,7 +451,7 @@ export class ComptaRegistresController {
     const fileName = sanitizeFilename(file.originalname);
     const key = `compta/${randomUUID()}/${fileName}`;
     await this.storage.put(key, file.buffer, file.mimetype);
-    return this.registres.createDocument({
+    const doc = await this.registres.createDocument({
       ...meta.data,
       storageKey: key,
       fileName,
@@ -455,6 +459,15 @@ export class ComptaRegistresController {
       fileSize: file.size,
       createdBy: actorFrom(req) ?? undefined,
     });
+    // Fire-and-forget OCR: extract the (possibly SCANNED) document's text with
+    // ocrmypdf (fra+ara) and cache it so the AI agent can read its CONTENT, not
+    // just its title. Runs in the background — the upload responds immediately;
+    // the text becomes available a few seconds later.
+    const bytes = new Uint8Array(file.buffer);
+    void extractAndCacheLegalDocText(this.storage, doc.id, bytes, fileName, true)
+      .then((text) => this.logger.log(`legal doc OCR ${doc.id} → ${text.length} chars`))
+      .catch((e) => this.logger.warn(`legal doc OCR failed (${doc.id}): ${(e as Error).message}`));
+    return doc;
   }
 
   /** Relaie l'objet MinIO (inline) — même chemin BFF que les assets BTP. */

@@ -10,21 +10,16 @@ import {
   type ComptaRegistresRepository,
   type LegalDocumentRecord,
 } from '../compta/compta-registres.repository';
-import { extractDocText } from './dossier-text';
-import { pdfParseExtract } from './pdf-ocr';
-import { defaultBinaryExtractor } from './dossier-binary';
+import {
+  readCachedLegalDocText,
+  extractAndCacheLegalDocText,
+} from './legal-doc-text';
 import { TtlCache } from '../../lib/ttl-cache';
 
-/** Per-document extracted-text budget (attestations are short). */
-export const MAX_LEGAL_DOC_TEXT_CHARS = 6_000;
 /** Overall budget for the company legal block in the chat context. */
 export const MAX_LEGAL_CONTEXT_CHARS = 30_000;
 /** The legal dossier is company-wide (shared by every tender), so cache it. */
 const LEGAL_CTX_TTL_MS = 10 * 60 * 1000;
-
-function normalizeWs(s: string): string {
-  return s.replace(/[ \t\f\v]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-}
 
 function isoDate(d: Date | null | undefined): string {
   return d ? d.toISOString().slice(0, 10) : '—';
@@ -137,25 +132,25 @@ export class CompanyLegalService {
     return buildCompanyLegalMarkdown(profil, withText, new Date());
   }
 
-  /** Full text of one legal document, cached per-doc in MinIO (extract once). */
+  /**
+   * Full text of one legal document. Serves the per-doc MinIO cache — written by
+   * the OCR-on-upload path (compta controller) and the re-index — so SCANNED docs
+   * are already readable here. On a cache miss, extracts CHEAPLY (no OCR on the
+   * chat request path) and caches; scans not yet OCR'd contribute only metadata.
+   */
   private async getDocText(doc: LegalDocumentRecord): Promise<string> {
     if (!this.storage || !doc.storageKey) return '';
-    const cacheKey = `legal-doc-text/${doc.id}.md`;
-    try {
-      return await this.streamToString(await this.getObjectStream(cacheKey));
-    } catch {
-      // Not cached — extract below.
-    }
+    const cached = await readCachedLegalDocText(this.storage, doc.id);
+    if (cached !== null) return cached;
     try {
       const bytes = await this.streamToBytes(await this.getObjectStream(doc.storageKey));
-      const text = normalizeWs(
-        await extractDocText(doc.fileName ?? 'doc.pdf', bytes, pdfParseExtract, defaultBinaryExtractor),
-      ).slice(0, MAX_LEGAL_DOC_TEXT_CHARS);
-      // Cache only non-empty text so scans/images retry cheaply on a later build.
-      if (text) {
-        await this.storage.put(cacheKey, Buffer.from(text, 'utf8'), 'text/markdown; charset=utf-8');
-      }
-      return text;
+      return await extractAndCacheLegalDocText(
+        this.storage,
+        doc.id,
+        bytes,
+        doc.fileName ?? 'doc.pdf',
+        false,
+      );
     } catch (e) {
       this.logger.warn(`legal doc text failed (${doc.id}): ${(e as Error).message}`);
       return '';
@@ -171,9 +166,5 @@ export class CompanyLegalService {
     const chunks: Buffer[] = [];
     for await (const c of body) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
     return new Uint8Array(Buffer.concat(chunks));
-  }
-
-  private async streamToString(body: AsyncIterable<Buffer | Uint8Array>): Promise<string> {
-    return Buffer.from(await this.streamToBytes(body)).toString('utf8');
   }
 }
