@@ -25,12 +25,7 @@ import {
   type TenderRepository,
 } from './tender.repository';
 import { buildMarketContext } from './buyer-observatory.domain';
-import {
-  aiEnrich,
-  readAiEnrichment,
-  runPool,
-  type AiEnrichment,
-} from './ai-enrichment';
+import { aiEnrich, runPool, type AiEnrichment } from './ai-enrichment';
 import { PROCEDURE_LABELS, inferCategory } from './inventory.domain';
 
 export interface EnrichmentSummary {
@@ -426,14 +421,15 @@ export class EnrichmentService {
     this.aiBatchRunning = true;
     try {
       const onlyActive = opts.onlyActive ?? true;
-      const now = Date.now();
-      const all = await this.repository.findAll();
-      const pending = all
-        .filter((t) => !readAiEnrichment(t.raw))
-        .filter((t) => !onlyActive || t.deadlineAt.getTime() >= now)
-        // Newest-detected first so a fresh tender is enriched the same sweep.
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-        .slice(0, Math.max(0, Math.floor(limit)));
+      // Lean candidate read — the "not-yet-enriched + active, newest-first, capped
+      // at limit" selection now lives in the repository (pushed to SQL on the
+      // Drizzle path), so a single batch never folds the whole `raw` catalogue into
+      // JS (the findAll() OOM class that crashed the 792 MB core).
+      const pending = await this.repository.findAiEnrichmentCandidates(
+        Math.max(0, Math.floor(limit)),
+        { onlyActive },
+        new Date(),
+      );
 
       let succeeded = 0;
       const failedIds: string[] = [];

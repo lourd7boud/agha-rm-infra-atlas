@@ -19,11 +19,11 @@ export class QualifierService {
   ) {}
 
   async runOnce(): Promise<QualifySummary> {
-    const all = await this.repository.findAll();
-    const candidates = all.filter(
-      (tender) =>
-        tender.pipelineState === 'detected' || tender.pipelineState === 'parsed',
-    );
+    // Lean candidate read — pipeline_state IN (detected,parsed) is filtered in SQL,
+    // and qualify() reads only base columns, so this never detoasts the whole `raw`
+    // catalogue into JS (the findAll() OOM class that crashed the 792 MB core when a
+    // big ingest left the whole catalogue in 'detected').
+    const candidates = await this.repository.findQualificationCandidates();
 
     let qualified = 0;
     let rejected = 0;

@@ -65,3 +65,85 @@ describe('EnrichmentService.generateG1Brief (market context)', () => {
     expect(prompt).toContain('nbAppelsObserves');
   });
 });
+
+/**
+ * aiEnrichBatch selects un-enriched active tenders newest-first, bounded by
+ * `limit`, and enriches them. The candidate scan must ride a lean projection
+ * (findAiEnrichmentCandidates) — NOT findAll(), which detoasts every tender's
+ * `raw` jsonb (~97k rows) and can OOM the 792 MB core on a single batch run.
+ */
+describe('EnrichmentService.aiEnrichBatch (candidate selection)', () => {
+  const base = {
+    buyerName: "Direction Régionale de l'Équipement de Marrakech",
+    procedure: 'AOO' as const,
+    // Shared objet so any enrichment résumé passes the overlap guard regardless
+    // of which candidate the pool happens to hand each queued response to.
+    objet: "Construction d'un pont sur oued N'Fis",
+    location: 'Marrakech',
+    deadlineAt: new Date('2026-12-01T09:00:00Z'),
+  };
+  // Résumé echoes the objet tokens so jaccardOverlap clears MIN_RESUME_OVERLAP.
+  const enrichJson = JSON.stringify({
+    secteur: 'Génie civil',
+    resume: "Marché de construction d'un pont sur oued. Ouvrage de génie civil.",
+    faq: [],
+    lots: [],
+    conditions: {},
+    reserveAuxPme: false,
+  });
+
+  test('enriches only un-enriched active tenders, never the whole-catalogue findAll (OOM guard)', async () => {
+    const repo = new InMemoryTenderRepository();
+    await repo.create({ ...base, reference: 'AO 30/2026/A', sourceUrl: 'https://x/a' });
+    await repo.create({ ...base, reference: 'AO 31/2026/B', sourceUrl: 'https://x/b' });
+    // Already enriched → must be skipped.
+    const enriched = await repo.create({
+      ...base,
+      reference: 'AO 32/2026/C',
+      sourceUrl: 'https://x/c',
+    });
+    await repo.updateEnrichment(enriched.id, {}, {
+      aiEnrichment: {
+        secteur: 'Génie civil',
+        resume: 'Déjà enrichi.',
+        faq: [],
+        lots: [],
+        conditions: {},
+        reserveAuxPme: false,
+        model: 'fake-T1',
+        enrichedAt: '2026-07-10T00:00:00.000Z',
+      },
+    });
+
+    repo.findAll = () => {
+      throw new Error('findAll() must not be called by aiEnrichBatch (OOM)');
+    };
+    // One queued response per candidate (2), consumed by the worker pool.
+    const llm = new FakeLlmClient([enrichJson, enrichJson]);
+
+    const result = await new EnrichmentService(repo, llm).aiEnrichBatch(100, {
+      onlyActive: true,
+    });
+
+    expect(result.candidates).toBe(2);
+    expect(result.succeeded).toBe(2);
+    expect(result.failed).toBe(0);
+  });
+
+  test('caps the candidate set at `limit`', async () => {
+    const repo = new InMemoryTenderRepository();
+    await repo.create({ ...base, reference: 'AO 60/1', sourceUrl: 'https://x/1' });
+    await repo.create({ ...base, reference: 'AO 61/2', sourceUrl: 'https://x/2' });
+    await repo.create({ ...base, reference: 'AO 62/3', sourceUrl: 'https://x/3' });
+    // Exactly one response: if `limit` were not honoured the 2nd enrich would
+    // exhaust the queue and fail, so candidates=1/succeeded=1 proves the cap.
+    const llm = new FakeLlmClient([enrichJson]);
+
+    const result = await new EnrichmentService(repo, llm).aiEnrichBatch(1, {
+      onlyActive: true,
+    });
+
+    expect(result.candidates).toBe(1);
+    expect(result.succeeded).toBe(1);
+  });
+});

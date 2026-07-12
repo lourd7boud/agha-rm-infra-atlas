@@ -4,6 +4,7 @@ import {
   asc,
   desc,
   eq,
+  gte,
   ilike,
   inArray,
   isNotNull,
@@ -201,6 +202,48 @@ export interface ReferenceBpuPrice {
   prixUnitaireMad: number;
 }
 
+/**
+ * Lean qualifier candidate — ONLY the base columns qualify() reads (it never
+ * touches `raw`). The sweep selects pipeline_state IN (detected, parsed) in SQL,
+ * so a huge post-ingest backlog never detoasts the whole `raw` catalogue into JS.
+ */
+export interface QualificationCandidate {
+  id: string;
+  reference: string;
+  procedure: TenderProcedure;
+  objet: string;
+  estimationMad?: number;
+  cautionProvisoireMad?: number;
+  deadlineAt: Date;
+  pipelineState: PipelineState;
+}
+
+/** Lean AI-enrichment candidate — just the id (to enrich) + reference (to log). */
+export interface AiEnrichmentCandidate {
+  id: string;
+  reference: string;
+}
+
+/**
+ * Lean dossier-extraction signal — the scalar flags the extraction batch's
+ * candidate filter reads, projected from `raw` INSIDE Postgres so the heavy jsonb
+ * (BPU tables, dossierText/Markdown) never crosses into JS. hasExtraction = a
+ * stored dossierExtraction object is present; hasAutresKey = it carries the
+ * datao-form 'autres' key (its absence ⇒ pre-datao schema, eligible for
+ * --upgrade); lastAttemptAt = the last failed-extraction stamp (drives the
+ * cooldown). Projecting these avoids the whole-`raw` fold the batch used to do.
+ */
+export interface DossierExtractionSignal {
+  id: string;
+  reference: string;
+  sourceUrl: string | null;
+  deadlineAt: Date;
+  createdAt: Date;
+  hasExtraction: boolean;
+  hasAutresKey: boolean;
+  lastAttemptAt: string | null;
+}
+
 export class DuplicateTenderError extends Error {
   constructor(reference: string, buyerName: string) {
     super(`Tender already registered: ${reference} (${buyerName})`);
@@ -215,6 +258,28 @@ export interface TenderRepository {
   findAll(): Promise<TenderRecord[]>;
   /** Slim full-catalogue read for knowledge aggregation — never ships raw. */
   findAllForKnowledge(): Promise<KnowledgeTenderRow[]>;
+  /**
+   * Lean qualifier candidates (pipeline_state IN detected/parsed), projected —
+   * qualify() reads only base columns, so this never detoasts `raw`. Replaces the
+   * whole-catalogue findAll() the qualifier sweep used to fold in JS.
+   */
+  findQualificationCandidates(): Promise<QualificationCandidate[]>;
+  /**
+   * The newest un-enriched (optionally active) tenders, capped at `limit` — the
+   * AI-enrichment batch's candidate set, selected + sorted + limited in SQL so
+   * `raw` is never folded into JS for the whole catalogue.
+   */
+  findAiEnrichmentCandidates(
+    limit: number,
+    opts: { onlyActive: boolean },
+    now: Date,
+  ): Promise<AiEnrichmentCandidate[]>;
+  /**
+   * Whole-catalogue dossier-extraction signals (scalar flags only, no `raw`) — the
+   * extraction batch folds these in JS to pick candidates without detoasting the
+   * heavy jsonb blobs the old findAll() shipped.
+   */
+  findDossierExtractionSignals(): Promise<DossierExtractionSignal[]>;
   /**
    * Priced BPU lines harvested from the détail estimatifs already extracted —
    * the reference corpus the expert's pricing engine learns from. Newest tenders
@@ -470,6 +535,59 @@ export class InMemoryTenderRepository implements TenderRepository {
       deadlineAt: r.deadlineAt,
       pipelineState: r.pipelineState,
     }));
+  }
+
+  async findQualificationCandidates(): Promise<QualificationCandidate[]> {
+    return this.records
+      .filter((r) => r.pipelineState === 'detected' || r.pipelineState === 'parsed')
+      .map((r) => ({
+        id: r.id,
+        reference: r.reference,
+        procedure: r.procedure,
+        objet: r.objet,
+        ...(r.estimationMad !== undefined ? { estimationMad: r.estimationMad } : {}),
+        ...(r.cautionProvisoireMad !== undefined
+          ? { cautionProvisoireMad: r.cautionProvisoireMad }
+          : {}),
+        deadlineAt: r.deadlineAt,
+        pipelineState: r.pipelineState,
+      }));
+  }
+
+  async findAiEnrichmentCandidates(
+    limit: number,
+    opts: { onlyActive: boolean },
+    now: Date,
+  ): Promise<AiEnrichmentCandidate[]> {
+    // Same filter/sort/slice the batch used to do in JS — now the ONLY place it
+    // lives (the Drizzle twin pushes it to SQL). `!readAiEnrichment` is the exact
+    // "not yet enriched" predicate; newest-first; capped at `limit`.
+    const cutoff = now.getTime();
+    return this.records
+      .filter((r) => !readAiEnrichment(r.raw))
+      .filter((r) => !opts.onlyActive || r.deadlineAt.getTime() >= cutoff)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, Math.max(0, Math.floor(limit)))
+      .map((r) => ({ id: r.id, reference: r.reference }));
+  }
+
+  async findDossierExtractionSignals(): Promise<DossierExtractionSignal[]> {
+    return this.records.map((r) => {
+      const raw = (r.raw ?? {}) as Record<string, unknown>;
+      const de = raw['dossierExtraction'];
+      const attempt = raw['dossierExtractAttempt'] as { at?: string } | undefined;
+      const hasExtraction = !!de && typeof de === 'object';
+      return {
+        id: r.id,
+        reference: r.reference,
+        sourceUrl: r.sourceUrl ?? null,
+        deadlineAt: r.deadlineAt,
+        createdAt: r.createdAt,
+        hasExtraction,
+        hasAutresKey: hasExtraction && 'autres' in (de as object),
+        lastAttemptAt: typeof attempt?.at === 'string' ? attempt.at : null,
+      };
+    });
   }
 
   async findInventoryPage(
@@ -1044,6 +1162,87 @@ export class DrizzleTenderRepository implements TenderRepository {
       estimationMad: row.estimationMad != null ? Number(row.estimationMad) : undefined,
       deadlineAt: row.deadlineAt,
       pipelineState: row.pipelineState as PipelineState,
+    }));
+  }
+
+  async findQualificationCandidates(): Promise<QualificationCandidate[]> {
+    // pipeline_state IN (detected, parsed) pushed to SQL — qualify() reads only
+    // these base columns, so `raw` is never selected/detoasted even when a big
+    // ingest leaves the whole catalogue in 'detected'.
+    const rows = await this.db
+      .select({
+        id: tenders.id,
+        reference: tenders.reference,
+        procedure: tenders.procedure,
+        objet: tenders.objet,
+        estimationMad: tenders.estimationMad,
+        cautionProvisoireMad: tenders.cautionProvisoireMad,
+        deadlineAt: tenders.deadlineAt,
+        pipelineState: tenders.pipelineState,
+      })
+      .from(tenders)
+      .where(inArray(tenders.pipelineState, ['detected', 'parsed']));
+    return rows.map((row) => ({
+      id: row.id,
+      reference: row.reference,
+      procedure: row.procedure as TenderProcedure,
+      objet: row.objet,
+      ...(row.estimationMad != null ? { estimationMad: Number(row.estimationMad) } : {}),
+      ...(row.cautionProvisoireMad != null
+        ? { cautionProvisoireMad: Number(row.cautionProvisoireMad) }
+        : {}),
+      deadlineAt: row.deadlineAt,
+      pipelineState: row.pipelineState as PipelineState,
+    }));
+  }
+
+  async findAiEnrichmentCandidates(
+    limit: number,
+    opts: { onlyActive: boolean },
+    now: Date,
+  ): Promise<AiEnrichmentCandidate[]> {
+    // "Not yet enriched" = no aiEnrichment.enrichedAt scalar (the same signal
+    // findAllInventoryRows projects). Selected + sorted + limited in SQL so only
+    // the ≤limit candidate ids reach JS — `raw` is never folded whole.
+    const notEnriched = sql<boolean>`(${tenders.raw}->'aiEnrichment'->>'enrichedAt') is null`;
+    const where = opts.onlyActive
+      ? and(notEnriched, gte(tenders.deadlineAt, now))
+      : notEnriched;
+    const rows = await this.db
+      .select({ id: tenders.id, reference: tenders.reference })
+      .from(tenders)
+      .where(where)
+      .orderBy(desc(tenders.createdAt))
+      .limit(Math.max(0, Math.floor(limit)));
+    return rows.map((row) => ({ id: row.id, reference: row.reference }));
+  }
+
+  async findDossierExtractionSignals(): Promise<DossierExtractionSignal[]> {
+    // Scalar flags extracted IN Postgres — the heavy `raw` (BPU tables,
+    // dossierText/Markdown) never crosses to JS; the batch folds these signals to
+    // pick candidates. hasExtraction/hasAutresKey mirror readDossierExtraction-
+    // presence + lacksDatoFields; lastAttemptAt drives attemptedRecently in JS.
+    const rows = await this.db
+      .select({
+        id: tenders.id,
+        reference: tenders.reference,
+        sourceUrl: tenders.sourceUrl,
+        deadlineAt: tenders.deadlineAt,
+        createdAt: tenders.createdAt,
+        hasExtraction: sql<boolean>`coalesce(jsonb_typeof(${tenders.raw}->'dossierExtraction') = 'object', false)`,
+        hasAutresKey: sql<boolean>`coalesce(jsonb_exists(${tenders.raw}->'dossierExtraction', 'autres'), false)`,
+        lastAttemptAt: sql<string | null>`${tenders.raw}->'dossierExtractAttempt'->>'at'`,
+      })
+      .from(tenders);
+    return rows.map((row) => ({
+      id: row.id,
+      reference: row.reference,
+      sourceUrl: row.sourceUrl ?? null,
+      deadlineAt: row.deadlineAt,
+      createdAt: row.createdAt,
+      hasExtraction: row.hasExtraction ?? false,
+      hasAutresKey: row.hasAutresKey ?? false,
+      lastAttemptAt: row.lastAttemptAt ?? null,
     }));
   }
 

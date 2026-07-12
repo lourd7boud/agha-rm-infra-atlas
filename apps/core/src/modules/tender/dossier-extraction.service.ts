@@ -78,24 +78,15 @@ const MAX_DCE_ZIP_BYTES = 120 * 1024 * 1024;
  *  short enough that a later pipeline improvement (e.g. better OCR) retries it. */
 const EXTRACT_ATTEMPT_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000;
 
-/** True when a stored extraction predates the datao-form fields (contact /
- *  conditionsLegales / autres). Detected by the absence of the 'autres' key in
- *  the RAW JSON — not the zod-parsed object, whose .default([]) would mask it.
- *  Drives the --upgrade pass: re-extract such rows to fill the new sections. */
-function lacksDatoFields(raw: unknown): boolean {
-  if (!raw || typeof raw !== 'object') return false;
-  const de = (raw as Record<string, unknown>)['dossierExtraction'];
-  return !!de && typeof de === 'object' && !('autres' in (de as object));
-}
-
-/** True when a prior extraction attempt failed within the cooldown window. */
-function attemptedRecently(raw: unknown, now: number): boolean {
-  if (!raw || typeof raw !== 'object') return false;
-  const a = (raw as Record<string, unknown>)['dossierExtractAttempt'] as
-    | { at?: string }
-    | undefined;
-  if (!a?.at) return false;
-  const t = Date.parse(a.at);
+/** True when a prior extraction attempt failed within the cooldown window. Fed by
+ *  the projected `lastAttemptAt` signal (raw.dossierExtractAttempt.at) so the batch
+ *  never detoasts `raw` just to read one timestamp. */
+function attemptedRecently(
+  lastAttemptAt: string | null | undefined,
+  now: number,
+): boolean {
+  if (!lastAttemptAt) return false;
+  const t = Date.parse(lastAttemptAt);
   return Number.isFinite(t) && now - t < EXTRACT_ATTEMPT_COOLDOWN_MS;
 }
 
@@ -430,21 +421,25 @@ export class DossierExtractionService {
       const now = Date.now();
       // upgrade implies force at the per-tender level (re-extract + merge).
       const forceLike = !!opts.force || !!opts.upgrade;
-      const all = await this.repository.findAll();
-      const pending = all
-        .filter((t) => t.sourceUrl)
+      // Lean signals ONLY — the scalar presence/attempt flags are projected from
+      // `raw` inside Postgres, so the batch folds those (not the heavy jsonb) to
+      // pick candidates. The old findAll() shipped every dossierExtraction/BPU
+      // blob into JS and could OOM the 792 MB core on a single run.
+      const signals = await this.repository.findDossierExtractionSignals();
+      const pending = signals
+        .filter((s) => s.sourceUrl)
         // Candidate when: forced, OR never extracted (backlog), OR (upgrade and
-        // the stored extraction lacks the new datao fields).
+        // the stored extraction lacks the new datao 'autres' field).
         .filter(
-          (t) =>
+          (s) =>
             opts.force ||
-            !readDossierExtraction(t.raw) ||
-            (opts.upgrade && lacksDatoFields(t.raw)),
+            !s.hasExtraction ||
+            (opts.upgrade && s.hasExtraction && !s.hasAutresKey),
         )
         // Skip dossiers whose last extraction attempt failed recently — keeps
         // the same unreadable scans from monopolising every sweep's slots.
-        .filter((t) => forceLike || !attemptedRecently(t.raw, now))
-        .filter((t) => !onlyActive || t.deadlineAt.getTime() >= now)
+        .filter((s) => forceLike || !attemptedRecently(s.lastAttemptAt, now))
+        .filter((s) => !onlyActive || s.deadlineAt.getTime() >= now)
         // Default newest-first so a freshly-crawled tender is analysed within
         // the same sweep (datao-style "filled the moment it drops"). A worker
         // can pass order:'oldest' to drain the historical end instead.
