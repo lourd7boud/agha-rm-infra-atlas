@@ -21,6 +21,7 @@ import {
   type TenderRepository,
 } from './tender.repository';
 import { DossierService } from './dossier.service';
+import { CompanyLegalService } from './company-legal.service';
 import {
   INTEL_REPOSITORY,
   type IntelRepository,
@@ -122,7 +123,7 @@ export function buildTenderChatSystemPrompt(now: Date): string {
 Pour CE marché précis, le contexte fourni plus bas contient, quand c'est disponible :
 1. La FICHE du marché + le CONTENU DU DOSSIER (DCE : avis, RC, CPS, bordereau des prix) — tu peux donc lire et citer le dossier, pas seulement un résumé.
 2. L'ARCHIVE des marchés & résultats de cet acheteur — pour ESTIMER le nombre de concurrents probables et le niveau de prix / rabais habituel.
-3. L'état du DOSSIER ADMINISTRATIF d'AGHA RM INFRA (coffre-fort) — pour dire quelles pièces sont prêtes et lesquelles MANQUENT pour pouvoir soumissionner.
+3. L'IDENTITÉ LÉGALE et les DOCUMENTS de l'entreprise (source /compta/legal — raison sociale, RC, IF, ICE, TP, CNSS, gérant, siège, + le contenu INTÉGRAL des pièces du coffre: attestations, statuts, RC, bail…) — pour renseigner exactement le dossier administratif et dire quelles pièces sont prêtes, lesquelles EXPIRENT ou MANQUENT pour soumissionner. Tu lis le CONTENU réel des documents, pas seulement leurs titres.
 Tu utilises réellement ces données. Ne dis jamais « je n'ai pas accès » ou « je ne peux pas voir le dossier » quand l'information EST présente dans le contexte : elle t'est fournie pour ça.
 
 La date d'aujourd'hui est le ${today}.
@@ -281,6 +282,8 @@ export interface TenderChatContextExtras {
    *  — preferred over the persisted excerpt so the agent reads the actual files,
    *  not a digest. Null when it can't be built (falls back to the raw excerpt). */
   fullDossierMarkdown?: string | null;
+  /** Company legal identity + documents WITH full content (from /compta/legal). */
+  companyLegalMarkdown?: string | null;
   /** Injected "now" so readiness/lifecycle stay request-accurate + testable. */
   now: Date;
 }
@@ -371,6 +374,13 @@ function buildTenderContext(
     }
   }
 
+  // Company legal identity + documents WITH full content (from /compta/legal) —
+  // the real company papers the agent reads to fill the administrative dossier
+  // and flag what's present / expiring / missing for THIS tender.
+  if (extras.companyLegalMarkdown) {
+    lines.push(`\n${extras.companyLegalMarkdown}`);
+  }
+
   // Archive / competitor intel (buyer-scoped) — only when there is real signal,
   // so a brand-new buyer with no history never prints an empty, confusing block.
   const ci = extras.competitorIntel;
@@ -446,6 +456,9 @@ export class TenderChatService {
     // archive) so the agent reads the actual files, not the summary. @Optional()
     // + null-tolerant: absent → the chat falls back to the persisted excerpt.
     @Optional() @Inject(DossierService) private readonly dossierService: DossierService | null = null,
+    // Company legal identity + documents (full content) from /compta/legal — the
+    // NEW home of the company's papers (replaces the deprecated vault coffre).
+    @Optional() @Inject(CompanyLegalService) private readonly companyLegal: CompanyLegalService | null = null,
   ) {}
 
   /** The client the chat actually runs on: the dedicated strong model when
@@ -465,17 +478,36 @@ export class TenderChatService {
     tender: TenderRecord,
   ): Promise<{ text: string; chars: number }> {
     const now = new Date();
-    const [competitorIntel, vaultDocs, fullDossierMarkdown] = await Promise.all([
-      this.loadCompetitorIntel(tender, now),
-      this.loadVaultDocs(),
-      this.loadFullDossier(tender),
-    ]);
+    const [competitorIntel, vaultDocs, fullDossierMarkdown, companyLegalMarkdown] =
+      await Promise.all([
+        this.loadCompetitorIntel(tender, now),
+        this.loadVaultDocs(),
+        this.loadFullDossier(tender),
+        this.loadCompanyLegal(),
+      ]);
     return buildTenderContext(tender, {
       competitorIntel,
       vaultDocs,
       fullDossierMarkdown,
+      companyLegalMarkdown,
       now,
     });
+  }
+
+  /**
+   * Resolves the company legal identity + documents (full content) from
+   * /compta/legal via CompanyLegalService (TTL-cached, company-wide). Best-effort:
+   * a failure degrades to null so the chat still answers. This is what makes the
+   * agent read the company's real papers, not just their titles.
+   */
+  private async loadCompanyLegal(): Promise<string | null> {
+    if (!this.companyLegal) return null;
+    try {
+      return await this.companyLegal.getLegalContextMarkdown();
+    } catch (e) {
+      this.logger.warn(`chat company-legal load failed: ${(e as Error).message}`);
+      return null;
+    }
   }
 
   /**

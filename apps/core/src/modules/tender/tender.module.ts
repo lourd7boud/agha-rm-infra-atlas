@@ -10,6 +10,8 @@ import { DossierService } from './dossier.service';
 import { DossierExtractionService } from './dossier-extraction.service';
 import { EnrichmentService } from './enrichment.service';
 import { TenderChatService } from './tender-chat.service';
+import { CompanyLegalService } from './company-legal.service';
+import { ComptaRepositoryModule } from '../compta/compta-repository.module';
 import { TenderListsService } from './tender-lists.service';
 import { TenderAssistantService } from './tender-assistant.service';
 import { PricingService } from './pricing.service';
@@ -82,7 +84,7 @@ const tenderListsServiceProvider = {
 };
 
 @Module({
-  imports: [BrainModule, IntelModule, VaultModule, PortalModule],
+  imports: [BrainModule, IntelModule, VaultModule, PortalModule, ComptaRepositoryModule],
   controllers: [TenderController, TenderListsController],
   providers: [
     tenderRepositoryProvider,
@@ -94,6 +96,7 @@ const tenderListsServiceProvider = {
     DossierService,
     DossierExtractionService,
     TenderChatService,
+    CompanyLegalService,
     TenderAssistantService,
     PricingService,
   ],

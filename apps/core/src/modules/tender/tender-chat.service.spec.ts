@@ -313,6 +313,24 @@ describe('TenderChatService.ask — agent capabilities', () => {
     expect(req.prompt).toContain('grand modèle de langage');
   });
 
+  test('feeds the company legal identity + documents (/compta/legal) into the prompt', async () => {
+    const id = await seedTender(repo);
+    const llm = new FakeLlmClient(['ok']);
+    const companyLegal = {
+      getLegalContextMarkdown: async () =>
+        '=== IDENTITÉ LÉGALE — AGHA RM INFRA ===\nICE: 003939552000065\n## Attestation CNSS 6984871\nà jour des cotisations au 26/05/2026',
+    } as unknown as import('./company-legal.service').CompanyLegalService;
+    // (repo, llm, intel, vault, chatLlm, dossierService, companyLegal)
+    const service = new TenderChatService(repo, llm, null, null, null, null, companyLegal);
+
+    await service.ask(id, 'quel est notre ICE et sommes-nous à jour CNSS ?');
+
+    const prompt = llm.requests[0]!.prompt!;
+    expect(prompt).toContain('IDENTITÉ LÉGALE — AGHA RM INFRA');
+    expect(prompt).toContain('003939552000065');
+    expect(prompt).toContain('à jour des cotisations'); // full content, not just a title
+  });
+
   test('feeds the FULL dossier files (DossierService) over the persisted excerpt', async () => {
     const id = await seedTender(repo);
     // Old-style excerpt persisted on the tender…
