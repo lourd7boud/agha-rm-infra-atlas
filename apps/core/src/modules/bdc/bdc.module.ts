@@ -14,13 +14,17 @@ import {
   Post,
   Query,
   StreamableFile,
+  OnModuleDestroy,
+  OnModuleInit,
 } from '@nestjs/common';
+import { Queue, Worker } from 'bullmq';
 import ExcelJS from 'exceljs';
 import { z } from 'zod';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
 import { appliquerPropositions, proposerPrixPourLignes } from './bdc-pricing.domain';
 import { BdcCrawler } from './bdc.crawler';
+import { BdcSyncService } from './bdc.sync';
 import {
   BDC_REPOSITORY,
   DrizzleBdcRepository,
@@ -29,11 +33,13 @@ import {
 } from './bdc.repository';
 
 const MARCHES_ROLES = ['direction', 'marches', 'admin-si'] as const;
+const BDC_QUEUE_NAME = 'bdc';
+const BDC_QUEUE = Symbol('BDC_QUEUE');
 
-const intEnv = (raw: string | undefined, fallback: number): number => {
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-};
+function redisConnection() {
+  const url = new URL(process.env.REDIS_URL ?? 'redis://127.0.0.1:6380');
+  return { host: url.hostname, port: Number(url.port || 6379) };
+}
 
 const ligneSchema = z.object({
   idx: z.number().int().min(0),
@@ -76,9 +82,11 @@ const proposerSchema = z.object({
 @Controller('bdc')
 export class BdcController {
   private readonly logger = new Logger('Bdc');
-  private readonly crawler = new BdcCrawler();
 
-  constructor(@Inject(BDC_REPOSITORY) private readonly repo: BdcRepository) {}
+  constructor(
+    @Inject(BDC_REPOSITORY) private readonly repo: BdcRepository,
+    private readonly sync: BdcSyncService,
+  ) {}
 
   @Get('avis')
   async listAvis(
@@ -288,65 +296,7 @@ export class BdcController {
       })
       .safeParse(body ?? {});
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
-    const maxPages = parsed.data.pages ?? intEnv(process.env.BDC_SWEEP_PAGES, 3);
-    const maxDetails = parsed.data.details ?? intEnv(process.env.BDC_SWEEP_DETAILS, 20);
-    const maxResultats = parsed.data.resultats ?? intEnv(process.env.BDC_SWEEP_RESULTATS, 3);
-
-    let inserted = 0;
-    let updated = 0;
-    let pages = 0;
-    for await (const { liste } of this.crawler.crawlListe(maxPages)) {
-      pages += 1;
-      if (liste.items.length === 0) break;
-      const res = await this.repo.upsertAvisFromListe(
-        liste.items.map((i) => ({
-          portalId: i.portalId,
-          reference: i.reference,
-          objet: i.objet,
-          acheteur: i.acheteur,
-          statut: i.statut,
-          datePublication: null,
-          dateLimite: i.dateLimite,
-          lieu: i.lieu,
-        })),
-      );
-      inserted += res.inserted;
-      updated += res.updated;
-    }
-
-    // Compléter les détails (articles) des avis récents non encore détaillés.
-    const pending = await this.repo.avisSansDetail(maxDetails);
-    let details = 0;
-    if (pending.length > 0) {
-      const byPortal = await this.crawler.fetchDetailsBatch(pending.map((p) => p.portalId));
-      for (const [portalId, detail] of byPortal) {
-        await this.repo.saveAvisDetail(portalId, {
-          categorie: detail.categorie,
-          naturePrestation: detail.naturePrestation,
-          pieces: detail.pieces,
-          articles: detail.articles,
-          datePublication: detail.datePublication,
-          dateLimite: detail.dateLimite,
-        });
-        details += 1;
-      }
-    }
-    // Résultats récents (intelligence): upsert incrémental + lien vers avis.
-    let resultatsInseres = 0;
-    let resultatsPages = 0;
-    if (maxResultats > 0) {
-      for await (const { resultats } of this.crawler.crawlResultats(maxResultats)) {
-        resultatsPages += 1;
-        if (resultats.items.length === 0) break;
-        resultatsInseres += await this.repo.upsertResultats(resultats.items);
-      }
-      await this.repo.linkResultatsToAvis();
-    }
-
-    this.logger.log(
-      `BDC sweep: ${pages} pages, +${inserted} avis, ${details} détails, +${resultatsInseres} résultats (${resultatsPages} p.)`,
-    );
-    return { pages, inserted, updated, details, resultatsInseres, resultatsPages };
+    return this.sync.run(parsed.data);
   }
 }
 
@@ -360,9 +310,63 @@ export const bdcRepositoryProvider = {
   },
 };
 
+const bdcCrawlerProvider = {
+  provide: BdcCrawler,
+  useFactory: () => new BdcCrawler(),
+};
+
+const bdcQueueProvider = {
+  provide: BDC_QUEUE,
+  useFactory: () => new Queue(BDC_QUEUE_NAME, { connection: redisConnection() }),
+};
+
 @Module({
   controllers: [BdcController],
-  providers: [bdcRepositoryProvider],
+  providers: [
+    bdcRepositoryProvider,
+    bdcCrawlerProvider,
+    BdcSyncService,
+    bdcQueueProvider,
+  ],
   exports: [bdcRepositoryProvider],
 })
-export class BdcModule {}
+export class BdcModule implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger('BdcModule');
+  private worker: Worker | null = null;
+
+  constructor(
+    private readonly sync: BdcSyncService,
+    @Inject(BDC_QUEUE) private readonly queue: Queue,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    // The API process remains responsive; only the dedicated worker polls the
+    // public portal and writes the mirror.
+    if (process.env.WATCH_WORKER_ENABLED !== 'true') {
+      this.logger.log('BDC worker DISABLED — this is an API-only process');
+      return;
+    }
+    this.worker = new Worker(
+      BDC_QUEUE_NAME,
+      async () => this.sync.run(),
+      { connection: redisConnection(), lockDuration: 15 * 60 * 1000 },
+    );
+    this.worker.on('failed', (job, error) =>
+      this.logger.error(`BDC job ${job?.id} failed: ${error.message}`),
+    );
+    const cron = process.env.BDC_CRON ?? '*/15 * * * *';
+    await this.queue.upsertJobScheduler('bdc-schedule', { pattern: cron });
+    // Do not make a fresh deployment wait for the next cron boundary.
+    await this.queue.add(
+      'sweep',
+      { trigger: 'startup' },
+      { removeOnComplete: 20, removeOnFail: 20 },
+    );
+    this.logger.log(`BDC synchronisation planifiée: ${cron}`);
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.worker?.close();
+    await this.queue.close();
+  }
+}

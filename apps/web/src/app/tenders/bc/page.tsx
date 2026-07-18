@@ -11,6 +11,7 @@ import {
   type BdcListePayload,
 } from '@/lib/bdc';
 import { syncBdc } from './actions';
+import BdcAutoRefresh from './BdcAutoRefresh';
 
 export const metadata = { title: 'Bons de commande — ATLAS' };
 
@@ -109,6 +110,7 @@ export default async function BdcPage({
           </form>
         </div>
       </div>
+      <BdcAutoRefresh />
 
       {query.synced && (
         <div className="mt-4 rounded-xl border border-emerald-soft bg-emerald-soft/20 px-5 py-3 text-sm font-medium text-emerald">
