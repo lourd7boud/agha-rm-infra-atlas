@@ -34,6 +34,7 @@ export class BdcSyncService {
   constructor(
     @Inject(BDC_REPOSITORY)
     private readonly repo: BdcRepository,
+    @Inject(BdcCrawler)
     private readonly crawler: BdcCrawler,
   ) {}
 
