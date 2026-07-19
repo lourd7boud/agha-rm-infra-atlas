@@ -85,6 +85,7 @@ export class BdcController {
 
   constructor(
     @Inject(BDC_REPOSITORY) private readonly repo: BdcRepository,
+    @Inject(BdcSyncService)
     private readonly sync: BdcSyncService,
   ) {}
 
@@ -335,6 +336,7 @@ export class BdcModule implements OnModuleInit, OnModuleDestroy {
   private worker: Worker | null = null;
 
   constructor(
+    @Inject(BdcSyncService)
     private readonly sync: BdcSyncService,
     @Inject(BDC_QUEUE) private readonly queue: Queue,
   ) {}

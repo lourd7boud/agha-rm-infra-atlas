@@ -1,6 +1,5 @@
 // Synchronisation automatique et manuelle du miroir BDC.
-import { Logger } from '@nestjs/common';
-import { Inject } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { BdcCrawler } from './bdc.crawler';
 import { BDC_REPOSITORY, type BdcRepository } from './bdc.repository';
 
@@ -28,6 +27,7 @@ const envInt = (name: string, fallback: number): number => {
 };
 
 /** Runs one bounded, idempotent portal sweep. */
+@Injectable()
 export class BdcSyncService {
   private readonly logger = new Logger(BdcSyncService.name);
 
