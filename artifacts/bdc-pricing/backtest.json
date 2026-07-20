@@ -1,0 +1,19 @@
+{
+  "generatedAt": "2026-07-20T02:11:37.874Z",
+  "asOf": "2026-07-20T02:00:00.000Z",
+  "chronologicalSeparation": true,
+  "evidenceCompletenessPct": 0,
+  "confidenceCalibration": null,
+  "calibrationVersion": "baseline-v1",
+  "totalCases": 0,
+  "agentCoveragePct": 0,
+  "oldMatcherCoveragePct": 0,
+  "mape": null,
+  "realizedMarkupPct": null,
+  "profitableFloorViolations": 0,
+  "manualOverwriteViolations": 0,
+  "estimateCorridorWarnings": 0,
+  "coverageRegressed": false,
+  "passesProtectedInvariants": true,
+  "adjustedEstimates": []
+}

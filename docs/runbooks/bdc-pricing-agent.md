@@ -103,11 +103,11 @@ L'apprentissage exige au moins 20 exemples vérifiés par segment. Les coûts r�
 Backtest chronologique :
 
 ```bash
-docker compose -f docker-compose.apps.yml exec -T worker sh -lc \
+docker compose -f docker-compose.apps.yml exec -T core sh -lc \
   'cd /app/apps/core && pnpm tsx scripts/backtest-bdc-pricing.ts \
    --as-of 2026-07-20T00:00:00Z --output /tmp/bdc-backtest.json'
 docker compose -f docker-compose.apps.yml cp \
-  worker:/tmp/bdc-backtest.json /opt/atlas/artifacts/bdc-pricing/backtest.json
+  core:/tmp/bdc-backtest.json /opt/atlas/artifacts/bdc-pricing/backtest.json
 ```
 
 Pour revenir à une calibration antérieure, couper d'abord l'apprentissage, identifier la version validée, puis effectuer la bascule atomique :
