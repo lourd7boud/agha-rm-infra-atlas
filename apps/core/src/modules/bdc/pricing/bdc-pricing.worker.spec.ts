@@ -1,6 +1,7 @@
 import type { Job, Queue } from "bullmq";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { BdcPricingService } from "./bdc-pricing.service";
+import type { BdcPricingLearning } from "./bdc-pricing-learning";
 import {
   BdcPricingWorker,
   dispatchBdcPricingJob,
@@ -39,11 +40,30 @@ describe("BDC pricing worker", () => {
     expect(service.run).not.toHaveBeenCalled();
   });
 
+  test("dispatches the scheduled learning job with its immutable as-of date", async () => {
+    const service = { run: vi.fn() } as unknown as BdcPricingService;
+    const learning = {
+      recalibrate: vi.fn(async () => ({ published: true })),
+    } as unknown as BdcPricingLearning;
+    await dispatchBdcPricingJob(
+      {
+        name: "learn",
+        data: { asOf: "2026-07-20T02:30:00.000Z" },
+      } as Job,
+      service,
+      learning,
+    );
+    expect(learning.recalibrate).toHaveBeenCalledWith(
+      new Date("2026-07-20T02:30:00.000Z"),
+    );
+  });
+
   test("does not open a worker in API-only mode and closes its queue cleanly", async () => {
     process.env.WATCH_WORKER_ENABLED = "false";
     const queue = { close: vi.fn() } as unknown as Queue;
     const service = { run: vi.fn() } as unknown as BdcPricingService;
-    const worker = new BdcPricingWorker(service, queue);
+    const learning = { recalibrate: vi.fn() } as unknown as BdcPricingLearning;
+    const worker = new BdcPricingWorker(service, queue, learning);
     await worker.onModuleInit();
     await worker.onModuleDestroy();
     expect(queue.close).toHaveBeenCalledOnce();

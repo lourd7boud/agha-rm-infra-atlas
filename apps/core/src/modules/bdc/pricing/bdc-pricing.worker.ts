@@ -10,6 +10,7 @@ import {
   BDC_PRICING_QUEUE,
   BdcPricingService,
 } from "./bdc-pricing.service";
+import { BdcPricingLearning } from "./bdc-pricing-learning";
 
 export const BDC_PRICING_QUEUE_NAME = "bdc-pricing";
 
@@ -27,7 +28,18 @@ export function bdcPricingRedisConnection() {
 export async function dispatchBdcPricingJob(
   job: Job,
   pricing: BdcPricingService,
+  learning?: BdcPricingLearning,
 ) {
+  if (job.name === "learn") {
+    if (!learning) throw new Error("BDC pricing learning service is unavailable");
+    const explicit =
+      typeof job.data?.asOf === "string" ? new Date(job.data.asOf) : null;
+    const asOf =
+      explicit && Number.isFinite(explicit.getTime())
+        ? explicit
+        : new Date(job.timestamp);
+    return learning.recalibrate(asOf);
+  }
   if (job.name !== "price") {
     throw new Error(`Unsupported BDC pricing job: ${job.name}`);
   }
@@ -55,6 +67,8 @@ export class BdcPricingWorker implements OnModuleInit, OnModuleDestroy {
     private readonly pricing: BdcPricingService,
     @Inject(BDC_PRICING_QUEUE)
     private readonly queue: Queue,
+    @Inject(BdcPricingLearning)
+    private readonly learning: BdcPricingLearning,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -64,7 +78,7 @@ export class BdcPricingWorker implements OnModuleInit, OnModuleDestroy {
     }
     this.worker = new Worker(
       BDC_PRICING_QUEUE_NAME,
-      (job) => dispatchBdcPricingJob(job, this.pricing),
+      (job) => dispatchBdcPricingJob(job, this.pricing, this.learning),
       {
         connection: bdcPricingRedisConnection(),
         lockDuration: 20 * 60 * 1_000,
@@ -79,7 +93,15 @@ export class BdcPricingWorker implements OnModuleInit, OnModuleDestroy {
         `BDC pricing job ${job?.id ?? "unknown"} failed: ${error.message}`,
       ),
     );
-    this.logger.log("BDC pricing worker active");
+    const learningCron = process.env.BDC_PRICING_LEARNING_CRON ?? "30 2 * * *";
+    await this.queue.upsertJobScheduler(
+      "bdc-pricing-learning",
+      { pattern: learningCron },
+      { name: "learn", data: {} },
+    );
+    this.logger.log(
+      `BDC pricing worker active — verified learning scheduled: ${learningCron}`,
+    );
   }
 
   async onModuleDestroy(): Promise<void> {

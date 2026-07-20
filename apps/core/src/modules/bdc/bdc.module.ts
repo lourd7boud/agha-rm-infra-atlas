@@ -43,6 +43,7 @@ import {
   BDC_PRICING_REPOSITORY,
   type BdcPricingRepository,
 } from './pricing/bdc-pricing.repository';
+import { BdcPricingLearning } from './pricing/bdc-pricing-learning';
 import {
   BDC_INTERNAL_EVIDENCE,
   BDC_PRICING_NORMALIZATION_POLICY,
@@ -409,6 +410,17 @@ const bdcPricingNormalizationProvider = {
   }),
 };
 
+const bdcPricingLearningProvider = {
+  provide: BdcPricingLearning,
+  inject: [BDC_PRICING_REPOSITORY],
+  useFactory: (repository: BdcPricingRepository) =>
+    new BdcPricingLearning(repository, {
+      minSegmentSamples:
+        Number(process.env.BDC_PRICING_MIN_SEGMENT_SAMPLES) || 20,
+      historyDays: Number(process.env.BDC_PRICING_HISTORY_DAYS) || 1_095,
+    }),
+};
+
 @Module({
   imports: [BrainModule],
   controllers: [BdcController, BdcPricingController],
@@ -422,6 +434,7 @@ const bdcPricingNormalizationProvider = {
     bdcInternalEvidenceProvider,
     bdcWebEvidenceProvider,
     bdcPricingNormalizationProvider,
+    bdcPricingLearningProvider,
     bdcPricingQueueProvider,
     BdcPricingService,
     BdcPricingWorker,
