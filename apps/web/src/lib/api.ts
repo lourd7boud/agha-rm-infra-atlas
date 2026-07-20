@@ -127,7 +127,7 @@ export async function apiGet<T>(
 export async function apiPost<T>(
   path: string,
   body?: unknown,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; headers?: Record<string, string> },
 ): Promise<T> {
   const session = await auth();
   if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
@@ -136,6 +136,7 @@ export async function apiPost<T>(
   const response = await fetch(`${API_URL}${path}`, {
     method: 'POST',
     headers: {
+      ...options?.headers,
       'Content-Type': 'application/json',
       Authorization: `Bearer ${session.accessToken}`,
     },

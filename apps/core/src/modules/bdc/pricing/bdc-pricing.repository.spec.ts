@@ -87,6 +87,24 @@ describe("BDC pricing repository contract", () => {
     expect((await repository.findObservations({ limit: 10 }))[0]?.reliability).toBe(0.8);
   });
 
+  test("retrieves only the evidence ids exposed by an audited decision", async () => {
+    const repository = new InMemoryBdcPricingRepository();
+    const stored = await repository.upsertObservations([
+      observation("hash-a"),
+      observation("hash-b"),
+      observation("hash-c"),
+    ]);
+    const selected = await repository.findObservationsByIds([
+      stored[2]!.id!,
+      stored[0]!.id!,
+      "missing",
+    ]);
+    expect(selected.map((item) => item.snapshotHash)).toEqual([
+      "hash-c",
+      "hash-a",
+    ]);
+  });
+
   test("replaces line decisions atomically", async () => {
     const repository = new InMemoryBdcPricingRepository();
     const run = await repository.createRun({

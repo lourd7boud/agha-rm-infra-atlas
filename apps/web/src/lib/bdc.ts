@@ -35,7 +35,7 @@ export interface BdcAvis {
   reponseTotalTtc: number | null;
 }
 
-export type PrixSource = 'manuel' | 'catalogue' | 'historique' | 'estimation';
+export type PrixSource = 'manuel' | 'catalogue' | 'historique' | 'estimation' | 'agent';
 
 export interface BdcLigne {
   idx: number;
@@ -101,7 +101,62 @@ export const SOURCE_LABELS: Record<PrixSource, string> = {
   catalogue: 'Catalogue',
   historique: 'Historique',
   estimation: 'Estimation',
+  agent: 'Agent IA',
 };
+
+export type PricingRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type PricingStage =
+  | 'analyse'
+  | 'recherche_interne'
+  | 'recherche_marche'
+  | 'normalisation'
+  | 'estimation'
+  | 'optimisation'
+  | 'brouillon_enregistre';
+
+export interface LinePricingDecision {
+  idx: number;
+  estimatedCostHt: number;
+  proposedUnitPriceHt: number;
+  rangeLowHt: number;
+  rangeHighHt: number;
+  markupPct: number;
+  confidence: 'elevee' | 'moyenne' | 'faible';
+  method: 'reference_directe' | 'marche_pondere' | 'decomposition' | 'ia_conservative';
+  sourceIds: string[];
+  explanation: string;
+  warnings: string[];
+  manualPriceLocked: boolean;
+}
+
+export interface PricingEvidenceSummary {
+  id: string;
+  designation: string;
+  sourceType: 'bpu' | 'devis' | 'bdc' | 'fournisseur' | 'facture' | 'web' | 'resultat';
+  sourceRef: string;
+  sourceUrl: string | null;
+  observedAt: string;
+  unit: string;
+  unitPriceHtMad: number;
+  verified: boolean;
+  reliability: number;
+}
+
+export interface PricingRunView {
+  id: string;
+  avisId: string;
+  status: PricingRunStatus;
+  stage: PricingStage;
+  progressPct: number;
+  requestedMarkupPct: number;
+  calibrationVersion: string;
+  decisions: LinePricingDecision[];
+  evidence: PricingEvidenceSummary[];
+  warnings: string[];
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 // ── Résultats & intelligence concurrents ────────────────────────────────────
 export interface BdcResultat {

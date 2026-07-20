@@ -3,9 +3,15 @@
 // Server actions Bons de commande — sync portail + espace de chiffrage.
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
+import { randomUUID } from 'node:crypto';
 import { apiPatch, apiPost, AtlasApiError } from '@/lib/api';
 import { isRedirectError } from '@/lib/next-redirect';
-import type { BdcLigne, BdcProposerResume, BdcReponse } from '@/lib/bdc';
+import type {
+  BdcLigne,
+  BdcProposerResume,
+  BdcReponse,
+  PricingRunView,
+} from '@/lib/bdc';
 import { MARKETPLACE_CATALOG } from '@/lib/marketplace-catalog';
 
 function fail(target: string, action: string, error: unknown): never {
@@ -91,6 +97,41 @@ export async function proposerPrixAuto(
   );
   revalidatePath(`/tenders/bc/${avisId}`);
   return result;
+}
+
+export async function startBdcPricingAgent(
+  avisId: string,
+  requestedMarkupPct: number,
+): Promise<PricingRunView> {
+  return apiPost<PricingRunView>(
+    `/bdc/avis/${avisId}/pricing-runs`,
+    { requestedMarkupPct: Math.max(15, requestedMarkupPct) },
+    {
+      timeoutMs: 60_000,
+      headers: { 'Idempotency-Key': randomUUID() },
+    },
+  );
+}
+
+export async function cancelBdcPricingAgent(runId: string): Promise<PricingRunView> {
+  return apiPost<PricingRunView>(
+    `/bdc/pricing-runs/${runId}/cancel`,
+    undefined,
+    { timeoutMs: 60_000 },
+  );
+}
+
+export async function applyBdcPricingAgent(
+  avisId: string,
+  runId: string,
+): Promise<BdcReponse> {
+  const response = await apiPost<BdcReponse>(
+    `/bdc/pricing-runs/${runId}/apply`,
+    undefined,
+    { timeoutMs: 60_000 },
+  );
+  revalidatePath(`/tenders/bc/${avisId}`);
+  return response;
 }
 
 /** Sauvegarde du chiffrage (appelée par le client BdcPricer). */

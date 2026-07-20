@@ -11,6 +11,7 @@ import {
   type BdcAvis,
   type BdcIntelligence,
   type BdcReponse,
+  type PricingRunView,
 } from '@/lib/bdc';
 import { creerReponse, setReponseStatut } from '../actions';
 import { BdcPricer } from './BdcPricer';
@@ -41,6 +42,11 @@ export default async function BdcDetailPage({
   const intel = await apiGet<BdcIntelligence>(
     `/bdc/intelligence?acheteur=${encodeURIComponent(avis.acheteur)}`,
   ).catch(() => null);
+  const latestPricingRun = reponse
+    ? await apiGet<PricingRunView | null>(`/bdc/avis/${id}/pricing-runs/latest`).catch(
+        () => null,
+      )
+    : null;
   const badge = BDC_STATUT_BADGES[avis.statut] ?? {
     label: avis.statut,
     classes: 'bg-sand text-muted',
@@ -226,7 +232,11 @@ export default async function BdcDetailPage({
           </div>
         ) : reponse ? (
           <>
-            <BdcPricer avis={avis} reponse={reponse} />
+            <BdcPricer
+              avis={avis}
+              reponse={reponse}
+              initialPricingRun={latestPricingRun}
+            />
             {/* Pipeline de statut */}
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-widest text-faint">

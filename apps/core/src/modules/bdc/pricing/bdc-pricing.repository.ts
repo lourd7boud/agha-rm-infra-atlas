@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gte, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../../../db/client";
 import {
@@ -71,6 +71,7 @@ export interface BdcPricingRepository {
   listDecisions(runId: string): Promise<LinePricingDecision[]>;
   upsertObservations(items: PriceObservation[]): Promise<PriceObservation[]>;
   findObservations(query: ObservationQuery): Promise<PriceObservation[]>;
+  findObservationsByIds(ids: string[]): Promise<PriceObservation[]>;
   recordFeedback(input: PricingFeedbackInput): Promise<void>;
   listVerifiedFeedback(since: Date): Promise<PricingFeedbackRecord[]>;
   getActiveCalibration(): Promise<PricingCalibration>;
@@ -259,6 +260,17 @@ export class InMemoryBdcPricingRepository implements BdcPricingRepository {
     );
   }
 
+  async findObservationsByIds(ids: string[]): Promise<PriceObservation[]> {
+    const requested = [...new Set(ids)].slice(0, 200);
+    const byId = new Map(this.observations.map((item) => [item.id, item]));
+    return structuredClone(
+      requested.flatMap((id) => {
+        const item = byId.get(id);
+        return item ? [item] : [];
+      }),
+    );
+  }
+
   async recordFeedback(input: PricingFeedbackInput): Promise<void> {
     this.feedback = [
       ...this.feedback,
@@ -408,6 +420,20 @@ export class DrizzleBdcPricingRepository implements BdcPricingRepository {
       .orderBy(desc(bdcPriceObservations.observedAt))
       .limit(Math.max(0, Math.min(200, query.limit)));
     return rows.map(observationRowToRecord);
+  }
+
+  async findObservationsByIds(ids: string[]): Promise<PriceObservation[]> {
+    const requested = [...new Set(ids)].slice(0, 200);
+    if (requested.length === 0) return [];
+    const rows = await this.db
+      .select()
+      .from(bdcPriceObservations)
+      .where(inArray(bdcPriceObservations.id, requested));
+    const byId = new Map(rows.map((row) => [row.id, observationRowToRecord(row)]));
+    return requested.flatMap((id) => {
+      const item = byId.get(id);
+      return item ? [item] : [];
+    });
   }
 
   async recordFeedback(input: PricingFeedbackInput): Promise<void> {

@@ -34,6 +34,7 @@ import type {
   NormalizedLine,
   PriceObservation,
   PricingFeedbackInput,
+  PricingEvidenceSummary,
   PricingRunView,
   PricingStage,
 } from "./bdc-pricing.types";
@@ -223,7 +224,11 @@ export class BdcPricingService {
         warnings,
         "completed",
       );
-      return this.toView(completed, optimized.decisions);
+      return this.toView(
+        completed,
+        optimized.decisions,
+        summarizeEvidence(observations, optimized.decisions),
+      );
     } catch (error) {
       const current = await this.pricingRepository.getRun(runId);
       if (current?.status !== "cancelled") {
@@ -239,14 +244,16 @@ export class BdcPricingService {
 
   async getRun(runId: string): Promise<PricingRunView> {
     const run = await this.requireRun(runId);
-    return this.toView(run, await this.pricingRepository.listDecisions(runId));
+    const decisions = await this.pricingRepository.listDecisions(runId);
+    const evidence = await this.pricingRepository.findObservationsByIds(
+      unique(decisions.flatMap((item) => item.sourceIds)),
+    );
+    return this.toView(run, decisions, summarizeEvidence(evidence, decisions));
   }
 
   async getLatestRun(avisId: string): Promise<PricingRunView | null> {
     const run = await this.pricingRepository.getLatestRun(avisId);
-    return run
-      ? this.toView(run, await this.pricingRepository.listDecisions(run.id))
-      : null;
+    return run ? this.getRun(run.id) : null;
   }
 
   async cancelRun(runId: string): Promise<PricingRunView> {
@@ -402,6 +409,7 @@ export class BdcPricingService {
   private toView(
     run: PricingRunRecord,
     decisions: PricingRunView["decisions"],
+    evidence: PricingEvidenceSummary[] = [],
   ): PricingRunView {
     return {
       id: run.id,
@@ -412,12 +420,42 @@ export class BdcPricingService {
       requestedMarkupPct: run.requestedMarkupPct,
       calibrationVersion: run.calibrationVersion,
       decisions,
+      evidence,
       warnings: run.warnings,
       error: run.error,
       createdAt: run.createdAt.toISOString(),
       updatedAt: run.updatedAt.toISOString(),
     };
   }
+}
+
+function summarizeEvidence(
+  observations: PriceObservation[],
+  decisions: PricingRunView["decisions"],
+): PricingEvidenceSummary[] {
+  const used = new Set(decisions.flatMap((item) => item.sourceIds));
+  return observations.flatMap((item) =>
+    item.id && used.has(item.id)
+      ? [
+          {
+            id: item.id,
+            designation: item.designation,
+            sourceType: item.sourceType,
+            sourceRef: item.sourceRef,
+            sourceUrl: item.sourceUrl,
+            observedAt: item.observedAt,
+            unit: item.unit,
+            unitPriceHtMad: item.unitPriceHtMad,
+            verified: item.verified,
+            reliability: item.reliability,
+          },
+        ]
+      : [],
+  );
+}
+
+function unique<T>(values: T[]): T[] {
+  return [...new Set(values)];
 }
 
 function fold(value: string): string {

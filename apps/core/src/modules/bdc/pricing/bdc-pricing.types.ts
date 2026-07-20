@@ -110,10 +110,24 @@ export interface PricingRunView {
   requestedMarkupPct: number;
   calibrationVersion: string;
   decisions: LinePricingDecision[];
+  evidence: PricingEvidenceSummary[];
   warnings: string[];
   error: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PricingEvidenceSummary {
+  id: string;
+  designation: string;
+  sourceType: PriceSourceType;
+  sourceRef: string;
+  sourceUrl: string | null;
+  observedAt: string;
+  unit: string;
+  unitPriceHtMad: number;
+  verified: boolean;
+  reliability: number;
 }
 
 export type PricingFeedbackKind =

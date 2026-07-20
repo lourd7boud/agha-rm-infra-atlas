@@ -181,6 +181,11 @@ describe("BDC pricing orchestration", () => {
       manualPriceLocked: true,
     });
     expect(completed.decisions[1]?.proposedUnitPriceHt).toBeGreaterThan(0);
+    expect(completed.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceRef: "FAC-100", unitPriceHtMad: 100 }),
+      ]),
+    );
     expect(stages).toEqual([
       "analyse",
       "recherche_interne",
