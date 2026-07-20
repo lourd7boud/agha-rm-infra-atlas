@@ -51,6 +51,7 @@ export interface NormalizedLine {
   components: NormalizedLineComponent[];
   assumptions: string[];
   blockers: string[];
+  attributes?: Record<string, string | number | boolean>;
 }
 
 export interface PriceObservation {
