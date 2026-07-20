@@ -3,7 +3,7 @@
 // La provenance de chaque prix est tracée (source) pour l'audit et
 // l'apprentissage: catalogue interne, BPU d'un marché passé, saisie manuelle.
 
-export type PrixSource = 'manuel' | 'catalogue' | 'historique' | 'estimation';
+export type PrixSource = 'manuel' | 'catalogue' | 'historique' | 'estimation' | 'agent';
 
 export interface LigneReponseInput {
   /** Index 0-based dans le tableau `articles` de l'avis. */

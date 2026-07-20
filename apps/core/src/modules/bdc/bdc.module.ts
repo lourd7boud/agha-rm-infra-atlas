@@ -22,6 +22,8 @@ import ExcelJS from 'exceljs';
 import { z } from 'zod';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
+import { BrainModule } from '../brain/brain.module';
+import { LLM_CLIENT, type LlmClient } from '../brain/llm.client';
 import { appliquerPropositions, proposerPrixPourLignes } from './bdc-pricing.domain';
 import { BdcCrawler } from './bdc.crawler';
 import { BdcSyncService } from './bdc.sync';
@@ -31,6 +33,31 @@ import {
   unavailableBdcRepository,
   type BdcRepository,
 } from './bdc.repository';
+import type { PriceEvidenceAdapter } from './pricing/bdc-evidence.types';
+import { BdcInternalEvidenceAdapter } from './pricing/bdc-internal-evidence';
+import { BdcLineAnalyzer } from './pricing/bdc-line-analyzer';
+import { BdcPricingController } from './pricing/bdc-pricing.controller';
+import {
+  DrizzleBdcPricingRepository,
+  InMemoryBdcPricingRepository,
+  BDC_PRICING_REPOSITORY,
+  type BdcPricingRepository,
+} from './pricing/bdc-pricing.repository';
+import {
+  BDC_INTERNAL_EVIDENCE,
+  BDC_PRICING_NORMALIZATION_POLICY,
+  BDC_WEB_EVIDENCE,
+  BdcPricingService,
+} from './pricing/bdc-pricing.service';
+import {
+  bdcPricingQueueProvider,
+  BdcPricingWorker,
+} from './pricing/bdc-pricing.worker';
+import {
+  BraveSearchClient,
+  MoroccanWebPriceAdapter,
+  SafePricePageFetcher,
+} from './pricing/bdc-web-evidence';
 
 const MARCHES_ROLES = ['direction', 'marches', 'admin-si'] as const;
 const BDC_QUEUE_NAME = 'bdc';
@@ -48,7 +75,7 @@ const ligneSchema = z.object({
   quantite: z.number().nonnegative().max(1_000_000_000),
   tvaPct: z.number().min(0).max(100),
   prixUnitaireHt: z.number().min(0).max(1_000_000_000),
-  source: z.enum(['manuel', 'catalogue', 'historique', 'estimation']),
+  source: z.enum(['manuel', 'catalogue', 'historique', 'estimation', 'agent']),
   sourceRef: z.string().max(200).nullish(),
   margeAppliquee: z.boolean().optional(),
   note: z.string().max(1000).nullish(),
@@ -321,15 +348,85 @@ const bdcQueueProvider = {
   useFactory: () => new Queue(BDC_QUEUE_NAME, { connection: redisConnection() }),
 };
 
+const bdcPricingRepositoryProvider = {
+  provide: BDC_PRICING_REPOSITORY,
+  useFactory: (): BdcPricingRepository => {
+    const url = process.env.DATABASE_URL;
+    if (url) return new DrizzleBdcPricingRepository(getDb(url));
+    new Logger('BdcModule').warn(
+      'DATABASE_URL not set — autonomous pricing uses volatile memory',
+    );
+    return new InMemoryBdcPricingRepository();
+  },
+};
+
+const bdcLineAnalyzerProvider = {
+  provide: BdcLineAnalyzer,
+  inject: [LLM_CLIENT],
+  useFactory: (llm: LlmClient | null) => new BdcLineAnalyzer(llm),
+};
+
+const bdcInternalEvidenceProvider = {
+  provide: BDC_INTERNAL_EVIDENCE,
+  inject: [BDC_REPOSITORY],
+  useFactory: (repository: BdcRepository): PriceEvidenceAdapter =>
+    new BdcInternalEvidenceAdapter(repository),
+};
+
+const bdcWebEvidenceProvider = {
+  provide: BDC_WEB_EVIDENCE,
+  useFactory: (): PriceEvidenceAdapter => {
+    const apiKey = process.env.BRAVE_SEARCH_API_KEY?.trim();
+    const allowHosts = (process.env.BDC_PRICE_SOURCE_DOMAINS ?? '')
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+    if (!apiKey || allowHosts.length === 0) {
+      new Logger('BdcModule').warn(
+        'Market price search disabled — configure BRAVE_SEARCH_API_KEY and BDC_PRICE_SOURCE_DOMAINS',
+      );
+      return { search: async () => [] };
+    }
+    return new MoroccanWebPriceAdapter(
+      new BraveSearchClient(apiKey),
+      new SafePricePageFetcher({
+        allowHosts,
+        timeoutMs:
+          Number(process.env.BDC_PRICE_FETCH_TIMEOUT_MS) || 12_000,
+      }),
+    );
+  },
+};
+
+const bdcPricingNormalizationProvider = {
+  provide: BDC_PRICING_NORMALIZATION_POLICY,
+  useFactory: () => ({
+    now: new Date(),
+    defaultTvaPct: 20,
+    annualInflationPct: Number(process.env.BDC_PRICE_ANNUAL_INFLATION_PCT) || 0,
+    regionMultipliers: {},
+    maxAgeDays: Number(process.env.BDC_PRICE_MAX_AGE_DAYS) || 1_095,
+  }),
+};
+
 @Module({
-  controllers: [BdcController],
+  imports: [BrainModule],
+  controllers: [BdcController, BdcPricingController],
   providers: [
     bdcRepositoryProvider,
     bdcCrawlerProvider,
     BdcSyncService,
     bdcQueueProvider,
+    bdcPricingRepositoryProvider,
+    bdcLineAnalyzerProvider,
+    bdcInternalEvidenceProvider,
+    bdcWebEvidenceProvider,
+    bdcPricingNormalizationProvider,
+    bdcPricingQueueProvider,
+    BdcPricingService,
+    BdcPricingWorker,
   ],
-  exports: [bdcRepositoryProvider],
+  exports: [bdcRepositoryProvider, BdcPricingService],
 })
 export class BdcModule implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('BdcModule');
