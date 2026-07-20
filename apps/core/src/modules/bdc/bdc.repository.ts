@@ -1,12 +1,16 @@
 // Accès données bdc — avis d'achat (mirror portail) + réponse chiffrée de
 // l'agent chargé. Token + interface + implémentation Drizzle (Postgres only).
-import { and, desc, eq, gte, ilike, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import {
   bdcAvis,
   bdcReponses,
   bdcResultats,
   bordereaux,
+  invoiceLines,
+  invoices,
+  purchaseOrderLines,
+  purchaseOrders,
   projects,
   quoteLines,
   quotes,
@@ -96,6 +100,29 @@ export interface BdcStats {
   avecReponse: number;
 }
 
+export interface InternalPriceEvidenceQuery {
+  designation: string;
+  category: 'travaux' | 'fournitures' | 'services';
+  unit: string;
+  region: string | null;
+  excludeAvisId: string | null;
+  limit: number;
+}
+
+export interface InternalPriceEvidenceRow {
+  designation: string;
+  unit: string;
+  unitPriceHtMad: number;
+  region: string | null;
+  observedAt: Date;
+  sourceType: 'bpu' | 'devis' | 'bdc' | 'fournisseur' | 'facture' | 'resultat';
+  sourceRef: string;
+  sourceUrl: string | null;
+  verified: boolean;
+  reliability: number;
+  metadata: Record<string, unknown>;
+}
+
 export interface BdcRepository {
   upsertAvisFromListe(items: AvisUpsert[]): Promise<{ inserted: number; updated: number }>;
   saveAvisDetail(portalId: number, detail: AvisDetailUpsert): Promise<void>;
@@ -112,6 +139,9 @@ export interface BdcRepository {
   ): Promise<ReponseRecord | null>;
   /** Prix connus de la société: BPU des marchés, devis clients, réponses BDC. */
   collectPriceCandidates(excludeAvisId?: string): Promise<PriceCandidate[]>;
+  findInternalPriceEvidence(
+    query: InternalPriceEvidenceQuery,
+  ): Promise<InternalPriceEvidenceRow[]>;
   // ── Résultats (intelligence concurrents) ──
   upsertResultats(items: BdcResultatItem[]): Promise<number>;
   /** Pose avis_id + bascule le statut des avis matchés (référence+acheteur). */
@@ -399,6 +429,267 @@ export class DrizzleBdcRepository implements BdcRepository {
   }
 
   // ── Résultats (intelligence concurrents) ──────────────────────────────────
+
+  async findInternalPriceEvidence(
+    query: InternalPriceEvidenceQuery,
+  ): Promise<InternalPriceEvidenceRow[]> {
+    const limit = Math.max(1, Math.min(200, query.limit));
+    const token =
+      query.designation
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .split(/\s+/)
+        .find((value) => value.length >= 4) ?? query.designation.slice(0, 40);
+    const like = `%${token}%`;
+    const rows: InternalPriceEvidenceRow[] = [];
+
+    const bpuResult = await this.db.execute(sql<{
+      designation: string;
+      unit: string | null;
+      price: string;
+      reference: string | null;
+      observed_at: Date;
+    }>`
+      select
+        line->>'designation' as designation,
+        line->>'unite' as unit,
+        line->>'prixUnitaire' as price,
+        coalesce(p.reference, b.reference, b.id::text) as reference,
+        b.updated_at as observed_at
+      from ${bordereaux} b
+      inner join ${projects} p on p.id = b.project_id
+      cross join lateral jsonb_array_elements(b.lignes) line
+      where line->>'designation' ilike ${like}
+        and coalesce(line->>'prixUnitaire', '') ~ '^[0-9]+([.][0-9]+)?$'
+        and (line->>'prixUnitaire')::numeric > 0
+      order by b.updated_at desc
+      limit ${limit}
+    `);
+    for (const row of bpuResult.rows as Array<{
+      designation: string;
+      unit: string | null;
+      price: string;
+      reference: string | null;
+      observed_at: Date;
+    }>) {
+      rows.push({
+        designation: row.designation,
+        unit: row.unit ?? query.unit,
+        unitPriceHtMad: num(row.price),
+        region: null,
+        observedAt: row.observed_at,
+        sourceType: 'bpu',
+        sourceRef: `BPU ${row.reference ?? ''}`.trim(),
+        sourceUrl: null,
+        verified: true,
+        reliability: 0.9,
+        metadata: { category: 'travaux' },
+      });
+    }
+
+    const quoteRows = await this.db
+      .select({
+        designation: quoteLines.designation,
+        unit: quoteLines.unit,
+        price: quoteLines.unitPriceMad,
+        reference: quotes.reference,
+        observedAt: quotes.quoteDate,
+        status: quotes.status,
+      })
+      .from(quoteLines)
+      .innerJoin(quotes, eq(quotes.id, quoteLines.quoteId))
+      .where(
+        and(
+          ilike(quoteLines.designation, like),
+          inArray(quotes.status, ['envoye', 'accepte']),
+          gte(quoteLines.unitPriceMad, '0.01'),
+        ),
+      )
+      .orderBy(desc(quotes.quoteDate))
+      .limit(limit);
+    for (const row of quoteRows) {
+      rows.push({
+        designation: row.designation,
+        unit: row.unit ?? query.unit,
+        unitPriceHtMad: num(row.price),
+        region: null,
+        observedAt: row.observedAt,
+        sourceType: 'devis',
+        sourceRef: `Devis ${row.reference}`,
+        sourceUrl: null,
+        verified: row.status === 'accepte',
+        reliability: row.status === 'accepte' ? 0.85 : 0.7,
+        metadata: { status: row.status },
+      });
+    }
+
+    const invoiceRows = await this.db
+      .select({
+        designation: invoiceLines.designation,
+        unit: invoiceLines.unit,
+        price: invoiceLines.unitPriceMad,
+        reference: invoices.reference,
+        observedAt: invoices.invoiceDate,
+        status: invoices.status,
+      })
+      .from(invoiceLines)
+      .innerJoin(invoices, eq(invoices.id, invoiceLines.invoiceId))
+      .where(
+        and(
+          ilike(invoiceLines.designation, like),
+          inArray(invoices.status, ['envoyee', 'payee']),
+          gte(invoiceLines.unitPriceMad, '0.01'),
+        ),
+      )
+      .orderBy(desc(invoices.invoiceDate))
+      .limit(limit);
+    for (const row of invoiceRows) {
+      rows.push({
+        designation: row.designation,
+        unit: row.unit ?? query.unit,
+        unitPriceHtMad: num(row.price),
+        region: null,
+        observedAt: row.observedAt,
+        sourceType: 'facture',
+        sourceRef: `Facture ${row.reference}`,
+        sourceUrl: null,
+        verified: true,
+        reliability: row.status === 'payee' ? 1 : 0.95,
+        metadata: { status: row.status },
+      });
+    }
+
+    const supplierRows = await this.db
+      .select({
+        designation: purchaseOrderLines.designation,
+        unit: purchaseOrderLines.unit,
+        price: purchaseOrderLines.unitPriceMad,
+        reference: purchaseOrders.reference,
+        observedAt: purchaseOrders.orderedAt,
+        status: purchaseOrders.status,
+      })
+      .from(purchaseOrderLines)
+      .innerJoin(
+        purchaseOrders,
+        eq(purchaseOrders.id, purchaseOrderLines.purchaseOrderId),
+      )
+      .where(
+        and(
+          ilike(purchaseOrderLines.designation, like),
+          inArray(purchaseOrders.status, ['envoye', 'recu']),
+          gte(purchaseOrderLines.unitPriceMad, '0.01'),
+        ),
+      )
+      .orderBy(desc(purchaseOrders.orderedAt))
+      .limit(limit);
+    for (const row of supplierRows) {
+      rows.push({
+        designation: row.designation,
+        unit: row.unit ?? query.unit,
+        unitPriceHtMad: num(row.price),
+        region: null,
+        observedAt: row.observedAt,
+        sourceType: 'fournisseur',
+        sourceRef: `Commande fournisseur ${row.reference}`,
+        sourceUrl: null,
+        verified: row.status === 'recu',
+        reliability: row.status === 'recu' ? 1 : 0.9,
+        metadata: { status: row.status },
+      });
+    }
+
+    const bdcResult = await this.db.execute(sql<{
+      designation: string;
+      unit: string | null;
+      price: string;
+      reference: string;
+      region: string | null;
+      observed_at: Date;
+      status: string;
+    }>`
+      select
+        coalesce(line->>'designation', '') as designation,
+        line->>'unite' as unit,
+        coalesce(line->>'prixVenteHt', line->>'prixUnitaireHt', '0') as price,
+        a.reference,
+        a.lieu as region,
+        r.updated_at as observed_at,
+        r.statut as status
+      from ${bdcReponses} r
+      inner join ${bdcAvis} a on a.id = r.avis_id
+      cross join lateral jsonb_array_elements(r.lignes) line
+      where r.statut in ('prete', 'deposee', 'gagnee')
+        and coalesce(line->>'designation', '') ilike ${like}
+        and coalesce(line->>'prixVenteHt', line->>'prixUnitaireHt', '') ~ '^[0-9]+([.][0-9]+)?$'
+        and coalesce(line->>'prixVenteHt', line->>'prixUnitaireHt')::numeric > 0
+        ${query.excludeAvisId ? sql`and r.avis_id <> ${query.excludeAvisId}` : sql``}
+      order by r.updated_at desc
+      limit ${limit}
+    `);
+    for (const row of bdcResult.rows as Array<{
+      designation: string;
+      unit: string | null;
+      price: string;
+      reference: string;
+      region: string | null;
+      observed_at: Date;
+      status: string;
+    }>) {
+      rows.push({
+        designation: row.designation,
+        unit: row.unit ?? query.unit,
+        unitPriceHtMad: num(row.price),
+        region: row.region,
+        observedAt: row.observed_at,
+        sourceType: 'bdc',
+        sourceRef: `BC ${row.reference}`,
+        sourceUrl: null,
+        verified: true,
+        reliability: row.status === 'gagnee' ? 0.95 : 0.8,
+        metadata: { status: row.status },
+      });
+    }
+
+    const resultRows = await this.db
+      .select({
+        designation: bdcResultats.objet,
+        priceTtc: bdcResultats.montantTtc,
+        reference: bdcResultats.reference,
+        observedAt: bdcResultats.dateResultat,
+        nbDevis: bdcResultats.nbDevis,
+      })
+      .from(bdcResultats)
+      .where(
+        and(
+          eq(bdcResultats.issue, 'attribue'),
+          ilike(bdcResultats.objet, like),
+          gte(bdcResultats.montantTtc, '0.01'),
+        ),
+      )
+      .orderBy(desc(bdcResultats.dateResultat))
+      .limit(limit);
+    for (const row of resultRows) {
+      if (!row.observedAt || row.priceTtc == null) continue;
+      rows.push({
+        designation: row.designation,
+        unit: 'forfait',
+        unitPriceHtMad: num(row.priceTtc) / 1.2,
+        region: null,
+        observedAt: row.observedAt,
+        sourceType: 'resultat',
+        sourceRef: `Résultat ${row.reference}`,
+        sourceUrl: null,
+        verified: true,
+        reliability: 0.75,
+        metadata: { taxBasis: 'TTC', tvaPct: 20, nbDevis: row.nbDevis },
+      });
+    }
+
+    return rows
+      .filter((row) => row.unitPriceHtMad > 0)
+      .sort((left, right) => right.observedAt.getTime() - left.observedAt.getTime())
+      .slice(0, limit);
+  }
 
   async upsertResultats(items: BdcResultatItem[]): Promise<number> {
     let inserted = 0;
