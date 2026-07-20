@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { Queue } from "bullmq";
 import type { BdcRepository } from "../bdc.repository";
 import type { PriceEvidenceAdapter } from "./bdc-evidence.types";
@@ -9,6 +9,8 @@ import {
 } from "./bdc-pricing.repository";
 import { BdcPricingService } from "./bdc-pricing.service";
 import type { PriceObservation, PricingStage } from "./bdc-pricing.types";
+
+afterEach(() => vi.unstubAllEnvs());
 
 function observation(designation: string, price: number): PriceObservation {
   return {
@@ -231,6 +233,20 @@ describe("BDC pricing orchestration", () => {
     expect(completed.decisions[1]?.proposedUnitPriceHt).toBeGreaterThan(0);
   });
 
+  test("caps market-search queries and records an auditable budget warning", async () => {
+    vi.stubEnv("BDC_PRICE_SEARCH_MAX_QUERIES", "1");
+    const web = { search: vi.fn(async () => []) };
+    const { service } = setup({ web });
+    const queued = await service.createRun("avis-1", {
+      idempotencyKey: "budget-key",
+      requestedMarkupPct: 15,
+      actorId: "user-1",
+    });
+    const completed = await service.run(queued.id);
+    expect(web.search).toHaveBeenCalledOnce();
+    expect(completed.warnings).toContain("budget_recherche_marche_atteint");
+  });
+
   test("cancels before work and does not execute the analyzer", async () => {
     const analyzer = new BdcLineAnalyzer(null);
     const spy = vi.spyOn(analyzer, "analyzeLines");
@@ -257,7 +273,7 @@ describe("BDC pricing orchestration", () => {
     await expect(service.run(run.id)).rejects.toThrow("analysis failed");
     expect(await pricingRepository.getRun(run.id)).toMatchObject({
       status: "failed",
-      error: "analysis failed",
+      error: "Le chiffrage a échoué; consultez les journaux du service.",
     });
   });
 

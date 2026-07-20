@@ -1,0 +1,19 @@
+{
+  "id": "fixture-services",
+  "reference": "SERV-2026-01",
+  "objet": "Audit, formation et assistance technique",
+  "categorie": "Services",
+  "naturePrestation": "Conseil et formation",
+  "lieu": "Rabat",
+  "manualPrices": { "2": 1100 },
+  "articles": [
+    { "numero": 1, "designation": "Audit technique et rapport de recommandations", "caracteristiques": "Chef de mission 3 jours, expert 5 jours, rapport final et réunion de restitution", "unite": "Forfait", "quantite": 1, "tvaPct": 20, "garanties": null },
+    { "numero": 2, "designation": "Formation des utilisateurs", "caracteristiques": "Deux journées, 15 participants, supports et attestations compris", "unite": "Jour", "quantite": 2, "tvaPct": 20, "garanties": null },
+    { "numero": 3, "designation": "Assistance technique sur site", "caracteristiques": "Technicien, déplacement et outillage inclus", "unite": "Jour", "quantite": 4, "tvaPct": 20, "garanties": null }
+  ],
+  "evidence": [
+    { "idx": 0, "price": 14500, "unit": "forfait" },
+    { "idx": 1, "price": 2600, "unit": "jour" },
+    { "idx": 2, "price": 950, "unit": "jour" }
+  ]
+}

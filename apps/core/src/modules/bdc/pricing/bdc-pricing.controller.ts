@@ -12,6 +12,7 @@ import {
   Req,
 } from "@nestjs/common";
 import { z } from "zod";
+import { Throttle } from "@nestjs/throttler";
 import { Roles } from "../../auth/auth.module";
 import { BdcPricingService } from "./bdc-pricing.service";
 
@@ -57,6 +58,7 @@ export class BdcPricingController {
   ) {}
 
   @Roles(...PRICING_ROLES)
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @Post("avis/:id/pricing-runs")
   @HttpCode(HttpStatus.ACCEPTED)
   async createRun(
@@ -103,6 +105,7 @@ export class BdcPricingController {
   }
 
   @Roles(...PRICING_ROLES)
+  @Throttle({ default: { ttl: 60_000, limit: 30 } })
   @Post("pricing-runs/:runId/feedback")
   async feedback(@Param("runId") runId: string, @Body() body: unknown) {
     const parsed = feedbackSchema.safeParse(body);

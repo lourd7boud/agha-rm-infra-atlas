@@ -133,4 +133,32 @@ describe("works cost estimator", () => {
     expect(result.unitCostHtMad).toBe(0);
     expect(result.components[0]?.label).toBe("materiaux");
   });
+
+  test("falls back to a whole-work reference when generated components are unknown", () => {
+    const result = estimateWorksCost(
+      {
+        ...worksLine,
+        designation: "Reprise complète du joint",
+        components: [
+          { designation: "composant non détaillé", quantityFactor: 1, unit: "kg" },
+        ],
+      },
+      [],
+      {
+        ...rateCard,
+        entries: [
+          {
+            designation: "Reprise complète du joint",
+            unit: worksLine.unit,
+            unitCostHtMad: 250,
+            sourceIds: ["work-global-1"],
+          },
+        ],
+      },
+    );
+
+    expect(result.unitCostHtMad).toBeGreaterThan(250);
+    expect(result.components[0]?.sourceIds).toEqual(["work-global-1"]);
+    expect(result.assumptions).toContain("decomposition_remplacee_reference_globale");
+  });
 });

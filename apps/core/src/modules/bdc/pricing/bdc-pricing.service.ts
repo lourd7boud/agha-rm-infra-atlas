@@ -165,6 +165,10 @@ export class BdcPricingService {
         initial.avisId,
         "recherche_marche_indisponible",
         warnings,
+        Math.max(
+          1,
+          Math.min(100, Number(process.env.BDC_PRICE_SEARCH_MAX_QUERIES) || 20),
+        ),
       );
       const observations = await this.pricingRepository.upsertObservations([
         ...internal,
@@ -234,7 +238,7 @@ export class BdcPricingService {
       if (current?.status !== "cancelled") {
         await this.pricingRepository.updateRun(runId, {
           status: "failed",
-          error: error instanceof Error ? error.message : "Unknown pricing failure",
+          error: "Le chiffrage a échoué; consultez les journaux du service.",
           warnings: [...new Set(warnings)],
         });
       }
@@ -340,10 +344,15 @@ export class BdcPricingService {
     excludeAvisId: string,
     warning: string,
     warnings: string[],
+    maxQueries = lines.length,
   ): Promise<PriceObservation[]> {
     const output: PriceObservation[] = [];
     let failed = false;
-    for (const line of lines) {
+    const selected = lines.slice(0, maxQueries);
+    if (selected.length < lines.length) {
+      warnings.push("budget_recherche_marche_atteint");
+    }
+    for (const line of selected) {
       try {
         output.push(
           ...(await adapter.search({ line, excludeAvisId, limit: 30 })),

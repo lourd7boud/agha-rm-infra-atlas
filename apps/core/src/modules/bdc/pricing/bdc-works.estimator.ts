@@ -74,6 +74,22 @@ export function estimateWorksCost(
       grouped.set(label, current);
       if (!resolved) assumptions.push(`cout_manquant:${component.designation}`);
     }
+    const decomposedCost = [...grouped.values()].reduce(
+      (total, item) => total + item.cost,
+      0,
+    );
+    if (decomposedCost <= 0) {
+      const whole = resolveWholeLineCost(line, observations, rateCard);
+      if (whole) {
+        grouped.clear();
+        grouped.set("materiaux", {
+          cost: whole.unitCostHtMad,
+          sourceIds: whole.sourceIds,
+          fallback: whole.usedFallback,
+        });
+        assumptions.push("decomposition_remplacee_reference_globale");
+      }
+    }
   }
 
   const order = ["materiaux", "main_oeuvre", "equipement", "transport"];

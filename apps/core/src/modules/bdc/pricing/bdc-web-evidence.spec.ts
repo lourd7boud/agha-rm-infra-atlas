@@ -194,4 +194,27 @@ describe("Moroccan web price evidence", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.unitPriceHtMad).toBe(450);
   });
+
+  test("caps fetched landing pages independently from search-result volume", async () => {
+    const fetchPage = vi.fn(async (url: string) => ({
+      url,
+      html: "<p>Prix HT: 450 DH</p>",
+      snapshotHash: "b".repeat(64),
+      fetchedAt: new Date("2026-07-20T12:00:00.000Z"),
+    }));
+    const adapter = new MoroccanWebPriceAdapter(
+      {
+        search: async () =>
+          Array.from({ length: 10 }, (_, index) => ({
+            title: `Produit ${index}`,
+            url: `https://bricoma.ma/p-${index}`,
+            description: "",
+          })),
+      },
+      { fetch: fetchPage },
+      { maxPagesPerSearch: 2 },
+    );
+    expect(await adapter.search({ line, excludeAvisId: null, limit: 10 })).toHaveLength(2);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+  });
 });

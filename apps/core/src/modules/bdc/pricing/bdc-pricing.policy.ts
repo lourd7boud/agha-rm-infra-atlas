@@ -28,7 +28,7 @@ export function applyMarkupFloor(
 
   return new Decimal(costHt)
     .mul(new Decimal(1).plus(new Decimal(appliedMarkupPct).div(100)))
-    .toDecimalPlaces(2, Decimal.ROUND_HALF_UP)
+    .toDecimalPlaces(2, Decimal.ROUND_CEIL)
     .toNumber();
 }
 

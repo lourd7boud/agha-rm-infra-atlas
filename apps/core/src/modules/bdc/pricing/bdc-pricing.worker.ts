@@ -14,6 +14,10 @@ import { BdcPricingLearning } from "./bdc-pricing-learning";
 
 export const BDC_PRICING_QUEUE_NAME = "bdc-pricing";
 
+export function isBdcPricingLearningEnabled(value: string | undefined) {
+  return value?.trim().toLowerCase() !== "false";
+}
+
 export function bdcPricingRedisConnection() {
   const url = new URL(process.env.REDIS_URL ?? "redis://127.0.0.1:6380");
   return {
@@ -94,6 +98,13 @@ export class BdcPricingWorker implements OnModuleInit, OnModuleDestroy {
       ),
     );
     const learningCron = process.env.BDC_PRICING_LEARNING_CRON ?? "30 2 * * *";
+    if (!isBdcPricingLearningEnabled(process.env.BDC_PRICING_LEARNING_ENABLED)) {
+      await this.queue.removeJobScheduler("bdc-pricing-learning");
+      this.logger.warn(
+        "BDC pricing worker active — verified learning schedule disabled",
+      );
+      return;
+    }
     await this.queue.upsertJobScheduler(
       "bdc-pricing-learning",
       { pattern: learningCron },

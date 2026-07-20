@@ -110,4 +110,31 @@ describe("service cost estimator", () => {
 
     expect(result.assumptions).toContain("cout_manquant:expert introuvable");
   });
+
+  test("falls back to a compatible whole-service reference when roles are unknown", () => {
+    const result = estimateServiceCost(
+      {
+        ...serviceLine,
+        components: [
+          { designation: "profil non détaillé", quantityFactor: 1, unit: "jour" },
+        ],
+      },
+      [],
+      {
+        ...rateCard,
+        entries: [
+          {
+            designation: serviceLine.designation,
+            unit: "forfait",
+            unitCostHtMad: 3_500,
+            sourceIds: ["service-global-1"],
+          },
+        ],
+      },
+    );
+
+    expect(result.unitCostHtMad).toBeGreaterThan(3_500);
+    expect(result.components[0]?.sourceIds).toEqual(["service-global-1"]);
+    expect(result.assumptions).toContain("decomposition_remplacee_reference_globale");
+  });
 });

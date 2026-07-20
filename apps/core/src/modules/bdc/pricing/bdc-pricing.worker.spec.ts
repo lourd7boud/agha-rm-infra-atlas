@@ -5,6 +5,7 @@ import type { BdcPricingLearning } from "./bdc-pricing-learning";
 import {
   BdcPricingWorker,
   dispatchBdcPricingJob,
+  isBdcPricingLearningEnabled,
 } from "./bdc-pricing.worker";
 
 afterEach(() => {
@@ -12,6 +13,13 @@ afterEach(() => {
 });
 
 describe("BDC pricing worker", () => {
+  test("supports an explicit emergency switch for scheduled learning", () => {
+    expect(isBdcPricingLearningEnabled(undefined)).toBe(true);
+    expect(isBdcPricingLearningEnabled("true")).toBe(true);
+    expect(isBdcPricingLearningEnabled("false")).toBe(false);
+    expect(isBdcPricingLearningEnabled(" FALSE ")).toBe(false);
+  });
+
   test("dispatches a price job to the idempotent run orchestrator", async () => {
     const service = { run: vi.fn(async () => ({ status: "completed" })) };
     await expect(

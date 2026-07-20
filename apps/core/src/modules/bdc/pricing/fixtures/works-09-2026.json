@@ -1,0 +1,23 @@
+{
+  "id": "fixture-works-09-2026",
+  "reference": "09/2026",
+  "objet": "Travaux d'aménagement du bâtiment administratif",
+  "categorie": "Travaux",
+  "naturePrestation": "Travaux d'aménagement et de réparation",
+  "lieu": "Agadir Ida Ou Tanane",
+  "manualPrices": { "0": 145 },
+  "articles": [
+    { "numero": 1, "designation": "Ouverture des fissures en forme de V", "caracteristiques": "Ouverture, dépoussiérage et préparation complète", "unite": "Ensemble", "quantite": 1, "tvaPct": 20, "garanties": null },
+    { "numero": 2, "designation": "Reprise complète du joint", "caracteristiques": "Mortier compatible, finition et toutes sujétions", "unite": "Ensemble", "quantite": 1, "tvaPct": 20, "garanties": null },
+    { "numero": 3, "designation": "Dépose du carrelage endommagé", "caracteristiques": "Dépose, évacuation et nettoyage du support", "unite": "m2", "quantite": 18, "tvaPct": 20, "garanties": null },
+    { "numero": 4, "designation": "Dépose localisée autour de la conduite", "caracteristiques": "Protection des réseaux existants comprise", "unite": "Ensemble", "quantite": 1, "tvaPct": 20, "garanties": null },
+    { "numero": 5, "designation": "Peinture des murs intérieurs et plafonds", "caracteristiques": "Peinture à l'eau type ZEN ITASTRAL ou équivalent, résistante à l'eau, à l'humidité et à l'abrasion humide, y compris préparation et parfaite finition", "unite": "m2", "quantite": 420, "tvaPct": 20, "garanties": "Garantie de parfaite finition" }
+  ],
+  "evidence": [
+    { "idx": 0, "price": 120, "unit": "ensemble" },
+    { "idx": 1, "price": 260, "unit": "ensemble" },
+    { "idx": 2, "price": 75, "unit": "m2" },
+    { "idx": 3, "price": 380, "unit": "ensemble" },
+    { "idx": 4, "price": 68, "unit": "m2" }
+  ]
+}

@@ -51,6 +51,14 @@ export function estimateServiceCost(
         assumptions.push(`bareme:${rateCard.version}:${component.designation}`);
       }
     }
+    if (grouped.roles.cost + grouped.travel.cost <= 0) {
+      const wholeLine = resolveWholeLineCost(line, observations, rateCard);
+      if (wholeLine) {
+        grouped.roles.cost = wholeLine.unitCostHtMad;
+        grouped.roles.sourceIds = wholeLine.sourceIds;
+        assumptions.push("decomposition_remplacee_reference_globale");
+      }
+    }
   }
 
   const components: CostEstimateComponent[] = [

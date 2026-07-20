@@ -395,6 +395,15 @@ const bdcWebEvidenceProvider = {
         timeoutMs:
           Number(process.env.BDC_PRICE_FETCH_TIMEOUT_MS) || 12_000,
       }),
+      {
+        maxPagesPerSearch: Math.max(
+          1,
+          Math.floor(
+            (Number(process.env.BDC_PRICE_FETCH_MAX_PAGES) || 30) /
+              (Number(process.env.BDC_PRICE_SEARCH_MAX_QUERIES) || 20),
+          ),
+        ),
+      },
     );
   },
 };

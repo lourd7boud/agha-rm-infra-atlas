@@ -95,18 +95,18 @@ function categoryForArticle(
 ): PricingCategory {
   const text = fold(`${article.designation} ${article.caracteristiques}`);
   if (
-    /\b(audit|etude|formation|conseil|assistance|gardiennage|nettoyage|hebergement|developpement logiciel)\b/.test(
-      text,
-    )
-  ) {
-    return "services";
-  }
-  if (
     /\b(travaux|reparation|fissure|joint|depose|carrelage|maconnerie|peinture des|mur|plafond|etancheite|plomberie|terrassement)\b/.test(
       text,
     )
   ) {
     return "travaux";
+  }
+  if (
+    /\b(audit|etude|formation|conseil|assistance|gardiennage|nettoyage|hebergement|developpement logiciel)\b/.test(
+      text,
+    )
+  ) {
+    return "services";
   }
   if (
     /\b(fourniture|achat|toner|ordinateur|imprimante|mobilier|papier|materiel|equipement|peinture\s+[a-z0-9]+\s+\d+)\b/.test(

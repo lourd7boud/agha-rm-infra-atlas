@@ -6,6 +6,7 @@ describe("BDC pricing policy", () => {
     expect(applyMarkupFloor(1_000, 0)).toBe(1_150);
     expect(applyMarkupFloor(1_000, 10)).toBe(1_150);
     expect(applyMarkupFloor(1_000, 20)).toBe(1_200);
+    expect(applyMarkupFloor(86.63, 15)).toBe(99.63);
   });
 
   test.each([

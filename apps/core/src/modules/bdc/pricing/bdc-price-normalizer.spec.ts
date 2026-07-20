@@ -59,6 +59,7 @@ describe("BDC price normalization", () => {
     ["ml", "ml"],
     ["mètre linéaire", "ml"],
     ["U", "u"],
+    ["carton", "package"],
     ["unité", "u"],
   ])("normalizes %s to %s", (raw, expected) => {
     expect(normalizeUnit(raw)).toBe(expected);
@@ -90,7 +91,17 @@ describe("BDC price normalization", () => {
     );
 
     expect(result?.comparableUnitPriceHtMad).toBe(60);
+    expect(result?.unit).toBe("u");
     expect(result?.conversionNotes).toContain("conditionnement:10_u");
+  });
+
+  test("stores a matching carton under its canonical package unit", () => {
+    const result = normalizeObservation(
+      observation({ unit: "carton" }),
+      line({ unit: "package" }),
+      policy,
+    );
+    expect(result?.unit).toBe("package");
   });
 
   test("rejects litre to square metre without declared coverage", () => {

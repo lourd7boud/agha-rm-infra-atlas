@@ -1,0 +1,19 @@
+{
+  "id": "fixture-supplies",
+  "reference": "FOUR-2026-01",
+  "objet": "Acquisition de matériel informatique et consommables",
+  "categorie": "Fournitures",
+  "naturePrestation": "Matériel informatique",
+  "lieu": "Casablanca",
+  "manualPrices": { "1": 890 },
+  "articles": [
+    { "numero": 1, "designation": "Ordinateur portable professionnel", "caracteristiques": "Intel Core i7, RAM 16 Go, SSD 512 Go, écran 15 pouces, marque ou équivalent, garantie 3 ans", "unite": "U", "quantite": 8, "tvaPct": 20, "garanties": "3 ans" },
+    { "numero": 2, "designation": "Toner laser noir grande capacité", "caracteristiques": "Rendement minimum 10 000 pages, original ou équivalent certifié", "unite": "U", "quantite": 12, "tvaPct": 20, "garanties": null },
+    { "numero": 3, "designation": "Ramette papier A4 80 g", "caracteristiques": "Carton de 5 ramettes de 500 feuilles", "unite": "Carton", "quantite": 40, "tvaPct": 20, "garanties": null }
+  ],
+  "evidence": [
+    { "idx": 0, "price": 9200, "unit": "u" },
+    { "idx": 1, "price": 760, "unit": "u" },
+    { "idx": 2, "price": 285, "unit": "carton" }
+  ]
+}

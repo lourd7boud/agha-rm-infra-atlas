@@ -62,7 +62,7 @@ export function normalizeUnit(raw: string): CanonicalUnit {
   if (/^(km|kilometre|kilometres)$/.test(value)) return "km";
   if (/^(forfait|ft)$/.test(value)) return "forfait";
   if (/^(ensemble|ens)$/.test(value)) return "ensemble";
-  if (/^(pack|paquet|lot|boite|seau|conditionnement)$/.test(value)) {
+  if (/^(pack|package|paquet|lot|boite|seau|carton|cartons|ramette|ramettes|conditionnement)$/.test(value)) {
     return "package";
   }
   return "unknown";
@@ -196,6 +196,7 @@ export function normalizeObservation(
 
   return {
     ...observation,
+    unit: comparableUnit,
     comparableUnitPriceHtMad: roundMad(price),
     compatibility: comparableUnit === targetUnit ? 1 : 0,
     freshness: Number(freshness.toFixed(4)),

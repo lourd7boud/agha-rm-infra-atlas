@@ -1,0 +1,45 @@
+{
+  "generatedAt": "2026-07-20T00:00:00.000Z",
+  "suite": "bdc-pricing.fixtures.spec.ts",
+  "result": "passed",
+  "policy": {
+    "minimumMarkupPct": 15,
+    "manualPricesPreserved": true,
+    "draftOnlyApplication": true,
+    "evidenceRequiredForAutomaticPrices": true
+  },
+  "categories": [
+    {
+      "category": "travaux",
+      "fixture": "works-09-2026.json",
+      "articles": 5,
+      "evidence": 5,
+      "manualLockedLines": 1,
+      "allLinesPriced": true
+    },
+    {
+      "category": "fournitures",
+      "fixture": "supplies-sample.json",
+      "articles": 3,
+      "evidence": 3,
+      "manualLockedLines": 1,
+      "allLinesPriced": true
+    },
+    {
+      "category": "services",
+      "fixture": "services-sample.json",
+      "articles": 3,
+      "evidence": 3,
+      "manualLockedLines": 1,
+      "allLinesPriced": true
+    }
+  ],
+  "totals": {
+    "articles": 11,
+    "evidence": 11,
+    "manualLockedLines": 3,
+    "automaticLines": 8,
+    "unpricedLines": 0,
+    "markupFloorViolations": 0
+  }
+}

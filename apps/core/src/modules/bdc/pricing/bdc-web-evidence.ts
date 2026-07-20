@@ -319,6 +319,7 @@ export class MoroccanWebPriceAdapter implements PriceEvidenceAdapter {
   constructor(
     private readonly searchClient: WebSearchClient,
     private readonly pageFetcher: PricePageFetcher,
+    private readonly options: { maxPagesPerSearch?: number } = {},
   ) {}
 
   async search(query: PriceEvidenceQuery): Promise<PriceObservation[]> {
@@ -334,7 +335,11 @@ export class MoroccanWebPriceAdapter implements PriceEvidenceAdapter {
       .slice(0, 500);
     const hits = await this.searchClient.search(searchQuery);
     const output: PriceObservation[] = [];
-    for (const hit of hits.slice(0, limit)) {
+    const maxPages = Math.max(
+      1,
+      Math.min(limit, this.options.maxPagesPerSearch ?? limit),
+    );
+    for (const hit of hits.slice(0, maxPages)) {
       try {
         const page = await this.pageFetcher.fetch(hit.url);
         const extracted = extractPrice(page.html, query.line.designation);

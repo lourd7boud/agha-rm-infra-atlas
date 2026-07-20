@@ -358,6 +358,13 @@
       "when": 1784100800000,
       "tag": "0050_radar",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1784510000000,
+      "tag": "0052_bdc_autonomous_pricing",
+      "breakpoints": true
     }
   ]
 }
