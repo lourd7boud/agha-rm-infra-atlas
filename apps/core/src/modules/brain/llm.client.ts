@@ -871,6 +871,77 @@ export function createExpertLlmClientFromEnv(
 }
 
 /**
+ * Dedicated client for the autonomous BDC pricing agent.
+ *
+ * Pricing is a low-volume, high-value task and must not inherit a bulk Gemini
+ * route merely because extraction uses it. The model family selects the
+ * protocol (Claude -> Anthropic Messages), while credentials fall back from
+ * BDC_PRICING_* to the shared LLM/OpenRouter secrets.
+ */
+export function createBdcPricingLlmClientFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): LlmClient | null {
+  const model =
+    env.BDC_PRICING_LLM_MODEL ??
+    env.EXPERT_LLM_MODEL ??
+    env.LLM_MODEL_T3;
+  if (!model) return null;
+  const tierModels: Record<LlmTier, string> = {
+    T1: model,
+    T2: model,
+    T3: model,
+  };
+  const provider = resolveProviderForModel(
+    model,
+    env,
+    env.BDC_PRICING_LLM_PROVIDER,
+  );
+
+  if (provider === 'anthropic') {
+    const apiKey =
+      env.BDC_PRICING_LLM_API_KEY ??
+      env.LLM_API_KEY ??
+      env.OPENROUTER_API_KEY;
+    if (!apiKey) return null;
+    return new AnthropicLlmClient({
+      apiKey,
+      baseUrl: env.BDC_PRICING_LLM_API_BASE ?? env.LLM_API_BASE,
+      tierModels,
+    });
+  }
+  if (provider === 'openrouter') {
+    const apiKey =
+      env.BDC_PRICING_LLM_API_KEY ??
+      env.OPENROUTER_API_KEY ??
+      env.LLM_API_KEY;
+    if (!apiKey) return null;
+    return new OpenRouterLlmClient({
+      apiKey,
+      baseUrl:
+        env.BDC_PRICING_LLM_API_BASE ??
+        env.OPENROUTER_API_BASE,
+      tierModels,
+      appUrl: env.PUBLIC_WEB_URL ?? 'https://atlas.marocinfra.com',
+      appTitle: 'ATLAS - AGHA RM INFRA (BDC pricing)',
+    });
+  }
+
+  const apiKey =
+    env.BDC_PRICING_LLM_API_KEY ??
+    env.OPENROUTER_API_KEY ??
+    env.LLM_API_KEY;
+  if (!apiKey) return null;
+  return new GoogleLlmClient({
+    apiKey,
+    baseUrl:
+      env.BDC_PRICING_LLM_API_BASE ??
+      env.OPENROUTER_API_BASE ??
+      'https://generativelanguage.googleapis.com',
+    tierModels,
+  });
+}
+
+/**
  * Selects the per-tender chat's DEDICATED client. The chat (TenderChatService) is
  * a low-volume, high-value surface where the fast/cheap extraction model reads
  * poorly (identity drift, shallow analysis), so it runs on a STRONG model —

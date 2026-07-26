@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import type { BdcReponse, LinePricingDecision, PricingRunView } from '@/lib/bdc';
 import {
   applyBdcPricingAgent,
@@ -58,6 +58,7 @@ export function BdcPricingAgentPanel({
     run: initialRun,
   });
   const [busy, setBusy] = useState(false);
+  const synchronizedRunRef = useRef<string | null>(null);
   const run = state.run;
 
   useEffect(() => {
@@ -92,6 +93,28 @@ export function BdcPricingAgentPanel({
       window.clearInterval(timer);
     };
   }, [run?.id, run?.status]);
+
+  useEffect(() => {
+    if (!canApplyPricingRun(run) || synchronizedRunRef.current === run.id) return;
+    let mounted = true;
+    synchronizedRunRef.current = run.id;
+    void applyBdcPricingAgent(avisId, run.id)
+      .then((response) => {
+        if (mounted) onApplied(response);
+      })
+      .catch(() => {
+        synchronizedRunRef.current = null;
+        if (mounted) {
+          dispatch({
+            type: 'failed',
+            message: "La synchronisation automatique du brouillon a échoué",
+          });
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [avisId, onApplied, run]);
 
   const start = async () => {
     setBusy(true);
@@ -164,7 +187,7 @@ export function BdcPricingAgentPanel({
             disabled={busy || !canApplyPricingRun(run)}
             className="rounded-lg bg-emerald px-4 py-2 text-sm font-bold text-paper disabled:opacity-50"
           >
-            Appliquer au brouillon
+            Resynchroniser le brouillon
           </button>
         )}
         {run && (

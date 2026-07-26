@@ -132,6 +132,28 @@ describe("BDC structured line analyzer", () => {
     expect(result?.attributes).toMatchObject({ deliverable: "rapport", forfait: true });
   });
 
+  test("extracts package capacities from the portal unit", async () => {
+    const analyzer = new BdcLineAnalyzer(null);
+    const result = await analyzer.analyzeLines({
+      articles: [
+        article(1, "Javel", "", "2.5 L", 43),
+        article(2, "Détergent liquide", "", "Flacon de 900 mL", 31),
+      ],
+      bdcCategory: "Fournitures",
+      nature: null,
+      location: "Casablanca",
+    });
+
+    expect(result[0]).toMatchObject({
+      unit: "package",
+      attributes: { packageQuantity: 2.5, packageUnit: "l" },
+    });
+    expect(result[1]).toMatchObject({
+      unit: "package",
+      attributes: { packageQuantity: 0.9, packageUnit: "l" },
+    });
+  });
+
   test("merges only valid in-range LLM objects", async () => {
     const llm = new FakeLlmClient([
       JSON.stringify({

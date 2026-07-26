@@ -84,6 +84,38 @@ describe("BDC conservative AI estimator", () => {
     expect(await new BdcAiEstimator(null).estimate([line])).toEqual(new Map());
   });
 
+  test("batches large bordereaux so every line gets an independent estimate", async () => {
+    vi.stubEnv("BDC_PRICING_LLM_BATCH_SIZE", "2");
+    const response = (indices: number[]) =>
+      JSON.stringify({
+        lines: indices.map((idx) => ({
+          idx,
+          unitCostHtMad: 100 + idx,
+          lowHtMad: 90 + idx,
+          highHtMad: 120 + idx,
+          components: [{ label: "achat", costHtMad: 100 + idx }],
+          assumptions: ["marché marocain"],
+        })),
+      });
+    const llm = new FakeLlmClient([
+      response([0, 1]),
+      response([2, 3]),
+      response([4]),
+    ]);
+    const estimator = new BdcAiEstimator(llm);
+    const lines = Array.from({ length: 5 }, (_, idx) => ({
+      ...line,
+      idx,
+      designation: `Produit ${idx}`,
+    }));
+
+    const result = await estimator.estimate(lines);
+
+    expect(llm.requests).toHaveLength(3);
+    expect([...result.keys()]).toEqual([0, 1, 2, 3, 4]);
+    expect(result.get(4)?.unitCostHtMad).toBe(104);
+  });
+
   test("never prices silver iodide below its landed raw-silver floor", async () => {
     vi.stubEnv("BDC_SILVER_SPOT_MAD_PER_GRAM", "17.52");
     const llm = new FakeLlmClient([

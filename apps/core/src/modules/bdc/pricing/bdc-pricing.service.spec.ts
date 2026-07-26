@@ -175,7 +175,7 @@ function setup(options: {
 
 describe("BDC pricing orchestration", () => {
   test("runs all seven stages and decides every parseable zero line", async () => {
-    const { service, stages } = setup();
+    const { service, stages, savedPatch } = setup();
     const run = await service.createRun("avis-1", {
       idempotencyKey: "key-1",
       requestedMarkupPct: 15,
@@ -192,7 +192,7 @@ describe("BDC pricing orchestration", () => {
     expect(completed.decisions[1]?.proposedUnitPriceHt).toBeGreaterThan(0);
     expect(completed.evidence).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ sourceRef: "FAC-100", unitPriceHtMad: 100 }),
+        expect.objectContaining({ sourceRef: "FAC-200", unitPriceHtMad: 200 }),
       ]),
     );
     expect(stages).toEqual([
@@ -204,6 +204,22 @@ describe("BDC pricing orchestration", () => {
       "optimisation",
       "brouillon_enregistre",
     ]);
+    expect(savedPatch()).toMatchObject({ statut: "brouillon" });
+    const savedLines = (
+      savedPatch() as {
+        lignes: Array<{ idx: number; prixUnitaireHt: number; source: string }>;
+      }
+    ).lignes;
+    expect(savedLines[0]).toMatchObject({
+      idx: 0,
+      prixUnitaireHt: 88,
+      source: "manuel",
+    });
+    expect(savedLines[1]).toMatchObject({
+      idx: 1,
+      source: "agent",
+    });
+    expect(savedLines[1]?.prixUnitaireHt).toBeGreaterThan(0);
   });
 
   test("reuses an idempotency key and enqueues a stable job id", async () => {
@@ -294,6 +310,27 @@ describe("BDC pricing orchestration", () => {
       markupPct: 15,
       method: "ia_conservative",
       confidence: "faible",
+    });
+  });
+
+  test("never completes a run while a non-manual line still has a zero price", async () => {
+    const noEvidence = { search: async () => [] };
+    const { service, pricingRepository } = setup({
+      internal: noEvidence,
+      web: noEvidence,
+      aiEstimator: new BdcAiEstimator(null),
+    });
+    const queued = await service.createRun("avis-1", {
+      idempotencyKey: "no-zero-invariant",
+      requestedMarkupPct: 15,
+      actorId: "user-1",
+    });
+
+    await expect(service.run(queued.id)).rejects.toThrow(
+      "pricing_incomplete",
+    );
+    expect(await pricingRepository.getRun(queued.id)).toMatchObject({
+      status: "failed",
     });
   });
 

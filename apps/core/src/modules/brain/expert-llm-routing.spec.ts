@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   AnthropicLlmClient,
+  createBdcPricingLlmClientFromEnv,
   createChatLlmClientFromEnv,
   createExpertLlmClientFromEnv,
   GoogleLlmClient,
@@ -114,5 +115,25 @@ describe('createChatLlmClientFromEnv', () => {
       CHAT_LLM_PROVIDER: 'anthropic',
     } as unknown as NodeJS.ProcessEnv;
     expect(createChatLlmClientFromEnv(env)).toBeNull();
+  });
+});
+
+describe('createBdcPricingLlmClientFromEnv', () => {
+  test('pins a Claude pricing model to the working Anthropic gateway path', () => {
+    expect(
+      createBdcPricingLlmClientFromEnv({
+        ...PROD_LIKE,
+        BDC_PRICING_LLM_MODEL: 'claude-opus-4-8',
+      } as NodeJS.ProcessEnv),
+    ).toBeInstanceOf(AnthropicLlmClient);
+  });
+
+  test('falls back to the strategic model when no dedicated model is set', () => {
+    expect(
+      createBdcPricingLlmClientFromEnv({
+        ...PROD_LIKE,
+        LLM_MODEL_T3: 'claude-opus-4-8',
+      } as NodeJS.ProcessEnv),
+    ).toBeInstanceOf(AnthropicLlmClient);
   });
 });

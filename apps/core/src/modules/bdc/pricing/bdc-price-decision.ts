@@ -167,6 +167,10 @@ export function decideLinePrice({
       .filter(
         (candidate) =>
           candidate.score >= 0.35 &&
+          Math.max(
+            candidate.semanticFit,
+            candidate.specificationCoverage,
+          ) >= 0.3 &&
           candidate.observation.compatibility > 0 &&
           candidate.observation.comparableUnitPriceHtMad > 0,
       ),

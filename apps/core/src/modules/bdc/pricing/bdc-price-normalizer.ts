@@ -48,7 +48,20 @@ function fold(value: string): string {
 
 export function normalizeUnit(raw: string): CanonicalUnit {
   const value = fold(raw).replace(/²/g, "2");
+  const quantityUnit = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
 
+  if (
+    /^(?:flacon|paquet|sachet|boite|rouleau|bidon|carton|lot|pack)\b/.test(
+      value,
+    ) ||
+    /^\d+(?:[,.]\d+)?\s*(?:ml|l|g|kg|pcs?|unites?)$/.test(quantityUnit)
+  ) {
+    return "package";
+  }
   if (/^(m2|metre carre|metres carres)$/.test(value)) return "m2";
   if (/^(ml|metre lineaire|metres lineaires|m lineaire)$/.test(value)) {
     return "ml";
@@ -137,6 +150,7 @@ export function normalizeObservation(
   const packageUnit = metadataString(observation.metadata, "packageUnit");
   if (
     sourceUnit === "package" &&
+    targetUnit !== "package" &&
     finitePositive(packageQuantity) &&
     packageUnit
   ) {

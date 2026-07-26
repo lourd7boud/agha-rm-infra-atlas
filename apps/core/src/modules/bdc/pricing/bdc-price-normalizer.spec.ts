@@ -60,6 +60,10 @@ describe("BDC price normalization", () => {
     ["mètre linéaire", "ml"],
     ["U", "u"],
     ["carton", "package"],
+    ["2.5 L", "package"],
+    ["Flacon de 900 mL", "package"],
+    ["Paquet de 40 unités", "package"],
+    ["Rouleau", "package"],
     ["unité", "u"],
   ])("normalizes %s to %s", (raw, expected) => {
     expect(normalizeUnit(raw)).toBe(expected);
@@ -102,6 +106,22 @@ describe("BDC price normalization", () => {
       policy,
     );
     expect(result?.unit).toBe("package");
+  });
+
+  test("keeps the full package price when the BPU line is priced by package", () => {
+    const result = normalizeObservation(
+      observation({
+        unit: "pack",
+        unitPriceHtMad: 184,
+        metadata: { packageQuantity: 5, packageUnit: "l" },
+      }),
+      line({ unit: "Flacon de 5 L" }),
+      policy,
+    );
+
+    expect(result?.comparableUnitPriceHtMad).toBe(184);
+    expect(result?.unit).toBe("package");
+    expect(result?.conversionNotes).not.toContain("conditionnement:5_l");
   });
 
   test("rejects litre to square metre without declared coverage", () => {

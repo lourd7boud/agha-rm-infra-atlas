@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import type { Queue } from "bullmq";
-import type { BdcRepository } from "../bdc.repository";
+import type { BdcRepository, ReponseRecord } from "../bdc.repository";
 import { BDC_REPOSITORY } from "../bdc.repository";
 import type { LigneReponseInput } from "../bdc-pricing.domain";
 import { designationSimilarity, type PricingRateCard } from "./bdc-estimator.shared";
@@ -183,6 +183,13 @@ export class BdcPricingService {
       const normalizedByLine = new Map<number, NormalizedObservation[]>();
       for (const line of lines) {
         const normalized = observations
+          .filter((item) => {
+            const scopedLineIdx = item.metadata.pricingLineIdx;
+            return (
+              typeof scopedLineIdx !== "number" ||
+              scopedLineIdx === line.idx
+            );
+          })
           .map((item) =>
             normalizeObservation(item, line, this.normalizationPolicy),
           )
@@ -223,6 +230,12 @@ export class BdcPricingService {
         } catch {
           warnings.push("estimation_ia_indisponible");
         }
+        const remaining = unresolved.filter(
+          (line) => (estimates.get(line.idx)?.unitCostHtMad ?? 0) <= 0,
+        );
+        if (remaining.length > 0) {
+          warnings.push("estimation_ia_partielle");
+        }
       }
 
       const decisions = lines.map((line) => {
@@ -260,7 +273,25 @@ export class BdcPricingService {
         })),
       });
       warnings.push(...optimized.warnings);
+      const incomplete = optimized.decisions.filter(
+        (decision) =>
+          !decision.manualPriceLocked &&
+          (decision.estimatedCostHt <= 0 ||
+            decision.proposedUnitPriceHt <= 0 ||
+            decision.markupPct + 0.01 < initial.requestedMarkupPct),
+      );
+      if (incomplete.length > 0) {
+        warnings.push("chiffrage_incomplet_interdit");
+        throw new Error(
+          `pricing_incomplete:${incomplete.map((item) => item.idx).join(",")}`,
+        );
+      }
       await this.pricingRepository.replaceDecisions(runId, optimized.decisions);
+      await this.saveDecisionsToDraft(
+        initial,
+        response,
+        optimized.decisions,
+      );
       const completed = await this.stage(
         runId,
         "brouillon_enregistre",
@@ -325,6 +356,14 @@ export class BdcPricingService {
       throw new ConflictException("Seul un brouillon peut recevoir les prix de l'agent");
     }
     const decisions = await this.pricingRepository.listDecisions(runId);
+    return this.saveDecisionsToDraft(run, response, decisions);
+  }
+
+  private async saveDecisionsToDraft(
+    run: PricingRunRecord,
+    response: ReponseRecord,
+    decisions: PricingRunView["decisions"],
+  ) {
     const byIndex = new Map(decisions.map((item) => [item.idx, item]));
     const lines: LigneReponseInput[] = response.lignes.map((line) => {
       if (line.prixUnitaireHt > 0) return line;
@@ -342,6 +381,7 @@ export class BdcPricingService {
     const saved = await this.bdcRepository.saveReponse(run.avisId, {
       lignes: lines,
       statut: "brouillon",
+      margePct: run.requestedMarkupPct,
     });
     if (!saved) throw new NotFoundException("Avis introuvable");
     return saved;

@@ -97,6 +97,27 @@ describe("line price decision", () => {
     expect(decision.sourceIds).toEqual([]);
   });
 
+  test("never reuses a semantically unrelated price even when the unit matches", () => {
+    const unrelated = evidence(500, {
+      semanticFit: 0,
+      specificationCoverage: 0,
+      observation: {
+        ...evidence(500).observation,
+        designation: "Eau de javel 5 L",
+      },
+    });
+    const decision = decideLinePrice({
+      line,
+      estimate,
+      evidence: [unrelated],
+      requestedMarkupPct: 15,
+      manualPriceHt: null,
+    });
+
+    expect(decision.proposedUnitPriceHt).toBe(115);
+    expect(decision.sourceIds).toEqual([]);
+  });
+
   test("removes an extreme price using median absolute deviation", () => {
     const decision = decideLinePrice({
       line,

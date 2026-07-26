@@ -7,8 +7,16 @@ L'agent chiffre les lignes de travaux, fournitures et services. Il recherche d'a
 - La marge sur coût estimé ne descend jamais sous `BDC_PRICING_MIN_MARKUP_PCT` (15 % par défaut).
 - Quand une estimation administrative est disponible, la proposition vise le corridor ±20 %. Le plancher de marge reste prioritaire si les deux contraintes sont incompatibles.
 - Une ligne déjà saisie manuellement est verrouillée et n'est jamais écrasée.
-- Le résultat reste un brouillon jusqu'à l'action explicite « Appliquer au bordereau ».
+- L'agent n'achève jamais un run contenant un prix nul ou une marge inférieure au plancher.
+- Dès que toutes les lignes sont viables, les prix sont écrits automatiquement dans le brouillon. L'action de resynchronisation reste disponible comme reprise idempotente.
 - Seuls les retours vérifiés alimentent l'apprentissage. Un retour non vérifié a un poids nul.
+
+### Architecture de l'agent
+
+- **Raisonnement** : un LLM de chiffrage dédié analyse les lignes par petits lots. Si un lot est tronqué ou incomplet, chaque ligne est réessayée séparément.
+- **Mémoire** : les observations internes, résultats de recherche, décisions, retours vérifiés et calibrations sont persistés. Une estimation IA non vérifiée n'est jamais promue automatiquement comme vérité de marché.
+- **Outils** : historique des bordereaux et factures, recherche web marocaine sur allowlist, lecture sécurisée des pages, normalisation HT/TTC, unités, conditionnements, région et ancienneté.
+- **Isolation** : chaque observation porte l'index de sa ligne de recherche. Un prix de Javel ne peut donc pas être réutilisé pour une éponge ou un détergent sans correspondance sémantique suffisante.
 
 ## Configuration serveur
 
@@ -18,9 +26,12 @@ Les variables vivent dans `/opt/atlas/platform/.env.apps`. Ne jamais journaliser
 BRAVE_SEARCH_API_KEY=
 BDC_PRICE_SOURCE_DOMAINS=bricoma.ma,marjane.ma,marjanemall.ma,electroplanet.ma,jumia.ma,maroc.prix-construction.info,lechantier.ma,moussasoft.com,educomptoir.com,mouhim.ma
 BDC_SILVER_SPOT_MAD_PER_GRAM=17.52
-BDC_PRICE_SEARCH_MAX_QUERIES=20
+BDC_PRICE_SEARCH_MAX_QUERIES=100
 BDC_PRICE_FETCH_MAX_PAGES=100
 BDC_PRICE_FETCH_TIMEOUT_MS=12000
+BDC_PRICING_LLM_MODEL=claude-opus-4-8
+BDC_PRICING_LLM_BATCH_SIZE=6
+BDC_PRICING_ANALYSIS_BATCH_SIZE=10
 BDC_PRICE_MAX_AGE_DAYS=1095
 BDC_PRICE_ANNUAL_INFLATION_PCT=0
 BDC_PRICING_CONCURRENCY=1
@@ -94,6 +105,8 @@ group by source_type, verified;
 
 - `recherche_web_indisponible` : vérifier uniquement la présence de la clé et l'allowlist, sans afficher la clé.
 - `budget_recherche_marche_atteint` : la ligne a conservé les preuves déjà trouvées; augmenter les budgets seulement après revue de charge.
+- `estimation_ia_partielle` : le LLM n'a pas rendu un coût positif pour toutes les lignes; le run échoue au lieu d'insérer des zéros.
+- `chiffrage_incomplet_interdit` : garde-fou final déclenché par un coût nul, un prix nul ou une marge sous le minimum.
 - confiance faible : saisir ou valider une source; ne pas transformer un prix sans preuve en apprentissage vérifié.
 - run bloqué : redémarrer le worker. L'idempotence reprend la même exécution sans écraser une saisie manuelle.
 

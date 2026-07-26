@@ -23,7 +23,11 @@ import { z } from 'zod';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
 import { BrainModule } from '../brain/brain.module';
-import { LLM_CLIENT, type LlmClient } from '../brain/llm.client';
+import {
+  createBdcPricingLlmClientFromEnv,
+  LLM_CLIENT,
+  type LlmClient,
+} from '../brain/llm.client';
 import { appliquerPropositions, proposerPrixPourLignes } from './bdc-pricing.domain';
 import { BdcCrawler } from './bdc.crawler';
 import { BdcSyncService } from './bdc.sync';
@@ -64,6 +68,7 @@ import {
 const MARCHES_ROLES = ['direction', 'marches', 'admin-si'] as const;
 const BDC_QUEUE_NAME = 'bdc';
 const BDC_QUEUE = Symbol('BDC_QUEUE');
+const BDC_PRICING_LLM_CLIENT = Symbol('BDC_PRICING_LLM_CLIENT');
 
 function redisConnection() {
   const url = new URL(process.env.REDIS_URL ?? 'redis://127.0.0.1:6380');
@@ -362,15 +367,37 @@ const bdcPricingRepositoryProvider = {
   },
 };
 
+const bdcPricingLlmProvider = {
+  provide: BDC_PRICING_LLM_CLIENT,
+  inject: [LLM_CLIENT],
+  useFactory: (fallback: LlmClient | null): LlmClient | null => {
+    const dedicated = createBdcPricingLlmClientFromEnv();
+    if (dedicated) {
+      new Logger('BdcModule').log(
+        `BDC pricing LLM active: ${
+          process.env.BDC_PRICING_LLM_MODEL ??
+          process.env.EXPERT_LLM_MODEL ??
+          process.env.LLM_MODEL_T3
+        }`,
+      );
+      return dedicated;
+    }
+    new Logger('BdcModule').warn(
+      'BDC pricing LLM dedicated route unavailable — using the default client',
+    );
+    return fallback;
+  },
+};
+
 const bdcLineAnalyzerProvider = {
   provide: BdcLineAnalyzer,
-  inject: [LLM_CLIENT],
+  inject: [BDC_PRICING_LLM_CLIENT],
   useFactory: (llm: LlmClient | null) => new BdcLineAnalyzer(llm),
 };
 
 const bdcAiEstimatorProvider = {
   provide: BdcAiEstimator,
-  inject: [LLM_CLIENT],
+  inject: [BDC_PRICING_LLM_CLIENT],
   useFactory: (llm: LlmClient | null) => new BdcAiEstimator(llm),
 };
 
@@ -446,6 +473,7 @@ const bdcPricingLearningProvider = {
     BdcSyncService,
     bdcQueueProvider,
     bdcPricingRepositoryProvider,
+    bdcPricingLlmProvider,
     bdcLineAnalyzerProvider,
     bdcAiEstimatorProvider,
     bdcInternalEvidenceProvider,
