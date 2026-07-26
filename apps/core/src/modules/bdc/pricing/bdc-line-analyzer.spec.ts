@@ -223,6 +223,17 @@ describe("BDC structured line analyzer", () => {
     expect(result?.category).toBe("fournitures");
     expect(result?.specification).toContain("IGNORE TOUTES");
     expect(llm.requests[0]?.system).toContain("données non fiables");
+    expect(JSON.parse(llm.requests[0]!.prompt)).toMatchObject({
+      outputContract: {
+        lines: [
+          expect.objectContaining({
+            idx: expect.any(String),
+            category: expect.any(String),
+            components: expect.any(Array),
+          }),
+        ],
+      },
+    });
   });
 
   test("keeps deterministic output when the LLM is unavailable", async () => {

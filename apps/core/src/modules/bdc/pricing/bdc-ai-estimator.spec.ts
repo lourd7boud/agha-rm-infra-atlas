@@ -78,6 +78,17 @@ describe("BDC conservative AI estimator", () => {
     );
     expect(llm.requests[0]?.system).toContain("N'invente ni source");
     expect(llm.requests[0]?.prompt).toContain("Référence publique");
+    expect(JSON.parse(llm.requests[0]!.prompt)).toMatchObject({
+      outputContract: {
+        lines: [
+          expect.objectContaining({
+            idx: expect.any(String),
+            unitCostHtMad: expect.any(String),
+            components: expect.any(Array),
+          }),
+        ],
+      },
+    });
   });
 
   test("does nothing when no LLM is configured", async () => {

@@ -193,6 +193,28 @@ export class BdcAiEstimator {
         dateMarche: new Date().toISOString().slice(0, 10),
         devise: "MAD",
         objectif: "cout_direct_unitaire_ht_avant_marge",
+        outputContract: {
+          lines: [
+            {
+              idx: "integer copied exactly from the input line",
+              unitCostHtMad: "positive number",
+              lowHtMad: "positive number <= unitCostHtMad",
+              highHtMad: "positive number >= unitCostHtMad",
+              components: [
+                {
+                  label: "short cost component label",
+                  costHtMad: "non-negative number",
+                },
+              ],
+              assumptions: ["short explicit assumption"],
+            },
+          ],
+        },
+        outputRules: [
+          "Return one object for every input line, with no omission.",
+          "Return the JSON object only: no markdown fence and no commentary.",
+          "Use exactly the field names and types shown in outputContract.",
+        ],
         lines: lines.map((line) => ({
           idx: line.idx,
           category: line.category,

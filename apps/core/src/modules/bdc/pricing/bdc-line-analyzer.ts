@@ -340,6 +340,30 @@ export class BdcLineAnalyzer {
               nature: input.nature,
               location: input.location,
             },
+            outputContract: {
+              lines: [
+                {
+                  idx: "integer copied exactly from the input line",
+                  category: "travaux | fournitures | services",
+                  subcategory: "non-empty string",
+                  unit: "non-empty unit string",
+                  components: [
+                    {
+                      designation: "component name",
+                      quantityFactor: "positive number",
+                      unit: "non-empty unit string",
+                    },
+                  ],
+                  assumptions: ["short explicit assumption"],
+                  blockers: ["blocking missing fact, or an empty array"],
+                },
+              ],
+            },
+            outputRules: [
+              "Return one object for every input line, with no omission.",
+              "Return the JSON object only: no markdown fence and no commentary.",
+              "Use exactly the field names and types shown in outputContract.",
+            ],
             lines: chunk.map((line) => ({
               idx: line.idx,
               designation: line.designation,

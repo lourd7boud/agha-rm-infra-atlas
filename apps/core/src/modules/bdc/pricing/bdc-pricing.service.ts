@@ -3,6 +3,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import type { Queue } from "bullmq";
@@ -67,6 +68,8 @@ const ESTIMATOR_DEFAULTS = {
 
 @Injectable()
 export class BdcPricingService {
+  private readonly logger = new Logger(BdcPricingService.name);
+
   constructor(
     @Inject(BDC_REPOSITORY)
     private readonly bdcRepository: BdcRepository,
@@ -227,7 +230,12 @@ export class BdcPricingService {
           for (const [idx, estimate] of aiEstimates) {
             if (estimate.unitCostHtMad > 0) estimates.set(idx, estimate);
           }
-        } catch {
+        } catch (error) {
+          this.logger.warn(
+            `BDC AI estimation unavailable for run ${runId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
           warnings.push("estimation_ia_indisponible");
         }
         const remaining = unresolved.filter(
