@@ -194,6 +194,45 @@ describe("Moroccan web price evidence", () => {
     expect(result[0]?.snapshotHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  test("normalizes a priced litre package for downstream comparison", async () => {
+    const adapter = new MoroccanWebPriceAdapter(
+      {
+        search: async () => [
+          {
+            title: "Acétone 99% 5L",
+            url: "https://bricoma.ma/acetone-5l",
+            description: "",
+          },
+        ],
+      },
+      {
+        fetch: async (url) => ({
+          url,
+          html: `
+            <script type="application/ld+json">
+              {"@type":"Product","name":"Acétone 99% 5L","offers":{"price":"184","priceCurrency":"MAD"}}
+            </script>
+            <p>Bidon de 5 litres</p>
+          `,
+          snapshotHash: "c".repeat(64),
+          fetchedAt: new Date("2026-07-26T00:00:00.000Z"),
+        }),
+      },
+    );
+
+    const result = await adapter.search({
+      line: { ...line, designation: "Acétone", unit: "l" },
+      excludeAvisId: null,
+      limit: 10,
+    });
+
+    expect(result[0]).toMatchObject({
+      unit: "pack",
+      unitPriceHtMad: 184,
+      metadata: { packageQuantity: 5, packageUnit: "l" },
+    });
+  });
+
   test("never accepts a search snippet without a fetched landing-page price", async () => {
     const adapter = new MoroccanWebPriceAdapter(
       { search: async () => [{ title: "Snippet", url: "https://bricoma.ma/no-price", description: "999 DH" }] },
@@ -226,6 +265,36 @@ describe("Moroccan web price evidence", () => {
     const result = await adapter.search({ line, excludeAvisId: null, limit: 10 });
     expect(result).toHaveLength(1);
     expect(result[0]?.unitPriceHtMad).toBe(450);
+  });
+
+  test("does not spend the fetch budget on rejected search hits", async () => {
+    const adapter = new MoroccanWebPriceAdapter(
+      {
+        search: async () => [
+          { title: "Rejected", url: "https://evil.example/item", description: "" },
+          { title: "Allowed", url: "https://bricoma.ma/good", description: "" },
+        ],
+      },
+      {
+        fetch: async (url) => {
+          if (url.includes("evil.example")) throw new Error("not allowlisted");
+          return {
+            url,
+            html: "<p>Prix HT: 450 DH</p>",
+            snapshotHash: "d".repeat(64),
+            fetchedAt: new Date("2026-07-26T00:00:00.000Z"),
+          };
+        },
+      },
+      { maxPagesPerSearch: 1 },
+    );
+
+    const result = await adapter.search({
+      line,
+      excludeAvisId: null,
+      limit: 10,
+    });
+    expect(result).toHaveLength(1);
   });
 
   test("caps fetched landing pages independently from search-result volume", async () => {

@@ -231,13 +231,19 @@ describe("BDC structured line analyzer", () => {
   test("uses the notice nature when a portal article has no line text", async () => {
     const analyzer = new BdcLineAnalyzer(null);
     const [result] = await analyzer.analyzeLines({
-      articles: [article(1, "", "", "F", 1)],
+      articles: [
+        {
+          ...article(1, "", "", "F", 1),
+          garanties: "Laboratoire qualifié EL2 avec rapport signé",
+        },
+      ],
       bdcCategory: "Services",
       nature: "Contrôle et expertise techniques",
       location: "Skhirate-Témara",
     });
 
     expect(result?.designation).toBe("Contrôle et expertise techniques");
+    expect(result?.specification).toContain("qualifié EL2");
     expect(result?.category).toBe("services");
   });
 });

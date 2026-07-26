@@ -231,7 +231,7 @@ function deterministicLine(
   const normalizedUnit = normalizeUnit(rawUnit);
   const unit = normalizedUnit === "unknown" ? rawUnit.trim().toLowerCase() || "unknown" : normalizedUnit;
   const quantity = article.quantite && article.quantite > 0 ? article.quantite : 0;
-  const text = `${article.designation} ${article.caracteristiques}`;
+  const text = `${article.designation} ${article.caracteristiques} ${article.garanties ?? ""}`;
   const components =
     category === "travaux"
       ? worksComponents(text)
@@ -250,7 +250,10 @@ function deterministicLine(
       article.designation.trim() ||
       article.caracteristiques.trim() ||
       fallbackDesignation.trim(),
-    specification: article.caracteristiques.trim(),
+    specification: [article.caracteristiques, article.garanties]
+      .map((value) => value?.trim() ?? "")
+      .filter(Boolean)
+      .join("\n"),
     quantity,
     unit,
     region: location,

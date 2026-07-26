@@ -306,19 +306,37 @@ function extractPrice(html: string, fallbackDesignation: string): ExtractedPrice
   const visiblePrice = visible?.[1] ? parseMoney(visible[1]) : null;
   const price = jsonLd?.price ?? visiblePrice;
   if (!price) return null;
-  const packageMatch = text.match(
-    /(?:pack|lot|bo[iî]te|seau|carton)?\s*(?:de|x)\s*(\d+(?:[,.]\d+)?)\s*(unit[eé]s?|u|pi[eè]ces?)?/i,
-  );
+  const packageMatch =
+    text.match(
+      /\b(?:pack|lot|bo[iî]te|seau|carton|bidon)\s*(?:de|x)?\s*(\d+(?:[,.]\d+)?)\s*(kg|kilogrammes?|l|litres?|unit[eé]s?|u|pi[eè]ces?)\b/i,
+    ) ??
+    text.match(
+      /\b(\d+(?:[,.]\d+)?)\s*(kg|kilogrammes?|l|litres?|unit[eé]s?|pi[eè]ces?)\b/i,
+    );
   const packageQuantity = packageMatch?.[1] ? parseMoney(packageMatch[1]) : null;
+  const packageUnit = packageMatch?.[2]
+    ? canonicalPackageUnit(packageMatch[2])
+    : null;
 
   return {
     designation: jsonLd?.name || fallbackDesignation,
     price,
     taxBasis: /\bTTC\b/i.test(text) ? "TTC" : /\bHT\b/i.test(text) ? "HT" : "unknown",
     packageQuantity,
-    packageUnit: packageQuantity ? "u" : null,
+    packageUnit,
     extractionMethod: jsonLd ? "json_ld_offer" : "visible_mad_price",
   };
+}
+
+function canonicalPackageUnit(raw: string): string | null {
+  const value = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  if (/^(kg|kilogramme)/.test(value)) return "kg";
+  if (/^(l|litre)/.test(value)) return "l";
+  if (/^(u|unite|piece)/.test(value)) return "u";
+  return null;
 }
 
 function compactSearchWords(value: string, limit: number): string[] {
@@ -332,11 +350,23 @@ function compactSearchWords(value: string, limit: number): string[] {
 }
 
 function buildMoroccanPriceQuery(line: NormalizedLine): string {
+  const fold = (value: string) =>
+    value
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  const foldedDesignation = fold(line.designation);
+  const foldedSpecification = fold(line.specification);
   const designation = compactSearchWords(
     line.designation || line.subcategory,
     20,
   );
-  const specification = compactSearchWords(line.specification, 20);
+  const specification = compactSearchWords(
+    foldedSpecification === foldedDesignation ? "" : line.specification,
+    20,
+  );
   const region = compactSearchWords(line.region?.split(",")[0] ?? "", 5);
   const suffix = ["prix", "Maroc", "MAD"];
   const render = () =>
@@ -370,9 +400,12 @@ export class MoroccanWebPriceAdapter implements PriceEvidenceAdapter {
       1,
       Math.min(limit, this.options.maxPagesPerSearch ?? limit),
     );
-    for (const hit of hits.slice(0, maxPages)) {
+    let fetchedPages = 0;
+    for (const hit of hits) {
+      if (fetchedPages >= maxPages) break;
       try {
         const page = await this.pageFetcher.fetch(hit.url);
+        fetchedPages += 1;
         const extracted = extractPrice(page.html, query.line.designation);
         if (!extracted) continue;
         const packageMetadata = extracted.packageQuantity
