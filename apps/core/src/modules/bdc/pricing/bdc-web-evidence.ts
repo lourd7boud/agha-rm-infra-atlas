@@ -367,31 +367,49 @@ function compactSearchWords(value: string, limit: number): string[] {
 }
 
 function buildMoroccanPriceQuery(line: NormalizedLine): string {
-  const fold = (value: string) =>
-    value
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .toLowerCase();
-  const foldedDesignation = fold(line.designation);
-  const foldedSpecification = fold(line.specification);
+  const cleanedDesignation = line.designation
+    .replace(
+      /,?\s*(?:identique\s+[àa]\s+l['’]existant|ou\s+[ée]quivalent).*$/i,
+      "",
+    )
+    .trim();
   const designation = compactSearchWords(
-    line.designation || line.subcategory,
+    cleanedDesignation || line.subcategory,
     20,
   );
-  const specification = compactSearchWords(
-    foldedSpecification === foldedDesignation ? "" : line.specification,
-    20,
-  );
+  const packageQuantity = line.attributes?.packageQuantity;
+  const packageUnit = line.attributes?.packageUnit;
+  const packageWords =
+    (typeof packageQuantity === "number" ||
+      typeof packageQuantity === "string") &&
+    typeof packageUnit === "string"
+      ? compactSearchWords(`${packageQuantity} ${packageUnit}`, 3)
+      : [];
+  const specification = /^(article|prestation|fourniture|travaux|service)\b/i.test(
+    cleanedDesignation,
+  )
+    ? compactSearchWords(line.specification, 12)
+    : [];
   const region = compactSearchWords(line.region?.split(",")[0] ?? "", 5);
   const suffix = ["prix", "Maroc", "MAD"];
   const render = () =>
-    [...designation, ...specification, ...region, ...suffix].join(" ");
+    [
+      ...designation,
+      ...packageWords,
+      ...specification,
+      ...region,
+      ...suffix,
+    ].join(" ");
 
   while (
     (render().length > 400 ||
-      [...designation, ...specification, ...region, ...suffix].length > 50) &&
+      [
+        ...designation,
+        ...packageWords,
+        ...specification,
+        ...region,
+        ...suffix,
+      ].length > 50) &&
     specification.length > 0
   ) {
     specification.pop();

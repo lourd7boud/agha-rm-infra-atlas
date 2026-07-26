@@ -154,6 +154,34 @@ describe("Moroccan web price evidence", () => {
     expect(requestedQuery).toContain("prix Maroc MAD");
   });
 
+  test("searches with normalized buying attributes instead of noisy specifications", async () => {
+    let requestedQuery = "";
+    const adapter = new MoroccanWebPriceAdapter(
+      {
+        search: async (query) => {
+          requestedQuery = query;
+          return [];
+        },
+      },
+      { fetch: async () => { throw new Error("not reached"); } },
+    );
+
+    await adapter.search({
+      line: {
+        ...line,
+        designation: "Acétone",
+        specification: "Formule brute et longue fiche technique pKa 20",
+        unit: "l",
+        attributes: { packageQuantity: 25, packageUnit: "l" },
+      },
+      excludeAvisId: null,
+      limit: 10,
+    });
+
+    expect(requestedQuery).toContain("Acétone 25 l");
+    expect(requestedQuery).not.toContain("pKa");
+  });
+
   test("extracts JSON-LD and visible Moroccan prices with audit metadata", async () => {
     const html = `
       <html><body>
