@@ -101,7 +101,7 @@ describe("safe price page fetcher", () => {
 
 describe("Brave search client", () => {
   test("uses the official endpoint and server-side subscription header", async () => {
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
       new Response(
         JSON.stringify({ web: { results: [{ title: "Produit", url: "https://bricoma.ma/p", description: "500 DH" }] } }),
         { headers: { "content-type": "application/json" } },
@@ -117,6 +117,9 @@ describe("Brave search client", () => {
         headers: expect.objectContaining({ "X-Subscription-Token": "secret" }),
       }),
     );
+    const requestedUrl = new URL(String(fetchImpl.mock.calls[0]?.[0]));
+    expect(requestedUrl.searchParams.get("country")).toBe("ALL");
+    expect(requestedUrl.searchParams.get("search_lang")).toBe("fr");
   });
 });
 

@@ -6,6 +6,12 @@
 # Secrets live in platform/.env.apps (git-ignored, template alongside).
 name: atlas-apps
 
+x-json-logging: &json-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   core:
     build:
@@ -25,6 +31,7 @@ services:
     # the box. cpus are ceilings, not reservations.
     cpus: 1.5
     mem_limit: 512m
+    logging: *json-logging
     healthcheck:
       test:
         [
@@ -70,6 +77,7 @@ services:
     # cap it at one core so the API always keeps a core for HTTP.
     cpus: 1.0
     mem_limit: 640m
+    logging: *json-logging
     healthcheck:
       test:
         [
@@ -97,6 +105,7 @@ services:
       NODE_ENV: production
     cpus: 1.0
     mem_limit: 384m
+    logging: *json-logging
     healthcheck:
       test:
         [

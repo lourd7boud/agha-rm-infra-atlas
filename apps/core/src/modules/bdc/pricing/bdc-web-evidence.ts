@@ -48,7 +48,10 @@ export class BraveSearchClient implements WebSearchClient {
     const url = new URL("https://api.search.brave.com/res/v1/web/search");
     url.searchParams.set("q", query);
     url.searchParams.set("count", "10");
-    url.searchParams.set("country", "MA");
+    // Brave does not expose Morocco as a supported country filter. Keep the
+    // Moroccan intent in the query and source allowlist while using its
+    // documented global search scope.
+    url.searchParams.set("country", "ALL");
     url.searchParams.set("search_lang", "fr");
     const response = await this.fetchImpl(url.toString(), {
       method: "GET",

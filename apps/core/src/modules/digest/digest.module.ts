@@ -141,7 +141,19 @@ export class DigestModule implements OnModuleInit, OnModuleDestroy {
     this.worker.on('failed', (job, error) =>
       this.logger.error(`digest job ${job?.id} failed: ${error.message}`),
     );
-    await this.queue.upsertJobScheduler('digest-schedule', { pattern: cron });
+    await this.queue.upsertJobScheduler(
+      'digest-schedule',
+      { pattern: cron },
+      {
+        opts: {
+          // Dispatch results can contain a fully rendered brief. Keeping a
+          // single successful result preserves diagnostics without allowing
+          // daily payloads to exhaust Redis.
+          removeOnComplete: 1,
+          removeOnFail: 10,
+        },
+      },
+    );
     this.logger.log(`Morning brief scheduled: ${cron}`);
   }
 
