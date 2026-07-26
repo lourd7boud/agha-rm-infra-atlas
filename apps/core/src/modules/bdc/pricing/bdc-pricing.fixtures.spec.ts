@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import type { BdcRepository, ReponseRecord } from "../bdc.repository";
 import type { LigneReponse } from "../bdc-pricing.domain";
 import type { PriceEvidenceAdapter } from "./bdc-evidence.types";
+import { BdcAiEstimator } from "./bdc-ai-estimator";
 import { BdcLineAnalyzer } from "./bdc-line-analyzer";
 import { InMemoryBdcPricingRepository } from "./bdc-pricing.repository";
 import { BdcPricingService } from "./bdc-pricing.service";
@@ -146,6 +147,7 @@ function setup(fixture: Fixture) {
     repository,
     pricingRepository,
     analyzer,
+    new BdcAiEstimator(null),
     evidence,
     { search: async () => [] },
     queue,

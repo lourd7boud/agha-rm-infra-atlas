@@ -34,6 +34,7 @@ import {
   type BdcRepository,
 } from './bdc.repository';
 import type { PriceEvidenceAdapter } from './pricing/bdc-evidence.types';
+import { BdcAiEstimator } from './pricing/bdc-ai-estimator';
 import { BdcInternalEvidenceAdapter } from './pricing/bdc-internal-evidence';
 import { BdcLineAnalyzer } from './pricing/bdc-line-analyzer';
 import { BdcPricingController } from './pricing/bdc-pricing.controller';
@@ -367,6 +368,12 @@ const bdcLineAnalyzerProvider = {
   useFactory: (llm: LlmClient | null) => new BdcLineAnalyzer(llm),
 };
 
+const bdcAiEstimatorProvider = {
+  provide: BdcAiEstimator,
+  inject: [LLM_CLIENT],
+  useFactory: (llm: LlmClient | null) => new BdcAiEstimator(llm),
+};
+
 const bdcInternalEvidenceProvider = {
   provide: BDC_INTERNAL_EVIDENCE,
   inject: [BDC_REPOSITORY],
@@ -440,6 +447,7 @@ const bdcPricingLearningProvider = {
     bdcQueueProvider,
     bdcPricingRepositoryProvider,
     bdcLineAnalyzerProvider,
+    bdcAiEstimatorProvider,
     bdcInternalEvidenceProvider,
     bdcWebEvidenceProvider,
     bdcPricingNormalizationProvider,

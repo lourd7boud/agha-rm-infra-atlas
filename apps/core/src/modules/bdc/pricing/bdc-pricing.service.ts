@@ -38,6 +38,7 @@ import type {
   PricingRunView,
   PricingStage,
 } from "./bdc-pricing.types";
+import { BdcAiEstimator } from "./bdc-ai-estimator";
 import { estimateWorksCost } from "./bdc-works.estimator";
 
 export const BDC_PRICING_QUEUE = Symbol("BDC_PRICING_QUEUE");
@@ -73,6 +74,8 @@ export class BdcPricingService {
     private readonly pricingRepository: BdcPricingRepository,
     @Inject(BdcLineAnalyzer)
     private readonly analyzer: BdcLineAnalyzer,
+    @Inject(BdcAiEstimator)
+    private readonly aiEstimator: BdcAiEstimator,
     @Inject(BDC_INTERNAL_EVIDENCE)
     private readonly internalEvidence: PriceEvidenceAdapter,
     @Inject(BDC_WEB_EVIDENCE)
@@ -188,13 +191,47 @@ export class BdcPricingService {
       }
 
       await this.stage(runId, "estimation", 70, warnings);
-      const decisions = lines.map((line) => {
+      const estimates = new Map<number, CostEstimate>();
+      for (const line of lines) {
         const observationsForLine = normalizedByLine.get(line.idx) ?? [];
         const rateCard = this.buildRateCard(
           initial.calibrationVersion,
           observationsForLine,
         );
-        const estimate = this.estimate(line, observationsForLine, rateCard);
+        estimates.set(
+          line.idx,
+          this.estimate(line, observationsForLine, rateCard),
+        );
+      }
+      const unresolved = lines.filter(
+        (line) =>
+          (estimates.get(line.idx)?.unitCostHtMad ?? 0) <= 0 &&
+          !response.lignes.some(
+            (responseLine) =>
+              responseLine.idx === line.idx && responseLine.prixUnitaireHt > 0,
+          ),
+      );
+      if (unresolved.length > 0) {
+        try {
+          const aiEstimates = await this.aiEstimator.estimate(unresolved);
+          for (const [idx, estimate] of aiEstimates) {
+            if (estimate.unitCostHtMad > 0) estimates.set(idx, estimate);
+          }
+        } catch {
+          warnings.push("estimation_ia_indisponible");
+        }
+      }
+
+      const decisions = lines.map((line) => {
+        const observationsForLine = normalizedByLine.get(line.idx) ?? [];
+        const estimate = estimates.get(line.idx) ?? {
+          category: line.category,
+          unitCostHtMad: 0,
+          lowHtMad: 0,
+          highHtMad: 0,
+          assumptions: ["cout_introuvable"],
+          components: [],
+        };
         const responseLine = response.lignes.find((item) => item.idx === line.idx);
         return decideLinePrice({
           line,

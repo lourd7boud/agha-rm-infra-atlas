@@ -124,6 +124,36 @@ describe("Brave search client", () => {
 });
 
 describe("Moroccan web price evidence", () => {
+  test("keeps Brave queries within its character and word limits", async () => {
+    let requestedQuery = "";
+    const adapter = new MoroccanWebPriceAdapter(
+      {
+        search: async (query) => {
+          requestedQuery = query;
+          return [];
+        },
+      },
+      { fetch: async () => { throw new Error("not reached"); } },
+    );
+
+    await adapter.search({
+      line: {
+        ...line,
+        specification: Array.from(
+          { length: 100 },
+          (_, index) => `caractéristique-${index}`,
+        ).join(" "),
+        region: "EL-HAJEB, BENI MELLAL, AZILAL, CASABLANCA",
+      },
+      excludeAvisId: null,
+      limit: 10,
+    });
+
+    expect(requestedQuery.length).toBeLessThanOrEqual(400);
+    expect(requestedQuery.split(/\s+/).length).toBeLessThanOrEqual(50);
+    expect(requestedQuery).toContain("prix Maroc MAD");
+  });
+
   test("extracts JSON-LD and visible Moroccan prices with audit metadata", async () => {
     const html = `
       <html><body>

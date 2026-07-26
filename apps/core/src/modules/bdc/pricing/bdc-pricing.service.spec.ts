@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { Queue } from "bullmq";
 import type { BdcRepository } from "../bdc.repository";
+import { BdcAiEstimator } from "./bdc-ai-estimator";
 import type { PriceEvidenceAdapter } from "./bdc-evidence.types";
 import { BdcLineAnalyzer } from "./bdc-line-analyzer";
 import {
@@ -8,7 +9,11 @@ import {
   type PricingRunPatch,
 } from "./bdc-pricing.repository";
 import { BdcPricingService } from "./bdc-pricing.service";
-import type { PriceObservation, PricingStage } from "./bdc-pricing.types";
+import type {
+  NormalizedLine,
+  PriceObservation,
+  PricingStage,
+} from "./bdc-pricing.types";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -34,6 +39,7 @@ function setup(options: {
   internal?: PriceEvidenceAdapter;
   web?: PriceEvidenceAdapter;
   analyzer?: BdcLineAnalyzer;
+  aiEstimator?: BdcAiEstimator;
 } = {}) {
   const articles = [
     {
@@ -146,6 +152,7 @@ function setup(options: {
     bdcRepository,
     pricingRepository,
     options.analyzer ?? new BdcLineAnalyzer(null),
+    options.aiEstimator ?? new BdcAiEstimator(null),
     internal,
     web,
     queue,
@@ -245,6 +252,49 @@ describe("BDC pricing orchestration", () => {
     const completed = await service.run(queued.id);
     expect(web.search).toHaveBeenCalledOnce();
     expect(completed.warnings).toContain("budget_recherche_marche_atteint");
+  });
+
+  test("uses a conservative AI cost only when market evidence is absent", async () => {
+    const aiEstimator = {
+      estimate: vi.fn(async (lines: NormalizedLine[]) =>
+        new Map(
+          lines.map((line) => [
+            line.idx,
+            {
+              category: line.category,
+              unitCostHtMad: 1_000,
+              lowHtMad: 900,
+              highHtMad: 1_200,
+              assumptions: ["ia:estimation_conservative_sans_preuve_verifiee"],
+              components: [
+                { label: "cout_direct", costHtMad: 1_000, sourceIds: [] },
+              ],
+            },
+          ]),
+        ),
+      ),
+    } as unknown as BdcAiEstimator;
+    const noEvidence = { search: async () => [] };
+    const { service } = setup({
+      internal: noEvidence,
+      web: noEvidence,
+      aiEstimator,
+    });
+    const queued = await service.createRun("avis-1", {
+      idempotencyKey: "ai-fallback",
+      requestedMarkupPct: 15,
+      actorId: "user-1",
+    });
+    const completed = await service.run(queued.id);
+
+    expect(aiEstimator.estimate).toHaveBeenCalled();
+    expect(completed.decisions[1]).toMatchObject({
+      estimatedCostHt: 1_000,
+      proposedUnitPriceHt: 1_150,
+      markupPct: 15,
+      method: "ia_conservative",
+      confidence: "faible",
+    });
   });
 
   test("cancels before work and does not execute the analyzer", async () => {

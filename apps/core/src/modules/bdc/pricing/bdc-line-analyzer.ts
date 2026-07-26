@@ -224,6 +224,7 @@ function deterministicLine(
   idx: number,
   headerCategory: PricingCategory,
   location: string | null,
+  fallbackDesignation: string,
 ): NormalizedLine {
   const category = categoryForArticle(article, headerCategory);
   const rawUnit = article.unite ?? "";
@@ -245,7 +246,10 @@ function deterministicLine(
     idx,
     category,
     subcategory: deterministicSubcategory(category, text),
-    designation: article.designation.trim(),
+    designation:
+      article.designation.trim() ||
+      article.caracteristiques.trim() ||
+      fallbackDesignation.trim(),
     specification: article.caracteristiques.trim(),
     quantity,
     unit,
@@ -278,7 +282,13 @@ export class BdcLineAnalyzer {
       `${input.bdcCategory ?? ""} ${input.nature ?? ""}`,
     );
     const lines = input.articles.map((item, idx) =>
-      deterministicLine(item, idx, headerCategory, input.location),
+      deterministicLine(
+        item,
+        idx,
+        headerCategory,
+        input.location,
+        input.nature ?? input.bdcCategory ?? "",
+      ),
     );
     if (!this.llm) {
       return lines.map((line) => ({

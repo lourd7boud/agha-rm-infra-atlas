@@ -227,4 +227,17 @@ describe("BDC structured line analyzer", () => {
     });
     expect(result?.blockers).toContain("quantite_invalide");
   });
+
+  test("uses the notice nature when a portal article has no line text", async () => {
+    const analyzer = new BdcLineAnalyzer(null);
+    const [result] = await analyzer.analyzeLines({
+      articles: [article(1, "", "", "F", 1)],
+      bdcCategory: "Services",
+      nature: "Contrôle et expertise techniques",
+      location: "Skhirate-Témara",
+    });
+
+    expect(result?.designation).toBe("Contrôle et expertise techniques");
+    expect(result?.category).toBe("services");
+  });
 });

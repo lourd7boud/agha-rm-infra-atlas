@@ -3,7 +3,10 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { load } from "cheerio";
 import type { PriceEvidenceAdapter, PriceEvidenceQuery } from "./bdc-evidence.types";
-import type { PriceObservation } from "./bdc-pricing.types";
+import type {
+  NormalizedLine,
+  PriceObservation,
+} from "./bdc-pricing.types";
 
 export interface SearchHit {
   title: string;
@@ -318,6 +321,39 @@ function extractPrice(html: string, fallbackDesignation: string): ExtractedPrice
   };
 }
 
+function compactSearchWords(value: string, limit: number): string[] {
+  return value
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((word) => word.slice(0, 120));
+}
+
+function buildMoroccanPriceQuery(line: NormalizedLine): string {
+  const designation = compactSearchWords(
+    line.designation || line.subcategory,
+    20,
+  );
+  const specification = compactSearchWords(line.specification, 20);
+  const region = compactSearchWords(line.region?.split(",")[0] ?? "", 5);
+  const suffix = ["prix", "Maroc", "MAD"];
+  const render = () =>
+    [...designation, ...specification, ...region, ...suffix].join(" ");
+
+  while (
+    (render().length > 400 ||
+      [...designation, ...specification, ...region, ...suffix].length > 50) &&
+    specification.length > 0
+  ) {
+    specification.pop();
+  }
+  while (render().length > 400 && region.length > 0) region.pop();
+  while (render().length > 400 && designation.length > 3) designation.pop();
+  return render().slice(0, 400);
+}
+
 export class MoroccanWebPriceAdapter implements PriceEvidenceAdapter {
   constructor(
     private readonly searchClient: WebSearchClient,
@@ -327,15 +363,7 @@ export class MoroccanWebPriceAdapter implements PriceEvidenceAdapter {
 
   async search(query: PriceEvidenceQuery): Promise<PriceObservation[]> {
     const limit = Math.max(1, Math.min(30, query.limit));
-    const searchQuery = [
-      query.line.designation,
-      query.line.specification,
-      query.line.region,
-      "prix Maroc MAD",
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .slice(0, 500);
+    const searchQuery = buildMoroccanPriceQuery(query.line);
     const hits = await this.searchClient.search(searchQuery);
     const output: PriceObservation[] = [];
     const maxPages = Math.max(
