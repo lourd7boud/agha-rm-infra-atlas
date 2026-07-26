@@ -187,6 +187,11 @@ export function decideLinePrice({
   const sourceIds = accepted
     .map(({ observation }) => observation.id)
     .filter((id): id is string => Boolean(id));
+  if (estimate.assumptions.some((item) => item.startsWith("ia:"))) {
+    sourceIds.push(
+      ...estimate.components.flatMap((component) => component.sourceIds),
+    );
+  }
 
   return {
     idx: line.idx,

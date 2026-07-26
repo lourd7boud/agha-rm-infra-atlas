@@ -243,6 +243,7 @@ interface ExtractedPrice {
   designation: string;
   price: number;
   taxBasis: "HT" | "TTC" | "unknown";
+  sourceUnit: string | null;
   packageQuantity: number | null;
   packageUnit: string | null;
   extractionMethod: "json_ld_offer" | "visible_mad_price";
@@ -317,11 +318,13 @@ function extractPrice(html: string, fallbackDesignation: string): ExtractedPrice
   const packageUnit = packageMatch?.[2]
     ? canonicalPackageUnit(packageMatch[2])
     : null;
+  const sourceUnit = extractSourceUnit(text);
 
   return {
     designation: jsonLd?.name || fallbackDesignation,
     price,
     taxBasis: /\bTTC\b/i.test(text) ? "TTC" : /\bHT\b/i.test(text) ? "HT" : "unknown",
+    sourceUnit,
     packageQuantity,
     packageUnit,
     extractionMethod: jsonLd ? "json_ld_offer" : "visible_mad_price",
@@ -337,6 +340,20 @@ function canonicalPackageUnit(raw: string): string | null {
   if (/^(l|litre)/.test(value)) return "l";
   if (/^(u|unite|piece)/.test(value)) return "u";
   return null;
+}
+
+function extractSourceUnit(text: string): string | null {
+  const match = text.match(
+    /(?:MAD|DHS?|DH)\s*(?:\/\s*)?(m[²2]|m[eè]tres?\s+carr[eé]s?|ml|m[eè]tres?\s+lin[eé]aires?|kg|kilogrammes?|l|litres?|u|unit[eé]s?)(?=\s|$|[.,;:)])/i,
+  );
+  if (!match?.[1]) return null;
+  const value = match[1]
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  if (/^m[²2]|metre.*carre/.test(value)) return "m2";
+  if (/^ml|metre.*lineaire/.test(value)) return "ml";
+  return canonicalPackageUnit(value);
 }
 
 function compactSearchWords(value: string, limit: number): string[] {
@@ -417,7 +434,9 @@ export class MoroccanWebPriceAdapter implements PriceEvidenceAdapter {
         output.push({
           designation: extracted.designation,
           category: query.line.category,
-          unit: extracted.packageQuantity ? "pack" : query.line.unit,
+          unit: extracted.packageQuantity
+            ? "pack"
+            : (extracted.sourceUnit ?? query.line.unit),
           unitPriceHtMad: extracted.price,
           region: query.line.region,
           observedAt: page.fetchedAt.toISOString(),

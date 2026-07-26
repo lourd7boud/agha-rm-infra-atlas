@@ -213,7 +213,10 @@ export class BdcPricingService {
       );
       if (unresolved.length > 0) {
         try {
-          const aiEstimates = await this.aiEstimator.estimate(unresolved);
+          const aiEstimates = await this.aiEstimator.estimate(
+            unresolved,
+            observations,
+          );
           for (const [idx, estimate] of aiEstimates) {
             if (estimate.unitCostHtMad > 0) estimates.set(idx, estimate);
           }
@@ -391,8 +394,19 @@ export class BdcPricingService {
     }
     for (const line of selected) {
       try {
+        const found = await adapter.search({
+          line,
+          excludeAvisId,
+          limit: 30,
+        });
         output.push(
-          ...(await adapter.search({ line, excludeAvisId, limit: 30 })),
+          ...found.map((observation) => ({
+            ...observation,
+            metadata: {
+              ...observation.metadata,
+              pricingLineIdx: line.idx,
+            },
+          })),
         );
       } catch {
         failed = true;

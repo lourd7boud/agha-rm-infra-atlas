@@ -233,6 +233,39 @@ describe("Moroccan web price evidence", () => {
     });
   });
 
+  test("captures the source unit printed after a Moroccan visible price", async () => {
+    const adapter = new MoroccanWebPriceAdapter(
+      {
+        search: async () => [
+          {
+            title: "Cloison de bureau modulaire",
+            url: "https://maroc.prix-construction.info/cloison",
+            description: "",
+          },
+        ],
+      },
+      {
+        fetch: async (url) => ({
+          url,
+          html: "<h1>Cloison modulaire</h1><p>Prix 1.836,21Dhs m²</p>",
+          snapshotHash: "e".repeat(64),
+          fetchedAt: new Date("2026-07-26T00:00:00.000Z"),
+        }),
+      },
+    );
+
+    const result = await adapter.search({
+      line: { ...line, category: "travaux", designation: "Cloison", unit: "ml" },
+      excludeAvisId: null,
+      limit: 10,
+    });
+
+    expect(result[0]).toMatchObject({
+      unit: "m2",
+      unitPriceHtMad: 1_836.21,
+    });
+  });
+
   test("never accepts a search snippet without a fetched landing-page price", async () => {
     const adapter = new MoroccanWebPriceAdapter(
       { search: async () => [{ title: "Snippet", url: "https://bricoma.ma/no-price", description: "999 DH" }] },

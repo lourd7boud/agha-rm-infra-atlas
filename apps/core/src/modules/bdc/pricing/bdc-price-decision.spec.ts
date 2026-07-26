@@ -126,6 +126,24 @@ describe("line price decision", () => {
     });
   });
 
+  test("keeps auditable source ids used by a conservative AI conversion", () => {
+    const decision = decideLinePrice({
+      line,
+      estimate: {
+        ...estimate,
+        assumptions: ["ia:estimation_conservative_sans_preuve_verifiee"],
+      },
+      evidence: [],
+      requestedMarkupPct: 15,
+      manualPriceHt: null,
+    });
+
+    expect(decision).toMatchObject({
+      method: "ia_conservative",
+      sourceIds: ["cost-1"],
+    });
+  });
+
   test("never prices below the requested margin or the 15 percent floor", () => {
     expect(
       decideLinePrice({

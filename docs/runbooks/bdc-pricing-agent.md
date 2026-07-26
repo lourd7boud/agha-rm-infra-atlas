@@ -17,6 +17,7 @@ Les variables vivent dans `/opt/atlas/platform/.env.apps`. Ne jamais journaliser
 ```dotenv
 BRAVE_SEARCH_API_KEY=
 BDC_PRICE_SOURCE_DOMAINS=bricoma.ma,marjane.ma,marjanemall.ma,electroplanet.ma,jumia.ma,maroc.prix-construction.info,lechantier.ma,moussasoft.com,educomptoir.com,mouhim.ma
+BDC_SILVER_SPOT_MAD_PER_GRAM=17.52
 BDC_PRICE_SEARCH_MAX_QUERIES=20
 BDC_PRICE_FETCH_MAX_PAGES=30
 BDC_PRICE_FETCH_TIMEOUT_MS=12000
