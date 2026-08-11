@@ -92,7 +92,7 @@ export function parseMoneyMad(text: string | null | undefined): number | null {
   if (!text) return null;
   // Drop currency words and any non [digit , . space] noise, keep separators.
   const cleaned = text
-    .replace(/ /g, ' ')
+    .replace(/[^\S\r\n\u2028\u2029]/g, ' ')
     .replace(/mad|dhs?|dirhams?|ttc|ht/gi, '')
     .trim();
   const m = /\d[\d .]*(?:,\d+)?/.exec(cleaned);
