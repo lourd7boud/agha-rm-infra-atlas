@@ -32,7 +32,7 @@
 - Create: `apps/core/src/modules/sales/sales-invoice.domain.ts`
 - Create: `apps/core/src/modules/sales/sales-invoice.domain.spec.ts`
 
-- [ ] **Step 1: Write failing money tests**
+- [x] **Step 1: Write failing money tests**
 
 Cover decimal-string-to-centime conversion, two-decimal rejection/rounding policy, addition without floating-point drift, pro-rata allocation, and residual centime assignment to the final allocation.
 
@@ -42,13 +42,13 @@ expect(formatMoneyCents(11_050)).toBe('110.50');
 expect(allocateCentsProRata(10_001, [1, 1, 1])).toEqual([3_333, 3_333, 3_335]);
 ```
 
-- [ ] **Step 2: Run the focused test and observe RED**
+- [x] **Step 2: Run the focused test and observe RED**
 
 Run: `pnpm --filter @atlas/core test -- sales-money.domain.spec.ts`
 
 Expected: failure because the domain module does not exist.
 
-- [ ] **Step 3: Implement the money boundary**
+- [x] **Step 3: Implement the money boundary**
 
 Export the following exact interface:
 
@@ -61,7 +61,7 @@ export function allocateCentsProRata(total: MoneyCents, weights: readonly MoneyC
 
 Reject non-finite, negative where the caller requires a positive value, and unsafe-integer results. Keep rounding policy explicit and deterministic.
 
-- [ ] **Step 4: Write failing invoice-state tests**
+- [x] **Step 4: Write failing invoice-state tests**
 
 Cover:
 
@@ -76,15 +76,15 @@ expect(deriveSettlement({ totalCents: 12_000, receivedCents: 5_000, creditedCent
   .toMatchObject({ state: 'partiellement_payee', outstandingCents: 7_000 });
 ```
 
-- [ ] **Step 5: Run the invoice-state test and observe RED**
+- [x] **Step 5: Run the invoice-state test and observe RED**
 
 Run: `pnpm --filter @atlas/core test -- sales-invoice.domain.spec.ts`
 
-- [ ] **Step 6: Implement invoice lifecycle and settlement derivation**
+- [x] **Step 6: Implement invoice lifecycle and settlement derivation**
 
 Export discriminated unions `InvoiceLifecycle`, `InvoiceSettlementState`, `PaymentMovementType`, and pure functions `assertInvoiceTransition`, `deriveSettlement`, and `allocateCreditNote`. Domain errors must identify the violated invariant.
 
-- [ ] **Step 7: Run focused tests and commit**
+- [x] **Step 7: Run focused tests and commit**
 
 Run:
 
