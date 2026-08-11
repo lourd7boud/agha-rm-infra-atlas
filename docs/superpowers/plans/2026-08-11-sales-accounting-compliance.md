@@ -107,7 +107,7 @@ git commit -m "feat(sales): add exact money and settlement domain"
 - Create: `apps/core/src/modules/compta/compta-reglements.domain.spec.ts`
 - Modify: `apps/core/src/modules/compta/compta-livres.domain.ts`
 
-- [ ] **Step 1: Write failing invoice-posting tests**
+- [x] **Step 1: Write failing invoice-posting tests**
 
 Assert exact centimes and account directions:
 
@@ -116,11 +116,11 @@ Assert exact centimes and account directions:
 - every posting balances exactly;
 - `non_configure` produces a typed blocking result instead of a posting.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm --filter @atlas/core test -- compta-ventes.domain.spec.ts`
 
-- [ ] **Step 3: Implement issue and credit-note builders**
+- [x] **Step 3: Implement issue and credit-note builders**
 
 Use these contracts:
 
@@ -136,7 +136,7 @@ export function buildCreditNotePosting(input: CreditNotePostingInput): PostingRe
 
 For a credit note, reverse revenue and route TVA reversal between `4455` and `4456` from the unpaid/collected allocation passed by the sales domain.
 
-- [ ] **Step 4: Write failing receipt/refund tests**
+- [x] **Step 4: Write failing receipt/refund tests**
 
 Assert:
 
@@ -145,13 +145,13 @@ Assert:
 - the last receipt receives all residual TVA centimes;
 - reversal/refund exactly negates the original movement and is separately traceable.
 
-- [ ] **Step 5: Run RED, implement, and verify balance**
+- [x] **Step 5: Run RED, implement, and verify balance**
 
 Run: `pnpm --filter @atlas/core test -- compta-reglements.domain.spec.ts`
 
 Implement `buildReceiptPosting`, `buildPaymentReversalPosting`, and `buildRefundPosting`. Reuse the existing accounting-entry balance validation rather than duplicating it.
 
-- [ ] **Step 6: Run focused tests and commit**
+- [x] **Step 6: Run focused tests and commit**
 
 ```powershell
 pnpm --filter @atlas/core test -- compta-ventes.domain.spec.ts compta-reglements.domain.spec.ts compta.domain.spec.ts

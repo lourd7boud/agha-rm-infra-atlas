@@ -2,17 +2,20 @@
 // et états de synthèse simplifiés (Bilan / CPC) agrégés depuis les lignes.
 // Le CGNC place le bilan sur les classes 1-5 et le CPC sur les classes 6-7 ;
 // le résultat de la période = produits (7) − charges (6), présenté au passif.
+import Decimal from 'decimal.js';
 import { round2, toDecimal } from './compta-fiscal.domain';
 
 export interface LigneInput {
   compteCode: string;
   libelle?: string;
-  debit: number;
-  credit: number;
+  debit: number | string;
+  credit: number | string;
   tiers?: string;
 }
 
 export class ComptaValidationError extends Error {}
+
+const MAX_COMPTA_AMOUNT = toDecimal('999999999999.99');
 
 /**
  * Règles de saisie du journal (loi 9-88 / CGNC) : au moins deux lignes, des
@@ -36,6 +39,25 @@ export function validateEcriture(lignes: readonly LigneInput[]): {
     }
     const debit = toDecimal(ligne.debit);
     const credit = toDecimal(ligne.credit);
+    if (!debit.isFinite() || !credit.isFinite()) {
+      throw new ComptaValidationError('Les montants comptables doivent être finis.');
+    }
+    if (
+      debit.absoluteValue().greaterThan(MAX_COMPTA_AMOUNT) ||
+      credit.absoluteValue().greaterThan(MAX_COMPTA_AMOUNT)
+    ) {
+      throw new ComptaValidationError(
+        'Le montant dépasse la capacité comptable NUMERIC(14,2).',
+      );
+    }
+    if (
+      !debit.equals(debit.toDecimalPlaces(2, Decimal.ROUND_HALF_UP)) ||
+      !credit.equals(credit.toDecimalPlaces(2, Decimal.ROUND_HALF_UP))
+    ) {
+      throw new ComptaValidationError(
+        'Chaque montant comptable accepte au plus deux décimales.',
+      );
+    }
     if (debit.isNegative() || credit.isNegative()) {
       throw new ComptaValidationError('Les montants négatifs sont interdits (contre-passez).');
     }
@@ -48,13 +70,15 @@ export function validateEcriture(lignes: readonly LigneInput[]): {
     totalDebit = totalDebit.plus(debit);
     totalCredit = totalCredit.plus(credit);
   }
-  const d = round2(totalDebit);
-  const c = round2(totalCredit);
-  if (d !== c) {
+  const roundedDebit = totalDebit.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  const roundedCredit = totalCredit.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  if (!roundedDebit.equals(roundedCredit)) {
     throw new ComptaValidationError(
-      `Écriture déséquilibrée : débits ${d.toFixed(2)} ≠ crédits ${c.toFixed(2)}.`,
+      `Écriture déséquilibrée : débits ${roundedDebit.toFixed(2)} ≠ crédits ${roundedCredit.toFixed(2)}.`,
     );
   }
+  const d = roundedDebit.toNumber();
+  const c = roundedCredit.toNumber();
   return { totalDebit: d, totalCredit: c };
 }
 

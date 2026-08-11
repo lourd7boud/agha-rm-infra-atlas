@@ -251,6 +251,31 @@ describe('écritures & états', () => {
     ).toThrow(ComptaValidationError);
   });
 
+  it('rejette les montants non finis et compare les grands montants au centime exact', () => {
+    expect(() =>
+      validateEcriture([
+        { compteCode: '3421', debit: 'Infinity', credit: 0 },
+        { compteCode: '7124', debit: 0, credit: 'Infinity' },
+      ]),
+    ).toThrow(ComptaValidationError);
+    expect(() =>
+      validateEcriture([
+        { compteCode: '3421', debit: '90071992547409.91', credit: 0 },
+        { compteCode: '7124', debit: 0, credit: '90071992547409.90' },
+      ]),
+    ).toThrow(ComptaValidationError);
+  });
+
+  it('rejette une précision par ligne qui serait déséquilibrée après stockage NUMERIC(14,2)', () => {
+    expect(() =>
+      validateEcriture([
+        { compteCode: '3421', debit: '0.004', credit: 0 },
+        { compteCode: '3422', debit: '0.004', credit: 0 },
+        { compteCode: '7124', debit: 0, credit: '0.008' },
+      ]),
+    ).toThrow(/deux décimales/i);
+  });
+
   it('balance + états de synthèse équilibrés', () => {
     const lignes = [
       { compteCode: '3421', debit: 12_000, credit: 0 },
