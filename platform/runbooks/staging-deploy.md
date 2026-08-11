@@ -77,6 +77,22 @@ auto-renewal. Keycloak runs with `KC_HOSTNAME=https://atlas.marocinfra.com/auth`
 and `--hostname-strict false`; the `atlas-web` and `atlas-mobile` realm
 clients carry `https://atlas.marocinfra.com/*` redirect URIs.
 
+The `atlas-web` client must also list `https://atlas.marocinfra.com/login`
+under **Valid Post Logout Redirect URIs**. ATLAS clears its Auth.js cookie and
+then uses Keycloak RP-Initiated Logout with an ID-token hint; without this
+allow-list entry Keycloak will reject the final return to the standalone login
+page.
+
+The deployment bootstrap pins `AUTH_URL=https://atlas.marocinfra.com` (or the
+explicit `ATLAS_PUBLIC_URL` HTTPS origin). Before restarting the web container,
+verify both sides match exactly:
+
+```bash
+grep '^AUTH_URL=https://atlas.marocinfra.com$' /opt/atlas/platform/.env.apps
+# Keycloak atlas-web -> Valid Post Logout Redirect URIs:
+# https://atlas.marocinfra.com/login
+```
+
 ## Operations
 
 | Task | Command |

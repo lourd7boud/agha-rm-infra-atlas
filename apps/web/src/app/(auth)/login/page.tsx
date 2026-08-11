@@ -5,6 +5,7 @@ import { ArmiLogo } from '@/components/brand/ArmiLogo';
 import { AtlasMark } from '@/components/brand/AtlasMark';
 import { Icon } from '@/components/ui/Icon';
 import { TopoBackground } from '@/components/ui/TopoBackground';
+import { isUsableSession } from '@/lib/auth-session';
 
 const STATS = [
   { value: '481', label: 'marchés suivis' },
@@ -18,13 +19,7 @@ export default async function LoginPage() {
   // (user present but the access token is gone / refresh failed) must render the
   // login screen to re-authenticate — otherwise /login ⇄ / loops forever
   // (apiGet redirects back here on a dead token) → ERR_TOO_MANY_REDIRECTS.
-  if (
-    session?.user &&
-    session.accessToken &&
-    session.error !== 'RefreshAccessTokenError'
-  ) {
-    redirect('/');
-  }
+  if (isUsableSession(session)) redirect('/');
 
   return (
     <div className="grid min-h-screen lg:grid-cols-[1.05fr_0.95fr]">

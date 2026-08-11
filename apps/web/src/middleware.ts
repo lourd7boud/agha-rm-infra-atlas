@@ -7,6 +7,6 @@ export const config = {
   // marketplace catalogue images (apps/web/public/lf) — public static assets, so
   // they serve without an auth round-trip like brand/ and issuers/.
   matcher: [
-    '/((?!api/auth|api/public|login|issuers/|lf/|_next/static|_next/image|favicon.ico|icon.svg|brand/).*)',
+    '/((?!api/auth(?:/|$)|api/public(?:/|$)|login(?:/|$)|issuers(?:/|$)|lf(?:/|$)|_next/static(?:/|$)|_next/image(?:/|$)|favicon\.ico$|icon\.svg$|brand(?:/|$)).*)',
   ],
 };

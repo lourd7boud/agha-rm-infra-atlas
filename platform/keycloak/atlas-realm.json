@@ -23,7 +23,10 @@
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
       "redirectUris": ["http://localhost:3001/*"],
-      "webOrigins": ["http://localhost:3001"]
+      "webOrigins": ["http://localhost:3001"],
+      "attributes": {
+        "post.logout.redirect.uris": "+"
+      }
     }
   ],
   "users": [

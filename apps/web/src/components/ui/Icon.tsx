@@ -24,6 +24,8 @@ export type IconName =
   | 'search'
   | 'filter'
   | 'bell'
+  | 'menu'
+  | 'chevronDown'
   | 'chevronRight'
   | 'logout'
   | 'alert'
@@ -193,6 +195,12 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M10 20a2 2 0 0 0 4 0" />
     </>
   ),
+  menu: (
+    <>
+      <path d="M4 7h16M4 12h16M4 17h16" />
+    </>
+  ),
+  chevronDown: <path d="M5.5 9l6.5 6.5L18.5 9" />,
   chevronRight: <path d="M9 5.5l6.5 6.5L9 18.5" />,
   logout: (
     <>

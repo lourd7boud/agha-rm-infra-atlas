@@ -1,10 +1,16 @@
 import NextAuth from 'next-auth';
 import Keycloak from 'next-auth/providers/keycloak';
 import { NextResponse, type NextRequest } from 'next/server';
+import {
+  isUsableSession,
+  sanitizedRefreshFailure,
+} from '@/lib/auth-session';
 
 declare module 'next-auth' {
   interface Session {
     accessToken?: string;
+    idToken?: string;
+    issuer?: string;
     roles?: string[];
     error?: 'RefreshAccessTokenError';
   }
@@ -13,6 +19,7 @@ declare module 'next-auth' {
 interface AtlasToken {
   accessToken?: string;
   refreshToken?: string;
+  idToken?: string;
   expiresAt?: number;
   issuer?: string;
   roles?: string[];
@@ -152,7 +159,7 @@ async function refreshAccessToken(
   const issuer = token.issuer ?? fallbackIssuer ?? resolveKeycloakIssuer();
   const clientId = process.env.AUTH_KEYCLOAK_ID;
   if (!issuer || !clientId || !token.refreshToken) {
-    return { ...token, error: 'RefreshAccessTokenError' };
+    return sanitizedRefreshFailure(token) as AtlasToken;
   }
   try {
     const response = await fetch(`${issuer}/protocol/openid-connect/token`, {
@@ -170,22 +177,24 @@ async function refreshAccessToken(
     const refreshed = (await response.json()) as {
       access_token?: string;
       refresh_token?: string;
+      id_token?: string;
       expires_in?: number;
     };
     if (!response.ok || !refreshed.access_token) {
-      return { ...token, error: 'RefreshAccessTokenError' };
+      return sanitizedRefreshFailure(token) as AtlasToken;
     }
     return {
       ...token,
       accessToken: refreshed.access_token,
       refreshToken: refreshed.refresh_token ?? token.refreshToken,
+      idToken: refreshed.id_token ?? token.idToken,
       expiresAt: Math.floor(Date.now() / 1000) + (refreshed.expires_in ?? 300),
       issuer,
       roles: rolesFromAccessToken(refreshed.access_token),
       error: undefined,
     };
   } catch {
-    return { ...token, error: 'RefreshAccessTokenError' };
+    return sanitizedRefreshFailure(token) as AtlasToken;
   }
 }
 
@@ -209,7 +218,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth((request) => {
         if (request.nextUrl.pathname.startsWith('/auth/')) {
           return NextResponse.redirect(new URL('/login', request.nextUrl.origin));
         }
-        return Boolean(session?.user);
+        return isUsableSession(session);
       },
       async jwt({ token, account }) {
         const t = token as AtlasToken;
@@ -219,6 +228,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth((request) => {
             ...t,
             accessToken: account.access_token,
             refreshToken: account.refresh_token,
+            idToken: account.id_token,
             expiresAt:
               typeof account.expires_at === 'number'
                 ? account.expires_at
@@ -238,6 +248,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth((request) => {
       session({ session, token }) {
         const t = token as AtlasToken;
         session.accessToken = t.accessToken;
+        session.idToken = t.idToken;
+        session.issuer = t.issuer;
         session.roles = t.roles ?? [];
         session.error = t.error;
         return session;
