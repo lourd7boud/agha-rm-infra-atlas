@@ -198,11 +198,11 @@ async function refreshAccessToken(
   }
 }
 
-export const { handlers, auth, signIn, signOut } = NextAuth((request) => {
-  const issuer = resolveKeycloakIssuer(request);
+const issuer = resolveKeycloakIssuer();
 
-  return {
-    providers: [buildKeycloakProvider(request)],
+export const { handlers, auth, signIn, signOut } = NextAuth(
+  {
+    providers: [buildKeycloakProvider()],
     secret: process.env.AUTH_SECRET,
     trustHost: process.env.AUTH_TRUST_HOST === 'true',
     session: { strategy: 'jwt' },
@@ -255,5 +255,5 @@ export const { handlers, auth, signIn, signOut } = NextAuth((request) => {
         return session;
       },
     },
-  };
-});
+  },
+);
