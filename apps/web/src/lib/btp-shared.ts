@@ -341,6 +341,14 @@ export interface MetreLigne {
   largeur?: number;
   profondeur?: number;
   nombre?: number;
+  /**
+   * Nombre d'éléments structurels identiques répétés pour cette mesure
+   * (8 poteaux, 6 poutres, 4 bassins…). « nombre » reste le nombre de
+   * barres/pièces DANS un seul élément. Vide / absent / 0 / négatif / non
+   * entier → 1, exactement comme le moteur serveur (normaliseNombreElements) :
+   * les métrés enregistrés avant l'ajout du champ gardent leur résultat.
+   */
+  nombreElements?: number;
   diametre?: number;
   partiel?: number;
   observations?: string;
@@ -836,9 +844,20 @@ export const METRE_CHAMPS: Record<MetreCalcType, string[]> = {
   volume: ['nombreSemblables', 'longueur', 'largeur', 'profondeur'],
   surface: ['nombreSemblables', 'longueur', 'largeur'],
   lineaire: ['nombreSemblables', 'longueur'],
-  poids: ['nombre', 'longueur', 'diametre'],
+  poids: ['nombre', 'nombreElements', 'longueur', 'diametre'],
   unite: ['nombreSemblables', 'nombre'],
 };
+
+/**
+ * Normalise le « nombre d'éléments » d'une ligne : entier ≥ 1. Miroir exact de
+ * normaliseNombreElements du moteur serveur (btp-metre.domain.ts) — absent,
+ * vide, 0, négatif, NaN → 1 ; décimal tronqué (2,7 → 2).
+ */
+export function normaliseNombreElements(value: number | null | undefined): number {
+  if (value == null || !Number.isFinite(value)) return 1;
+  const entier = Math.floor(value);
+  return entier >= 1 ? entier : 1;
+}
 
 /** Live partiel — mirrors computeLignePartiel in the core engine. */
 export function computeLignePartielClient(unite: string, ligne: MetreLigne): number {
@@ -864,8 +883,13 @@ export function computeLignePartielClient(unite: string, ligne: MetreLigne): num
       result = ligne.longueur ?? 0;
       break;
     case 'poids': {
+      // Nombre = barres dans UN élément ; nombreElements = éléments identiques
+      // répétés (1 par défaut → calcul historique inchangé).
       const kg =
-        (ligne.nombre ?? 0) * (ligne.longueur ?? 0) * (POIDS_ACIER[ligne.diametre ?? 0] ?? 0);
+        (ligne.nombre ?? 0) *
+        normaliseNombreElements(ligne.nombreElements) *
+        (ligne.longueur ?? 0) *
+        (POIDS_ACIER[ligne.diametre ?? 0] ?? 0);
       result = (unite ?? '').trim().toUpperCase() === 'T' ? kg / 1000 : kg;
       break;
     }
