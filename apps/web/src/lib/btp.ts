@@ -1,12 +1,10 @@
 // Module Projets BTP — server-side helpers on top of lib/api.ts: PUT + multipart
 // upload (both follow apiPost's session/timeout/error contract), plus a re-export
 // of the client-safe types/formatters so server files import from one place.
-import { redirect } from 'next/navigation';
 import { auth } from '@/auth';
-import { API_WRITE_TIMEOUT_MS, AtlasApiError } from '@/lib/api';
+import { API_WRITE_TIMEOUT_MS, AtlasApiError, AtlasSessionExpiredError } from '@/lib/api';
 
 const API_URL = process.env.ATLAS_API_URL ?? 'http://localhost:3000/api';
-const SIGNIN = '/login';
 
 export * from '@/lib/btp-shared';
 
@@ -18,7 +16,7 @@ export async function apiPut<T>(
 ): Promise<T> {
   const session = await auth();
   if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   const response = await fetch(`${API_URL}${path}`, {
     method: 'PUT',
@@ -31,7 +29,7 @@ export async function apiPut<T>(
     signal: AbortSignal.timeout(options?.timeoutMs ?? API_WRITE_TIMEOUT_MS),
   });
   if (response.status === 401) {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   if (!response.ok) {
     throw new AtlasApiError(path, response.status);
@@ -48,7 +46,7 @@ export async function apiUpload<T>(
 ): Promise<T> {
   const session = await auth();
   if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   const response = await fetch(`${API_URL}${path}`, {
     method: 'POST',
@@ -59,7 +57,7 @@ export async function apiUpload<T>(
     signal: AbortSignal.timeout(options?.timeoutMs ?? API_WRITE_TIMEOUT_MS),
   });
   if (response.status === 401) {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   if (!response.ok) {
     throw new AtlasApiError(path, response.status);

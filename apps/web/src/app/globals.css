@@ -107,3 +107,70 @@
 .glow-cyan {
   box-shadow: var(--shadow-glow);
 }
+
+/*
+  ATLAS — "Architectural Precision" light design language.
+  High clarity slate & pure canvas, crisp lines, rich contrast.
+*/
+[data-theme="light"],
+html.light {
+  color-scheme: light;
+
+  /* Surfaces — pure canvas & clean white panels */
+  --color-paper: oklch(98.2% 0.004 250);
+  --color-paper-2: oklch(100% 0 0);
+  --color-sand: oklch(94.5% 0.007 250);
+  --color-rail: oklch(96.5% 0.006 250);
+  --color-rail-2: oklch(91.5% 0.01 250);
+
+  /* Text — deep slate & high contrast */
+  --color-ink: oklch(17% 0.025 256);
+  --color-ink-2: oklch(27% 0.025 256);
+  --color-muted: oklch(44% 0.022 256);
+  --color-faint: oklch(58% 0.018 254);
+  --color-line: oklch(89% 0.007 250);
+  --color-line-2: oklch(80% 0.012 250);
+
+  /* Primary — deep electric cyan tuned for high contrast on light */
+  --color-cyan: oklch(48% 0.16 220);
+  --color-cyan-deep: oklch(40% 0.17 225);
+  --color-cyan-soft: oklch(93% 0.035 220);
+
+  /* Secondary + semantic (tuned for light) */
+  --color-ochre: oklch(54% 0.16 65);
+  --color-ochre-deep: oklch(46% 0.16 60);
+  --color-ochre-soft: oklch(94% 0.04 70);
+  --color-teal: oklch(46% 0.13 195);
+  --color-teal-soft: oklch(93% 0.04 195);
+  --color-emerald: oklch(46% 0.16 155);
+  --color-emerald-soft: oklch(93% 0.04 155);
+  --color-clay: oklch(48% 0.18 28);
+  --color-clay-soft: oklch(94% 0.04 28);
+
+  /* Crisp layered shadows */
+  --shadow-card: 0 1px 3px oklch(0% 0 0 / 0.06), 0 6px 18px -4px oklch(0% 0 0 / 0.07);
+  --shadow-raised: 0 3px 8px oklch(0% 0 0 / 0.08), 0 18px 40px -10px oklch(0% 0 0 / 0.12);
+  --shadow-rail: 1px 0 0 oklch(89% 0.007 250);
+  --shadow-glow: 0 0 0 1px oklch(48% 0.16 220 / 0.25), 0 0 16px -2px oklch(48% 0.16 220 / 0.2);
+}
+
+html[data-theme="light"] body,
+html.light body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  background-image:
+    radial-gradient(900px 500px at 100% 0%, oklch(48% 0.16 220 / 0.04), transparent 70%),
+    radial-gradient(700px 500px at 0% 100%, oklch(46% 0.13 195 / 0.03), transparent 70%),
+    linear-gradient(oklch(0% 0 0 / 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(0% 0 0 / 0.03) 1px, transparent 1px);
+}
+
+html[data-theme="light"] ::selection,
+html.light ::selection {
+  background: oklch(48% 0.16 220 / 0.2);
+}
+
+html[data-theme="light"] *,
+html.light * {
+  scrollbar-color: var(--color-line-2) transparent;
+}

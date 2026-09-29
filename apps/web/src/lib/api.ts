@@ -1,9 +1,6 @@
-import { redirect } from 'next/navigation';
 import { auth } from '@/auth';
 
 const API_URL = process.env.ATLAS_API_URL ?? 'http://localhost:3000/api';
-
-const SIGNIN = '/login';
 
 /**
  * Every server-side fetch to Core MUST carry a deadline. Without one, a single
@@ -30,6 +27,29 @@ export class AtlasApiError extends Error {
     super(`ATLAS API ${path} a répondu HTTP ${status}`);
     this.status = status;
     this.digest = `ATLAS_API_${status}`;
+  }
+}
+
+/**
+ * The session is missing, expired-and-unrefreshable, or Core answered 401.
+ *
+ * This is NOT a navigation trigger. `redirect('/login')` from a Server Action or
+ * an RSC render tears the operator's page down mid-edit: the route changes, the
+ * component tree is replaced and every unsaved field is gone. Throwing instead
+ * keeps the page mounted —
+ *  - a read surfaces through the segment's `error.tsx` (see the `401` entry in
+ *    `app/(app)/error.tsx`), which says « session expirée, vos données sont
+ *    conservées » and offers a popup re-authentication;
+ *  - a write is caught by the action's own `fail()` and redirected back to the
+ *    SAME page with `?error=<action>&code=…`, so the banner names the failed
+ *    operation and the input is still on screen.
+ *
+ * The digest stays `ATLAS_API_401` so the existing status plumbing (error
+ * boundaries, action banners, audit logs) classifies it as it always did.
+ */
+export class AtlasSessionExpiredError extends AtlasApiError {
+  constructor(path: string) {
+    super(path, 401);
   }
 }
 
@@ -87,9 +107,11 @@ export async function apiGet<T>(
   options?: { timeoutMs?: number },
 ): Promise<T> {
   const session = await auth();
-  // Missing/expired-and-unrefreshable session: send to sign-in, don't 500.
+  // Missing / expired-and-unrefreshable session: report it, never navigate. The
+  // section's error boundary explains it while the page, its filters and every
+  // unsaved field stay exactly where they are.
   if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   // Fail fast while the breaker is open: Core is unhealthy, so skip the doomed
   // round-trip and let error.tsx degrade this section immediately.
@@ -109,7 +131,7 @@ export async function apiGet<T>(
     throw error;
   }
   if (response.status === 401) {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   // 5xx signals Core health; 4xx is a client/domain error and must not trip it.
   if (response.status >= 500) {
@@ -131,7 +153,7 @@ export async function apiPost<T>(
 ): Promise<T> {
   const session = await auth();
   if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   const response = await fetch(`${API_URL}${path}`, {
     method: 'POST',
@@ -145,7 +167,7 @@ export async function apiPost<T>(
     signal: AbortSignal.timeout(options?.timeoutMs ?? API_WRITE_TIMEOUT_MS),
   });
   if (response.status === 401) {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   if (!response.ok) {
     throw new AtlasApiError(path, response.status);
@@ -161,7 +183,7 @@ export async function apiPatch<T>(
 ): Promise<T> {
   const session = await auth();
   if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   const response = await fetch(`${API_URL}${path}`, {
     method: 'PATCH',
@@ -174,7 +196,7 @@ export async function apiPatch<T>(
     signal: AbortSignal.timeout(options?.timeoutMs ?? API_WRITE_TIMEOUT_MS),
   });
   if (response.status === 401) {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   if (!response.ok) {
     throw new AtlasApiError(path, response.status);
@@ -189,7 +211,7 @@ export async function apiDelete<T>(
 ): Promise<T> {
   const session = await auth();
   if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   const response = await fetch(`${API_URL}${path}`, {
     method: 'DELETE',
@@ -198,7 +220,7 @@ export async function apiDelete<T>(
     signal: AbortSignal.timeout(options?.timeoutMs ?? API_WRITE_TIMEOUT_MS),
   });
   if (response.status === 401) {
-    redirect(SIGNIN);
+    throw new AtlasSessionExpiredError(path);
   }
   if (!response.ok) {
     throw new AtlasApiError(path, response.status);

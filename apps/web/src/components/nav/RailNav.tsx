@@ -9,9 +9,6 @@ interface NavItem {
   href: string;
   label: string;
   icon: IconName;
-  /** Render as a plain full-page anchor instead of a Next client-side link.
-   *  Used for surfaces served outside the Next app (e.g. /projects/ — the ported
-   *  BTP construction-management SPA proxied by nginx, not a Next route). */
   external?: boolean;
 }
 
@@ -23,13 +20,9 @@ const ITEMS: readonly NavItem[] = [
   { href: '/supply', label: 'Approvisionnements', icon: 'supply' },
   { href: '/finance', label: 'Finance', icon: 'tresorerie' },
   { href: '/people', label: 'Personnel', icon: 'personnel' },
-  { href: '/vault', label: 'Documents & GED', icon: 'documents' },
   { href: '/agents', label: 'Salle des Agents', icon: 'agents' },
 ];
 
-/** Marchés & Prospection — LE cœur métier: veille, analyse et réponse aux
- *  appels d'offres + bons de commande. Un seul groupe repliable pour tout ce
- *  qui touche à la chasse aux marchés (permissions fines à venir). */
 const MARCHES: readonly NavItem[] = [
   { href: '/tenders', label: 'Inventaire des marchés', icon: 'tenders' },
   { href: '/tenders/radar', label: 'Radar proactif', icon: 'activity' },
@@ -42,8 +35,6 @@ const MARCHES: readonly NavItem[] = [
   { href: '/buyers', label: 'Acheteurs', icon: 'analytics' },
 ];
 
-/** Commercial / Ventes — private-client devis, BL, factures (separate from the
- *  public-procurement Marchés flow). Grouped under its own heading. */
 const SALES: readonly NavItem[] = [
   { href: '/sales/clients', label: 'Clients', icon: 'crm' },
   { href: '/sales/quotes', label: 'Devis', icon: 'quote' },
@@ -51,11 +42,9 @@ const SALES: readonly NavItem[] = [
   { href: '/sales/invoices', label: 'Factures', icon: 'invoice' },
 ];
 
-/** Comptabilité — section repliable dédiée (accès direction/finance/admin-si
- *  et rôle `comptable` pour les cabinets externes). Un seul groupe pour une
- *  future gestion fine des permissions. */
 const COMPTA: readonly NavItem[] = [
   { href: '/compta', label: 'Tableau de bord', icon: 'command' },
+  { href: '/compta/a-valider', label: 'À valider', icon: 'activity' },
   { href: '/compta/ecritures', label: 'Écritures & journaux', icon: 'documents' },
   { href: '/compta/plan', label: 'Plan comptable', icon: 'boxes' },
   { href: '/compta/livres', label: 'Livres & états', icon: 'analytics' },
@@ -68,23 +57,15 @@ const COMPTA: readonly NavItem[] = [
   { href: '/compta/parametres', label: 'Paramètres fiscaux', icon: 'settings' },
 ];
 
-/** Planned modules — shown for breadth, not yet routed. */
 const SOON: readonly { label: string; icon: IconName }[] = [
   { label: 'Opérations Terrain', icon: 'terrain' },
   { label: 'BI & Analytics', icon: 'analytics' },
   { label: 'Paramètres Système', icon: 'settings' },
 ];
 
-/** True when `href` is the LONGEST item prefix matching `path` — prevents
- *  /tenders/lists from activating /tenders as well. */
-function isActive(
-  path: string,
-  href: string,
-  allHrefs: readonly string[],
-): boolean {
+function isActive(path: string, href: string, allHrefs: readonly string[]): boolean {
   if (href === '/') return path === '/';
   if (!(path === href || path.startsWith(`${href}/`))) return false;
-  // Reject when a sibling item is a stricter (longer) prefix match for `path`.
   return !allHrefs.some(
     (other) =>
       other !== href &&
@@ -93,38 +74,60 @@ function isActive(
   );
 }
 
-export function RailNav({
-  orientation = 'vertical',
-  comptaVisible = false,
-}: {
-  orientation?: 'vertical' | 'horizontal';
-  /** True pour les rôles direction / finance / admin-si / comptable. */
+function Tooltip({ label }: { label: string }) {
+  return (
+    <span
+      role="tooltip"
+      aria-label={label}
+      className="pointer-events-none absolute left-[calc(100%+12px)] top-1/2 z-[80] -translate-y-1/2 rounded-md border border-line bg-rail-2 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap text-ink opacity-0 shadow-raised transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100"
+    >
+      {label}
+    </span>
+  );
+}
+
+function ActiveIndicator({ active }: { active: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-r-full bg-cyan transition-all ${
+        active ? 'h-5 w-[3px]' : 'h-0 w-0'
+      }`}
+    />
+  );
+}
+
+interface RailNavProps {
+  expanded?: boolean;
   comptaVisible?: boolean;
-}) {
+  salesVisible?: boolean;
+  onNavigate?: () => void;
+}
+
+export function RailNav({
+  expanded = true,
+  comptaVisible = false,
+  salesVisible = false,
+  onNavigate,
+}: RailNavProps) {
   const path = usePathname();
-  const horizontal = orientation === 'horizontal';
   const onCompta = path === '/compta' || path.startsWith('/compta/');
-  const onMarches = MARCHES.some((i) => path === i.href || path.startsWith(`${i.href}/`));
-  // Repli persistant du groupe Comptabilité (ouvert d'office sur ses pages) —
-  // initialisé fermé côté serveur, hydraté depuis localStorage au montage.
+  const onSales = SALES.some((item) => path === item.href || path.startsWith(`${item.href}/`));
+  const onComptaFacturation = onCompta || onSales;
+  const onMarches = MARCHES.some(
+    (item) => path === item.href || path.startsWith(`${item.href}/`),
+  );
   const [comptaOpen, setComptaOpen] = useState(false);
+  const [marchesOpen, setMarchesOpen] = useState(false);
+
   useEffect(() => {
-    if (onCompta) {
+    if (onComptaFacturation) {
       setComptaOpen(true);
       return;
     }
     setComptaOpen(window.localStorage.getItem('atlas.nav.compta') === '1');
-  }, [onCompta]);
-  const toggleCompta = () => {
-    setComptaOpen((open) => {
-      const next = !open;
-      window.localStorage.setItem('atlas.nav.compta', next ? '1' : '0');
-      return next;
-    });
-  };
-  // Groupe Marchés & Prospection — même mécanique, OUVERT par défaut (c'est
-  // le cœur métier) tant que l'utilisateur ne l'a pas replié lui-même.
-  const [marchesOpen, setMarchesOpen] = useState(false);
+  }, [onComptaFacturation]);
+
   useEffect(() => {
     if (onMarches) {
       setMarchesOpen(true);
@@ -132,177 +135,228 @@ export function RailNav({
     }
     setMarchesOpen(window.localStorage.getItem('atlas.nav.marches') !== '0');
   }, [onMarches]);
+
+  const allHrefs = [
+    ...ITEMS,
+    ...MARCHES,
+    ...(salesVisible ? SALES : []),
+    ...(comptaVisible ? COMPTA : []),
+  ].map((item) => item.href);
+
   const toggleMarches = () => {
-    setMarchesOpen((open) => {
-      const next = !open;
+    setMarchesOpen((current) => {
+      const next = !current;
       window.localStorage.setItem('atlas.nav.marches', next ? '1' : '0');
       return next;
     });
   };
-  // Combined href list (top items + groups) for the longest-prefix check.
-  const allHrefs = [...ITEMS, ...MARCHES, ...SALES, ...(comptaVisible ? COMPTA : [])].map(
-    (i) => i.href,
-  );
+
+  const toggleCompta = () => {
+    setComptaOpen((current) => {
+      const next = !current;
+      window.localStorage.setItem('atlas.nav.compta', next ? '1' : '0');
+      return next;
+    });
+  };
 
   function renderItem(item: NavItem) {
     const active = isActive(path, item.href, allHrefs);
-    const className = `group relative flex items-center gap-2.5 rounded-md text-sm transition ${
-      horizontal ? 'shrink-0 px-3 py-1.5' : 'px-3 py-2'
+    const className = `group relative flex min-h-10 items-center rounded-md text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/60 ${
+      expanded ? 'gap-2.5 px-3 py-2' : 'justify-center px-2 py-2.5'
     } ${
       active ? 'bg-cyan-soft/60 text-ink' : 'text-muted hover:bg-rail-2 hover:text-ink'
     }`;
-    const inner = (
+    const content = (
       <>
-        {!horizontal && (
-          <span
-            className={`absolute left-0 top-1/2 -translate-y-1/2 rounded-r-full bg-cyan transition-all ${
-              active ? 'h-5 w-[3px]' : 'h-0 w-0'
-            }`}
-          />
-        )}
+        <ActiveIndicator active={active} />
         <Icon
           name={item.icon}
           size={18}
-          className={active ? 'text-cyan' : 'text-faint group-hover:text-muted'}
+          className={`shrink-0 ${active ? 'text-cyan' : 'text-faint group-hover:text-muted'}`}
         />
-        <span className="whitespace-nowrap font-medium">{item.label}</span>
+        <span className={expanded ? 'whitespace-nowrap font-medium' : 'sr-only'}>
+          {item.label}
+        </span>
+        {!expanded && <Tooltip label={item.label} />}
       </>
     );
-    // External surfaces (e.g. the /projects BTP SPA served by nginx, not Next)
-    // need a real document navigation, so Next's client router doesn't intercept
-    // and render a (now non-existent) internal route.
+
     if (item.external) {
       return (
-        <a key={item.href} href={item.href} className={className}>
-          {inner}
+        <a
+          key={item.href}
+          href={item.href}
+          aria-current={active ? 'page' : undefined}
+          aria-label={item.label}
+          data-active={active ? 'true' : 'false'}
+          className={className}
+          onClick={onNavigate}
+        >
+          {content}
         </a>
       );
     }
+
     return (
       <Link
         key={item.href}
         href={item.href}
         aria-current={active ? 'page' : undefined}
+        aria-label={item.label}
+        data-active={active ? 'true' : 'false'}
         className={className}
+        onClick={onNavigate}
       >
-        {inner}
+        {content}
       </Link>
     );
   }
 
+  const groupButtonClass = (active: boolean) =>
+    `group relative flex min-h-10 w-full items-center rounded-md text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/60 ${
+      expanded ? 'gap-2.5 px-3 py-2' : 'justify-center px-2 py-2.5'
+    } ${
+      active && !expanded
+        ? 'bg-cyan-soft/60 text-ink'
+        : 'text-muted hover:bg-rail-2 hover:text-ink'
+    }`;
+
   return (
-    <nav
-      className={
-        horizontal ? 'flex flex-row gap-1 overflow-x-auto pb-1' : 'flex flex-col gap-0.5'
-      }
-    >
+    <nav aria-label="Navigation principale" className="flex flex-col gap-0.5">
       {ITEMS.map(renderItem)}
 
-      {/* Marchés & Prospection — le cœur métier, groupe repliable. */}
-      {!horizontal && (
-        <div className="mt-5">
-          <button
-            type="button"
-            onClick={toggleMarches}
-            aria-expanded={marchesOpen}
-            className={`group flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition ${
-              onMarches && !marchesOpen
-                ? 'bg-cyan-soft/40 text-ink'
-                : 'text-muted hover:bg-rail-2 hover:text-ink'
-            }`}
+      <div className={expanded ? 'mt-5' : 'mt-2'}>
+        <button
+          type="button"
+          aria-label="Marchés & Prospection"
+          aria-expanded={expanded ? marchesOpen : false}
+          data-active={onMarches ? 'true' : 'false'}
+          onClick={toggleMarches}
+          className={groupButtonClass(onMarches)}
+        >
+          <ActiveIndicator active={onMarches && !expanded} />
+          <Icon
+            name="tenders"
+            size={18}
+            className={`shrink-0 ${onMarches ? 'text-cyan' : 'text-faint group-hover:text-muted'}`}
+          />
+          <span
+            className={
+              expanded
+                ? 'whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/80'
+                : 'sr-only'
+            }
           >
-            <Icon
-              name="tenders"
-              size={18}
-              className={onMarches ? 'text-cyan' : 'text-faint group-hover:text-muted'}
-            />
-            <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/80">
-              Marchés & Prospection
-            </span>
+            Marchés & Prospection
+          </span>
+          {expanded && (
             <span
               className={`ml-auto text-faint transition-transform duration-200 ${
                 marchesOpen ? 'rotate-90' : ''
               }`}
-              aria-hidden
+              aria-hidden="true"
             >
               ›
             </span>
-          </button>
-          {marchesOpen && (
-            <div className="relative ml-4 mt-0.5 flex flex-col gap-0.5 border-l border-line/70 pl-1.5">
-              {MARCHES.map(renderItem)}
-            </div>
           )}
-        </div>
-      )}
-      {horizontal && MARCHES.slice(0, 3).map(renderItem)}
+          {!expanded && <Tooltip label="Marchés & Prospection" />}
+        </button>
+        {expanded && marchesOpen && (
+          <div className="relative ml-4 mt-0.5 flex flex-col gap-0.5 border-l border-line/70 pl-1.5">
+            {MARCHES.map(renderItem)}
+          </div>
+        )}
+      </div>
 
-      {/* Comptabilité — groupe repliable, réservé aux rôles habilités. */}
-      {comptaVisible && !horizontal && (
-        <div className={`mt-5 ${onCompta ? '' : ''}`}>
+      {(comptaVisible || salesVisible) && (
+        <div className={expanded ? 'mt-5' : 'mt-2'}>
           <button
             type="button"
+            aria-label="Comptabilité & Facturation"
+            aria-expanded={expanded ? comptaOpen : false}
+            data-active={onComptaFacturation ? 'true' : 'false'}
             onClick={toggleCompta}
-            aria-expanded={comptaOpen}
-            className={`group flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition ${
-              onCompta && !comptaOpen
-                ? 'bg-cyan-soft/40 text-ink'
-                : 'text-muted hover:bg-rail-2 hover:text-ink'
-            }`}
+            className={groupButtonClass(onComptaFacturation)}
           >
+            <ActiveIndicator active={onComptaFacturation && !expanded} />
             <Icon
               name="tresorerie"
               size={18}
-              className={onCompta ? 'text-cyan' : 'text-faint group-hover:text-muted'}
-            />
-            <span className="whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/80">
-              Comptabilité
-            </span>
-            <span
-              className={`ml-auto text-faint transition-transform duration-200 ${
-                comptaOpen ? 'rotate-90' : ''
+              className={`shrink-0 ${
+                onComptaFacturation ? 'text-cyan' : 'text-faint group-hover:text-muted'
               }`}
-              aria-hidden
+            />
+            <span
+              className={
+                expanded
+                  ? 'whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/80'
+                  : 'sr-only'
+              }
             >
-              ›
+              Comptabilité & Facturation
             </span>
+            {expanded && (
+              <span
+                className={`ml-auto text-faint transition-transform duration-200 ${
+                  comptaOpen ? 'rotate-90' : ''
+                }`}
+                aria-hidden="true"
+              >
+                ›
+              </span>
+            )}
+            {!expanded && <Tooltip label="Comptabilité & Facturation" />}
           </button>
-          {comptaOpen && (
+          {expanded && comptaOpen && (
             <div className="relative ml-4 mt-0.5 flex flex-col gap-0.5 border-l border-line/70 pl-1.5">
-              {COMPTA.map(renderItem)}
+              {salesVisible && (
+                <>
+                  <p className="mb-0.5 mt-1 px-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-faint/60">
+                    Facturation
+                  </p>
+                  {SALES.map(renderItem)}
+                </>
+              )}
+              {comptaVisible && (
+                <>
+                  <p className="mb-0.5 mt-2 px-3 text-[9px] font-semibold uppercase tracking-[0.18em] text-faint/60">
+                    Comptabilité
+                  </p>
+                  {COMPTA.map(renderItem)}
+                </>
+              )}
             </div>
           )}
         </div>
       )}
-      {comptaVisible && horizontal && COMPTA.slice(0, 4).map(renderItem)}
 
-      {!horizontal && (
-        <p className="mt-5 mb-1 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/70">
-          Commercial / Ventes
-        </p>
-      )}
-      {SALES.map(renderItem)}
-
-      {!horizontal && (
-        <>
-          <p className="mt-5 mb-1 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/70">
+      <div className={expanded ? 'mt-5' : 'mt-2'}>
+        {expanded && (
+          <p className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-faint/70">
             Modules
           </p>
-          {SOON.map((item) => (
-            <div
-              key={item.label}
-              className="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-faint/50"
-              title="Module à venir"
-            >
-              <Icon name={item.icon} size={18} className="text-faint/40" />
-              <span className="whitespace-nowrap font-medium">{item.label}</span>
+        )}
+        {SOON.map((item) => (
+          <div
+            key={item.label}
+            aria-label={`${item.label} — Module à venir`}
+            className={`group relative flex min-h-10 items-center rounded-md text-sm text-faint/50 ${
+              expanded ? 'gap-2.5 px-3 py-2' : 'justify-center px-2 py-2.5'
+            }`}
+          >
+            <Icon name={item.icon} size={18} className="shrink-0 text-faint/40" />
+            <span className={expanded ? 'whitespace-nowrap font-medium' : 'sr-only'}>
+              {item.label}
+            </span>
+            {expanded && (
               <span className="ml-auto rounded-full bg-rail-2 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider text-faint/70">
                 bientôt
               </span>
-            </div>
-          ))}
-        </>
-      )}
+            )}
+            {!expanded && <Tooltip label={item.label} />}
+          </div>
+        ))}
+      </div>
     </nav>
   );
 }

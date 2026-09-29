@@ -24,6 +24,8 @@ export type IconName =
   | 'search'
   | 'filter'
   | 'bell'
+  | 'menu'
+  | 'chevronDown'
   | 'chevronRight'
   | 'logout'
   | 'alert'
@@ -32,7 +34,9 @@ export type IconName =
   | 'pin'
   | 'download'
   | 'external'
-  | 'close';
+  | 'close'
+  | 'sun'
+  | 'moon';
 
 /** Hand-drawn ATLAS icon set — 24px grid, 1.6 stroke, rounded, currentColor. */
 const PATHS: Record<IconName, ReactNode> = {
@@ -193,6 +197,8 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M10 20a2 2 0 0 0 4 0" />
     </>
   ),
+  menu: <path d="M4 7h16M4 12h16M4 17h16" />,
+  chevronDown: <path d="M5.5 9l6.5 6.5L18.5 9" />,
   chevronRight: <path d="M9 5.5l6.5 6.5L9 18.5" />,
   logout: (
     <>
@@ -230,6 +236,13 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   close: <path d="M6 6l12 12M18 6L6 18" />,
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+    </>
+  ),
+  moon: <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z" />,
 };
 
 interface IconProps {
