@@ -352,7 +352,9 @@ export const periodes = project.table(
 // Métré — one row per bordereau line × période. Hierarchy: sections (lieu/douar)
 // → sous-sections (élément, with optional nombreElements multiplier for rebar)
 // → lignes (measurements: nombreSemblables/longueur/largeur/profondeur/nombre/
-// diametre → partiel, computed per the bordereau line's unité).
+// nombreElements[repeat count on poids units]/diametre → partiel, computed per
+// the bordereau line's unité). Stored as JSONB: adding ligne.nombreElements
+// needs no SQL migration — a missing value reads as 1.
 export const metres = project.table(
   'metre',
   {

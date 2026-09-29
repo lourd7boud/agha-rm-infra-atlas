@@ -145,6 +145,11 @@ const metreLigneSchema = z.object({
   largeur: z.number().nonnegative().optional(),
   profondeur: z.number().nonnegative().optional(),
   nombre: z.number().nonnegative().optional(),
+  // Nombre d'éléments identiques répétés d'une mesure (8 poteaux, 6 poutres…).
+  // Le moteur le normalise en entier ≥ 1 (absent / 0 / décimal → 1 / troncature,
+  // cf. normaliseNombreElements) : « nombre » reste le nombre de barres dans un
+  // seul élément et les métrés enregistrés sans ce champ gardent leur résultat.
+  nombreElements: z.number().nonnegative().optional(),
   diametre: z.number().nonnegative().optional(),
   partiel: z.number().optional(),
   observations: z.string().max(1000).optional(),

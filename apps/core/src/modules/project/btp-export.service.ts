@@ -3,6 +3,7 @@
 // keep computing when edited in Excel.
 import { Inject, Injectable, NotFoundException, StreamableFile } from '@nestjs/common';
 import ExcelJS from 'exceljs';
+import { normaliseNombreElements, resolveUniteConfig } from './btp-metre.domain';
 import { BTP_EXECUTION_REPOSITORY, type BtpExecutionRepository } from './btp.repository';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -245,6 +246,85 @@ export class BtpExportService {
       ]);
       row.getCell(7).value = { formula: `E${row.number}+F${row.number}` };
       row.getCell(2).alignment = { wrapText: true };
+    }
+
+    // Feuille « Détail métré » — ajout purement additif : la certification des
+    // quantités ci-dessus reste identique. On y reprend les mesures réellement
+    // enregistrées pour la période, en séparant les deux comptages du
+    // ferraillage : « Nombre » (barres dans UN élément) et « Nombre d’éléments »
+    // (éléments identiques répétés, vide = 1). Aucun partiel n'est recalculé ici
+    // — le partiel stocké par le moteur fait foi.
+    const periode = attachement.periode;
+    if (periode) {
+      const contexte = await this.execution.getMetreContext(projectId, periode.id);
+      if (contexte && contexte.metres.length > 0) {
+        const detail = workbook.addWorksheet(sanitizeSheetTitle('Détail métré'));
+        detail.columns = [
+          { width: 8 },
+          { width: 45 },
+          { width: 8 },
+          { width: 24 },
+          { width: 30 },
+          { width: 10 },
+          { width: 18 },
+          { width: 13 },
+          { width: 8 },
+          { width: 12 },
+        ];
+        detail.addRow([`Marché N° ${project.reference} — Détail des métrés — ${title}`]).font = {
+          bold: true,
+          size: 14,
+        };
+        detail.addRow([
+          'Nombre = barres / pièces de ferraillage dans UN élément · Nombre d’éléments = éléments structurels identiques répétés (vide = 1) · quantité = Nombre × Nombre d’éléments × Longueur × poids du Ø.',
+        ]);
+        detail.addRow([]);
+        const detailHeader = detail.addRow([
+          'N° Prix',
+          'Désignation des ouvrages',
+          'Unité',
+          'Élément',
+          'Mesure',
+          'Nombre',
+          "Nombre d’éléments",
+          'Longueur (ml)',
+          'Ø (mm)',
+          'Partiel',
+        ]);
+        styleHeaderRow(detailHeader);
+
+        const bordereauByLigneId = new Map(
+          (contexte.bordereau?.lignes ?? []).map((l) => [l.id ?? String(l.numero), l]),
+        );
+        for (const metre of contexte.metres) {
+          const bordereauLigne = bordereauByLigneId.get(metre.bordereauLigneId);
+          const isPoids = resolveUniteConfig(metre.unite).type === 'poids';
+          const sousSectionsById = new Map(metre.sousSections.map((s) => [s.id, s]));
+          for (const ligne of metre.lignes) {
+            const sousSection = ligne.subSectionId
+              ? sousSectionsById.get(ligne.subSectionId)
+              : undefined;
+            const repetitionElement =
+              sousSection?.nombreElements && sousSection.nombreElements > 1
+                ? ` × ${sousSection.nombreElements}`
+                : '';
+            const row = detail.addRow([
+              bordereauLigne?.numero ?? '',
+              metre.designationBordereau ?? bordereauLigne?.designation ?? '',
+              metre.unite ?? '',
+              sousSection ? `${sousSection.titre}${repetitionElement}` : '',
+              ligne.designation ?? '',
+              ligne.nombre ?? null,
+              isPoids ? normaliseNombreElements(ligne.nombreElements) : null,
+              ligne.longueur ?? null,
+              ligne.diametre ?? null,
+              ligne.partiel ?? null,
+            ]);
+            row.getCell(5).alignment = { wrapText: true };
+            row.getCell(10).numFmt = '#,##0.00';
+          }
+        }
+      }
     }
 
     return toStreamable(workbook, fileNameFor(project.reference, `attachement_${numero}`));
