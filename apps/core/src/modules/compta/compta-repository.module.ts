@@ -14,6 +14,8 @@ import {
   type ComptaRegistresRepository,
 } from './compta-registres.repository';
 import { ComptaAutoPostingService } from './compta-auto-posting.service';
+import { ACCOUNTING_PROJECTION_PORT } from './compta-auto-posting.service';
+import { SalesAccountingEventModule } from '../sales/sales-accounting-event.module';
 
 const logMissingDb = (which: string) => {
   new Logger('ComptaRepositoryModule').warn(
@@ -42,9 +44,11 @@ export const comptaRegistresRepositoryProvider = {
 };
 
 @Module({
+  imports: [SalesAccountingEventModule],
   providers: [
     comptaRepositoryProvider,
     comptaRegistresRepositoryProvider,
+    { provide: ACCOUNTING_PROJECTION_PORT, useExisting: COMPTA_REPOSITORY },
     ComptaAutoPostingService,
   ],
   exports: [

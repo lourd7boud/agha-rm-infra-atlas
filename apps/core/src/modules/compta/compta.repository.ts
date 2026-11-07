@@ -35,6 +35,13 @@ import {
   buildEncaissementEcriture,
   type ReglementMethod,
 } from './compta-reglements.domain';
+import type {
+  AccountingProjectionContext,
+  AccountingProjectionPort,
+  DraftAccountingEntry,
+  SalesAccountingEvent,
+} from './compta-auto-posting.service';
+import type { ReadyPosting } from './compta-ventes.domain';
 
 const num = (value: unknown): number => {
   const n = Number(value);
@@ -78,6 +85,11 @@ export interface ProfilRecord {
   dateCreation: Date | null;
   exerciceClotureMois: number;
   regimeTva: string;
+  faitGenerateurTva: 'non_configure' | 'encaissement' | 'debits';
+  compteClientVentes: string | null;
+  compteProduitVentes: string | null;
+  compteTvaAttente: string | null;
+  compteTvaDue: string | null;
   prorataTva: number;
   tauxIs: number;
   tauxCotisationMinimale: number;
@@ -187,7 +199,7 @@ export class ComptaError extends Error {
 
 // ── Interface ────────────────────────────────────────────────────────────────
 
-export interface ComptaRepository {
+export interface ComptaRepository extends AccountingProjectionPort {
   getProfil(): Promise<ProfilRecord>;
   updateProfil(patch: Partial<Omit<ProfilRecord, 'id'>>): Promise<ProfilRecord>;
 
@@ -320,6 +332,11 @@ function mapProfil(row: typeof comptaProfil.$inferSelect): ProfilRecord {
     dateCreation: row.dateCreation,
     exerciceClotureMois: row.exerciceClotureMois,
     regimeTva: row.regimeTva,
+    faitGenerateurTva: row.faitGenerateurTva as ProfilRecord['faitGenerateurTva'],
+    compteClientVentes: row.compteClientVentes,
+    compteProduitVentes: row.compteProduitVentes,
+    compteTvaAttente: row.compteTvaAttente,
+    compteTvaDue: row.compteTvaDue,
     prorataTva: num(row.prorataTva),
     tauxIs: num(row.tauxIs),
     tauxCotisationMinimale: num(row.tauxCotisationMinimale),
@@ -412,6 +429,11 @@ export class DrizzleComptaRepository implements ComptaRepository {
         dateCreation: patch.dateCreation,
         exerciceClotureMois: patch.exerciceClotureMois ?? undefined,
         regimeTva: patch.regimeTva ?? undefined,
+        faitGenerateurTva: patch.faitGenerateurTva ?? undefined,
+        compteClientVentes: patch.compteClientVentes,
+        compteProduitVentes: patch.compteProduitVentes,
+        compteTvaAttente: patch.compteTvaAttente,
+        compteTvaDue: patch.compteTvaDue,
         prorataTva: patch.prorataTva === undefined ? undefined : String(patch.prorataTva),
         tauxIs: patch.tauxIs === undefined ? undefined : String(patch.tauxIs),
         tauxCotisationMinimale:
@@ -638,6 +660,7 @@ export class DrizzleComptaRepository implements ComptaRepository {
     source: string,
     sourceId: string | null,
     statut: 'brouillon' | 'validee' = 'brouillon',
+    sourceEvent: string | null = null,
   ): Promise<string> {
     const totals = validateEcriture(input.lignes);
     await this.assertComptesExistent(tx, input.lignes);
@@ -666,6 +689,7 @@ export class DrizzleComptaRepository implements ComptaRepository {
         libelle: input.libelle,
         source,
         sourceId,
+        sourceEvent: sourceEvent ?? 'principal',
         statut,
         totalDebit: String(totals.totalDebit),
         totalCredit: String(totals.totalCredit),
@@ -698,6 +722,88 @@ export class DrizzleComptaRepository implements ComptaRepository {
     const created = await this.getEcriture(id);
     if (!created) throw new ComptaError('Écriture introuvable après création', 500);
     return created;
+  }
+
+  async getContext(
+    event: SalesAccountingEvent,
+  ): Promise<AccountingProjectionContext> {
+    const [profile, [exercise]] = await Promise.all([
+      this.getProfil(),
+      this.db
+        .select({ statut: comptaExercices.statut })
+        .from(comptaExercices)
+        .where(eq(comptaExercices.annee, event.occurredAt.getUTCFullYear()))
+        .limit(1),
+    ]);
+    return {
+      faitGenerateurTva: profile.faitGenerateurTva,
+      exerciseOpen: exercise?.statut === 'ouvert',
+      accounts: {
+        client: profile.compteClientVentes,
+        revenue: profile.compteProduitVentes,
+        tvaPending: profile.compteTvaAttente,
+        tvaDue: profile.compteTvaDue,
+      },
+    };
+  }
+
+  async findEntryByEvent(
+    eventKey: string,
+  ): Promise<DraftAccountingEntry | null> {
+    const [entry] = await this.db
+      .select({ id: ecritures.id, status: ecritures.statut })
+      .from(ecritures)
+      .where(
+        and(
+          eq(ecritures.source, 'sales'),
+          eq(ecritures.sourceEvent, eventKey),
+          isNull(ecritures.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!entry) return null;
+    return {
+      id: entry.id,
+      status: entry.status as DraftAccountingEntry['status'],
+    };
+  }
+
+  async createDraftEntry(
+    event: SalesAccountingEvent,
+    posting: ReadyPosting,
+    actor: string,
+  ): Promise<DraftAccountingEntry> {
+    const exercise = await this.ensureExercice(event.occurredAt.getUTCFullYear());
+    if (exercise.statut !== 'ouvert') {
+      throw new ComptaError(`L'exercice ${exercise.annee} est clôturé.`, 409);
+    }
+    const id = await this.db.transaction((tx) =>
+      this.insertEcritureTx(
+        tx,
+        exercise.id,
+        {
+          journalCode: event.eventType.includes('payment') ? 'BQ' : 'VTE',
+          dateEcriture: event.occurredAt,
+          pieceRef:
+            typeof event.payload.reference === 'string'
+              ? event.payload.reference
+              : undefined,
+          libelle: posting.label,
+          lignes: posting.lines.map((line) => ({
+            compteCode: line.accountCode,
+            debit: line.debitCents / 100,
+            credit: line.creditCents / 100,
+            tiers: line.party,
+          })),
+        },
+        actor,
+        'sales',
+        event.sourceId,
+        'brouillon',
+        event.eventKey,
+      ),
+    );
+    return { id, status: 'brouillon' };
   }
 
   async updateEcriture(id: string, input: EcritureInput): Promise<EcritureRecord> {

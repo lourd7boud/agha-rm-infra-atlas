@@ -1,78 +1,299 @@
-// Pont Ventes → Compta : transforme un événement de facturation confirmé en
-// écriture comptable AUTOMATIQUEMENT, pour que le comptable ne soit que
-// superviseur. Best-effort par conception : un échec de génération est journalisé,
-// jamais propagé à l'appelant (le changement de statut de la facture reste valide)
-// — le batch idempotent « Générer depuis les ventes » demeure le filet de secours.
-import { Inject, Injectable, Logger } from '@nestjs/common';
-import { COMPTA_REPOSITORY, type ComptaRepository } from './compta.repository';
+import { Inject, Injectable } from '@nestjs/common';
 import {
-  VENTE_POSTING_NEEDS_ATTENTION,
-  type VentePostingResult,
+  buildCreditNotePosting,
+  buildInvoiceIssuePosting,
+  type FaitGenerateurTva,
+  type PostingResult,
+  type SalesPostingAccounts,
 } from './compta-ventes.domain';
+import type { VentePostingResult } from './compta-ventes.domain';
 import type { ReglementMethod } from './compta-reglements.domain';
+import {
+  buildPaymentReversalPosting,
+  buildReceiptPosting,
+  buildRefundPosting,
+} from './compta-reglements.domain';
+
+export type ReconciliationStatus = 'pending' | 'projected' | 'blocked';
+
+export interface SalesAccountingEvent {
+  id: string;
+  eventKey: string;
+  eventType: string;
+  sourceId: string;
+  sourceVersion: number;
+  occurredAt: Date;
+  payload: Record<string, unknown>;
+  status: ReconciliationStatus;
+  attempts: number;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+  accountingEntryId?: string;
+}
+
+export interface ReconciliationFilters {
+  ids?: string[];
+  year?: number;
+  statuses?: ReconciliationStatus[];
+}
+
+export interface SalesAccountingEventStore {
+  getEvent(id: string): Promise<SalesAccountingEvent | null>;
+  listReconciliation(
+    filters: ReconciliationFilters,
+  ): Promise<SalesAccountingEvent[]>;
+  markProjected(id: string, entryId: string): Promise<SalesAccountingEvent>;
+  markBlocked(
+    id: string,
+    code: string,
+    message: string,
+  ): Promise<SalesAccountingEvent>;
+  markRetryableFailure(
+    id: string,
+    code: string,
+    message: string,
+  ): Promise<SalesAccountingEvent>;
+}
+
+export interface AccountingProjectionContext {
+  faitGenerateurTva: FaitGenerateurTva;
+  exerciseOpen: boolean;
+  accounts: SalesPostingAccounts;
+}
+
+export interface DraftAccountingEntry {
+  id: string;
+  status: 'brouillon' | 'validee';
+}
+
+export interface AccountingProjectionPort {
+  getContext(event: SalesAccountingEvent): Promise<AccountingProjectionContext>;
+  findEntryByEvent(eventKey: string): Promise<DraftAccountingEntry | null>;
+  createDraftEntry(
+    event: SalesAccountingEvent,
+    posting: Extract<PostingResult, { kind: 'ready' }>,
+    actor: string,
+  ): Promise<DraftAccountingEntry>;
+}
+
+export const SALES_ACCOUNTING_EVENT_STORE = Symbol(
+  'SALES_ACCOUNTING_EVENT_STORE',
+);
+export const ACCOUNTING_PROJECTION_PORT = Symbol('ACCOUNTING_PROJECTION_PORT');
+
+export interface ReconciliationSummary {
+  projected: number;
+  blocked: number;
+  pending: number;
+  records: SalesAccountingEvent[];
+}
+
+function cents(payload: Record<string, unknown>, key: string): number {
+  const value = payload[key];
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new Error(`Payload comptable invalide: ${key}.`);
+  }
+  return Number(value);
+}
+
+function text(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Payload comptable invalide: ${key}.`);
+  }
+  return value;
+}
 
 @Injectable()
 export class ComptaAutoPostingService {
-  private readonly logger = new Logger(ComptaAutoPostingService.name);
-
   constructor(
-    @Inject(COMPTA_REPOSITORY) private readonly compta: ComptaRepository,
+    @Inject(SALES_ACCOUNTING_EVENT_STORE)
+    private readonly events: SalesAccountingEventStore,
+    @Inject(ACCOUNTING_PROJECTION_PORT)
+    private readonly projection: AccountingProjectionPort,
   ) {}
 
-  /**
-   * Fired when a sales invoice is confirmed (leaves 'brouillon'). Posts the sale
-   * écriture (D 3421 / C 71242 / C 4455) — auto-validated when certain, else left
-   * as brouillon for the accountant.
-   */
-  onInvoiceConfirmed(invoiceId: string, actor: string | null): Promise<VentePostingResult> {
-    return this.run('vente', invoiceId, () =>
-      this.compta.genererEcritureVente(invoiceId, actor),
-    );
-  }
+  async projectEvent(
+    eventId: string,
+    actor: string,
+  ): Promise<SalesAccountingEvent> {
+    const event = await this.events.getEvent(eventId);
+    if (!event) throw new Error('Événement comptable introuvable.');
+    if (event.status === 'projected' && event.accountingEntryId) return event;
 
-  /**
-   * Fired when an invoice is marked paid (status → 'payee'). Posts the
-   * encaissement écriture (D 514x/516x / C 3421) for the received amount.
-   */
-  onInvoicePaid(
-    invoiceId: string,
-    actor: string | null,
-    method?: ReglementMethod,
-  ): Promise<VentePostingResult> {
-    return this.run('encaissement', invoiceId, () =>
-      this.compta.genererEcritureEncaissement(invoiceId, actor, { method }),
-    );
-  }
+    const existing = await this.projection.findEntryByEvent(event.eventKey);
+    if (existing) return this.events.markProjected(event.id, existing.id);
 
-  /**
-   * Non-throwing (never fails the status change) but NEVER silent: run a posting,
-   * return its structured outcome AND log — WARN for the "should have posted but
-   * couldn't" reasons (incoherent totals, closed exercice, unexpected error) so a
-   * human is guaranteed a trace, ERROR for an unexpected exception, quiet for
-   * benign no-ops (already posted / still draft). Idempotent.
-   */
-  private async run(
-    kind: string,
-    invoiceId: string,
-    poster: () => Promise<VentePostingResult>,
-  ): Promise<VentePostingResult> {
-    try {
-      const result = await poster();
-      if (result.created) {
-        this.logger.log(
-          `Écriture ${kind} ${result.validated ? 'validée' : 'brouillon'} — facture ${invoiceId}`,
-        );
-      } else if (VENTE_POSTING_NEEDS_ATTENTION.includes(result.reason)) {
-        this.logger.warn(
-          `Écriture ${kind} NON générée (${result.reason}) — facture ${invoiceId} à régulariser manuellement.`,
-        );
-      }
-      return result;
-    } catch (error) {
-      this.logger.error(
-        `Auto-post ${kind} échoué (facture ${invoiceId}) : ${(error as Error).message}`,
+    const context = await this.projection.getContext(event);
+    if (!context.exerciseOpen) {
+      return this.events.markBlocked(
+        event.id,
+        'exercice_cloture',
+        'L’exercice comptable de l’événement est clôturé.',
       );
-      return { created: false, reason: 'error' };
     }
+
+    const posting = this.buildPosting(event, context);
+    if (posting.kind === 'blocked') {
+      return this.events.markBlocked(event.id, posting.code, posting.message);
+    }
+
+    try {
+      const entry = await this.projection.createDraftEntry(
+        event,
+        posting,
+        actor,
+      );
+      return this.events.markProjected(event.id, entry.id);
+    } catch (error) {
+      return this.events.markRetryableFailure(
+        event.id,
+        'projection_transitoire',
+        error instanceof Error ? error.message : 'Échec transitoire inconnu.',
+      );
+    }
+  }
+
+  private buildPosting(
+    event: SalesAccountingEvent,
+    context: AccountingProjectionContext,
+  ): PostingResult {
+    const reference = text(event.payload, 'reference');
+    const clientName = text(event.payload, 'clientName');
+    if (event.eventType === 'invoice_issued') {
+      return buildInvoiceIssuePosting({
+        reference,
+        clientName,
+        totalHtCents: cents(event.payload, 'totalHtCents'),
+        tvaCents: cents(event.payload, 'tvaCents'),
+        totalTtcCents: cents(event.payload, 'totalTtcCents'),
+        faitGenerateurTva: context.faitGenerateurTva,
+        accounts: context.accounts,
+      });
+    }
+    if (event.eventType === 'payment_recorded') {
+      return buildReceiptPosting({
+        invoiceReference: reference,
+        clientName,
+        faitGenerateurTva: context.faitGenerateurTva,
+        amountCents: cents(event.payload, 'amountCents'),
+        invoiceTtcCents: cents(event.payload, 'invoiceTtcCents'),
+        invoiceTvaCents: cents(event.payload, 'invoiceTvaCents'),
+        previouslyReceivedCents: cents(event.payload, 'previouslyReceivedCents'),
+        previouslyTransferredTvaCents: cents(
+          event.payload,
+          'previouslyTransferredTvaCents',
+        ),
+        treasuryAccount: text(event.payload, 'treasuryAccount'),
+        accounts: context.accounts,
+      });
+    }
+    if (event.eventType === 'payment_reversed') {
+      const original = buildReceiptPosting({
+        invoiceReference: reference,
+        clientName,
+        faitGenerateurTva: context.faitGenerateurTva,
+        amountCents: cents(event.payload, 'amountCents'),
+        invoiceTtcCents: cents(event.payload, 'invoiceTtcCents'),
+        invoiceTvaCents: cents(event.payload, 'invoiceTvaCents'),
+        previouslyReceivedCents: cents(event.payload, 'previouslyReceivedCents'),
+        previouslyTransferredTvaCents: cents(
+          event.payload,
+          'previouslyTransferredTvaCents',
+        ),
+        treasuryAccount: text(event.payload, 'treasuryAccount'),
+        accounts: context.accounts,
+      });
+      return original.kind === 'ready'
+        ? buildPaymentReversalPosting({
+            invoiceReference: reference,
+            originalLines: original.lines,
+          })
+        : original;
+    }
+    if (event.eventType === 'refund_recorded') {
+      return buildRefundPosting({
+        invoiceReference: reference,
+        clientName,
+        amountCents: cents(event.payload, 'amountCents'),
+        treasuryAccount: text(event.payload, 'treasuryAccount'),
+        accounts: context.accounts,
+      });
+    }
+    if (event.eventType === 'credit_note_issued') {
+      return buildCreditNotePosting({
+        reference,
+        clientName,
+        faitGenerateurTva: context.faitGenerateurTva,
+        totalHtCents: cents(event.payload, 'totalHtCents'),
+        tvaCents: cents(event.payload, 'tvaCents'),
+        totalTtcCents: cents(event.payload, 'totalTtcCents'),
+        againstOutstandingCents: cents(
+          event.payload,
+          'againstOutstandingCents',
+        ),
+        againstCollectedCents: cents(event.payload, 'againstCollectedCents'),
+        outstandingBeforeCreditCents: cents(
+          event.payload,
+          'outstandingBeforeCreditCents',
+        ),
+        availablePendingTvaCents: cents(
+          event.payload,
+          'availablePendingTvaCents',
+        ),
+        availableDueTvaCents: cents(event.payload, 'availableDueTvaCents'),
+        accounts: context.accounts,
+      });
+    }
+    return {
+      kind: 'blocked',
+      code: 'compte_manquant',
+      message: `Type d’événement non pris en charge: ${event.eventType}.`,
+    };
+  }
+
+  async listSalesReconciliation(
+    filters: ReconciliationFilters,
+  ): Promise<SalesAccountingEvent[]> {
+    return this.events.listReconciliation(filters);
+  }
+
+  async reconcileSalesEvents(input: {
+    ids?: string[];
+    year?: number;
+    actor: string;
+  }): Promise<ReconciliationSummary> {
+    const candidates = await this.events.listReconciliation({
+      ids: input.ids,
+      year: input.year,
+      statuses: input.ids ? undefined : ['pending', 'blocked'],
+    });
+    const records: SalesAccountingEvent[] = [];
+    for (const event of candidates) {
+      records.push(await this.projectEvent(event.id, input.actor));
+    }
+    return {
+      projected: records.filter((record) => record.status === 'projected').length,
+      blocked: records.filter((record) => record.status === 'blocked').length,
+      pending: records.filter((record) => record.status === 'pending').length,
+      records,
+    };
+  }
+
+  /** @deprecated The issue endpoint now persists an event and reconciles by ID. */
+  async onInvoiceConfirmed(
+    _invoiceId: string,
+    _actor: string | null,
+  ): Promise<VentePostingResult> {
+    return { created: false, reason: 'already_posted' };
+  }
+
+  /** @deprecated Payments are projected from their durable event. */
+  async onInvoicePaid(
+    _invoiceId: string,
+    _actor: string | null,
+    _method?: ReglementMethod,
+  ): Promise<VentePostingResult> {
+    return { created: false, reason: 'already_posted' };
   }
 }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  clients,
   docSequences,
   invoiceLines,
   invoices,
@@ -82,7 +83,13 @@ function createFakeDb(mode: 'create' | 'issue') {
           where() {
             return {
               limit: () =>
-                Promise.resolve(table === invoices ? [BASE_INVOICE] : []),
+                Promise.resolve(
+                  table === invoices
+                    ? [BASE_INVOICE]
+                    : table === clients
+                      ? [{ name: 'Client BTP' }]
+                      : [],
+                ),
               orderBy: () => Promise.resolve([]),
             };
           },

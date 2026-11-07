@@ -545,6 +545,12 @@ export class DrizzleSalesRepository implements SalesRepository {
         throw new Error('Seule une facture brouillon peut être émise.');
       }
       const reference = await this.nextReference(tx, 'facture', existing.invoiceDate);
+      const [client] = await tx
+        .select({ name: clients.name })
+        .from(clients)
+        .where(eq(clients.id, existing.clientId))
+        .limit(1);
+      if (!client) throw new Error('Client de la facture introuvable.');
       const nextVersion = existing.version + 1;
       const [updated] = await tx
         .update(invoices)
@@ -569,7 +575,14 @@ export class DrizzleSalesRepository implements SalesRepository {
           sourceId: id,
           sourceVersion: nextVersion,
           occurredAt: issuedAt,
-          payload: { invoiceId: id, reference },
+          payload: {
+            invoiceId: id,
+            reference,
+            clientName: client.name,
+            totalHtCents: parseMoneyCents(existing.totalHtMad),
+            tvaCents: parseMoneyCents(existing.tvaMad),
+            totalTtcCents: parseMoneyCents(existing.totalTtcMad),
+          },
         })
         .onConflictDoNothing();
       return toInvoice(updated, lineRows);
@@ -704,6 +717,13 @@ export class DrizzleSalesRepository implements SalesRepository {
       if (!invoice || invoice.status === 'brouillon') {
         throw new Error('La facture doit être émise avant tout règlement.');
       }
+      if (!invoice.reference) throw new Error('Référence de facture manquante.');
+      const [client] = await tx
+        .select({ name: clients.name })
+        .from(clients)
+        .where(eq(clients.id, invoice.clientId))
+        .limit(1);
+      if (!client) throw new Error('Client de la facture introuvable.');
       const [paymentRows, creditRows] = await Promise.all([
         tx.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, input.invoiceId)),
         tx.select().from(creditNotes).where(eq(creditNotes.invoiceId, input.invoiceId)),
@@ -724,6 +744,29 @@ export class DrizzleSalesRepository implements SalesRepository {
       ) {
         throw new Error('Le règlement dépasse le solde restant ou est invalide.');
       }
+      const summarizedBefore = summarizePaymentMovements(
+        paymentRows.map((payment) => ({
+          type: payment.movementType as 'encaissement' | 'remboursement',
+          amountCents: parseMoneyCents(payment.amountMad),
+        })),
+      );
+      const previouslyReceivedCents =
+        summarizedBefore.receivedCents - summarizedBefore.refundedCents;
+      const invoiceTtcCents = parseMoneyCents(invoice.totalTtcMad);
+      const invoiceTvaCents = parseMoneyCents(invoice.tvaMad);
+      const transferredAt = (receivedCents: number) =>
+        receivedCents >= invoiceTtcCents
+          ? invoiceTvaCents
+          : Number(
+              (BigInt(invoiceTvaCents) * BigInt(receivedCents)) /
+                BigInt(invoiceTtcCents),
+            );
+      const previouslyTransferredTvaCents = transferredAt(
+        previouslyReceivedCents,
+      );
+      const paymentTvaCents =
+        transferredAt(previouslyReceivedCents + input.amountCents) -
+        previouslyTransferredTvaCents;
       const [payment] = await tx
         .insert(invoicePayments)
         .values({
@@ -735,6 +778,7 @@ export class DrizzleSalesRepository implements SalesRepository {
           treasuryAccount: input.treasuryAccount,
           valueDate: input.valueDate,
           reference: input.reference,
+          tvaTransferredMad: formatMoneyCents(paymentTvaCents),
           idempotencyKey: input.idempotencyKey,
           createdBy: input.actor,
         })
@@ -749,7 +793,18 @@ export class DrizzleSalesRepository implements SalesRepository {
           sourceId: input.invoiceId,
           sourceVersion: paymentRows.length + 1,
           occurredAt: payment.createdAt,
-          payload: { invoiceId: input.invoiceId, paymentId: payment.id },
+          payload: {
+            invoiceId: input.invoiceId,
+            paymentId: payment.id,
+            reference: invoice.reference,
+            clientName: client.name,
+            amountCents: input.amountCents,
+            invoiceTtcCents,
+            invoiceTvaCents,
+            previouslyReceivedCents,
+            previouslyTransferredTvaCents,
+            treasuryAccount: input.treasuryAccount,
+          },
         })
         .onConflictDoNothing();
     });
@@ -773,6 +828,29 @@ export class DrizzleSalesRepository implements SalesRepository {
         .limit(1);
       if (!original || original.movementType !== 'encaissement') {
         throw new Error('Règlement original introuvable.');
+      }
+      const [[invoice], [client], [originalEvent]] = await Promise.all([
+        tx
+          .select()
+          .from(invoices)
+          .where(eq(invoices.id, input.invoiceId))
+          .limit(1),
+        tx
+          .select({ name: clients.name })
+          .from(clients)
+          .innerJoin(invoices, eq(invoices.clientId, clients.id))
+          .where(eq(invoices.id, input.invoiceId))
+          .limit(1),
+        tx
+          .select({ payload: salesAccountingEvents.payload })
+          .from(salesAccountingEvents)
+          .where(
+            eq(salesAccountingEvents.eventKey, `payment_recorded:${original.id}`),
+          )
+          .limit(1),
+      ]);
+      if (!invoice?.reference || !client || !originalEvent) {
+        throw new Error('Contexte du règlement original incomplet.');
       }
       const [existing] = await tx
         .select({ id: invoicePayments.id })
@@ -809,6 +887,10 @@ export class DrizzleSalesRepository implements SalesRepository {
             invoiceId: input.invoiceId,
             paymentId: original.id,
             reversalId: reversal.id,
+            ...originalEvent.payload,
+            reference: invoice.reference,
+            clientName: client.name,
+            treasuryAccount: original.treasuryAccount,
           },
         })
         .onConflictDoNothing();
@@ -891,6 +973,50 @@ export class DrizzleSalesRepository implements SalesRepository {
           summarized.receivedCents - summarized.refundedCents,
         requestedCreditCents: parseMoneyCents(existing.totalTtcMad),
       });
+      const [client] = await tx
+        .select({ name: clients.name })
+        .from(clients)
+        .where(eq(clients.id, invoice.clientId))
+        .limit(1);
+      if (!client) throw new Error('Client de la facture introuvable.');
+      const invoiceTtcCents = parseMoneyCents(invoice.totalTtcMad);
+      const invoiceTvaCents = parseMoneyCents(invoice.tvaMad);
+      const netReceivedCents =
+        summarized.receivedCents - summarized.refundedCents;
+      const transferredTvaCents =
+        netReceivedCents >= invoiceTtcCents
+          ? invoiceTvaCents
+          : Number(
+              (BigInt(invoiceTvaCents) * BigInt(netReceivedCents)) /
+                BigInt(invoiceTtcCents),
+            );
+      const reversedPendingCents = creditRows
+        .filter((creditNote) => creditNote.status !== 'brouillon')
+        .reduce(
+          (total, creditNote) =>
+            total + parseMoneyCents(creditNote.reversedPendingTvaMad),
+          0,
+        );
+      const reversedDueCents = creditRows
+        .filter((creditNote) => creditNote.status !== 'brouillon')
+        .reduce(
+          (total, creditNote) =>
+            total + parseMoneyCents(creditNote.reversedDueTvaMad),
+          0,
+        );
+      const availablePendingTvaCents = Math.max(
+        0,
+        invoiceTvaCents - transferredTvaCents - reversedPendingCents,
+      );
+      const availableDueTvaCents = Math.max(
+        0,
+        transferredTvaCents - reversedDueCents,
+      );
+      const outstandingBeforeCreditCents = this.settlementFromRows(
+        invoice,
+        paymentRows,
+        creditRows,
+      ).settlement.outstandingCents;
       const reference = await this.nextReference(tx, 'avoir', existing.creditDate);
       const nextVersion = existing.version + 1;
       const [updated] = await tx
@@ -924,7 +1050,20 @@ export class DrizzleSalesRepository implements SalesRepository {
           sourceId: id,
           sourceVersion: nextVersion,
           occurredAt: issuedAt,
-          payload: { creditNoteId: id, invoiceId: invoice.id, reference },
+          payload: {
+            creditNoteId: id,
+            invoiceId: invoice.id,
+            reference,
+            clientName: client.name,
+            totalHtCents: parseMoneyCents(existing.totalHtMad),
+            tvaCents: parseMoneyCents(existing.tvaMad),
+            totalTtcCents: parseMoneyCents(existing.totalTtcMad),
+            againstOutstandingCents: allocation.againstOutstandingCents,
+            againstCollectedCents: allocation.againstCollectedCents,
+            outstandingBeforeCreditCents,
+            availablePendingTvaCents,
+            availableDueTvaCents,
+          },
         })
         .onConflictDoNothing();
       return toCreditNote(updated);

@@ -22,6 +22,7 @@ import { z } from 'zod';
 import { Roles } from '../auth/auth.module';
 import { VaultModule } from '../vault/vault.module';
 import { ComptaRepositoryModule } from './compta-repository.module';
+import { ComptaAutoPostingService } from './compta-auto-posting.service';
 import { ComptaRegistresController } from './compta-registres.controller';
 import {
   COMPTA_REPOSITORY,
@@ -113,6 +114,7 @@ export class ComptaCoreController {
   constructor(
     @Inject(COMPTA_REPOSITORY) private readonly compta: ComptaRepository,
     @Inject(COMPTA_REGISTRES_REPOSITORY) private readonly registres: ComptaRegistresRepository,
+    private readonly autoPosting: ComptaAutoPostingService,
   ) {}
 
   // Profil & paramètres.
@@ -267,21 +269,23 @@ export class ComptaCoreController {
     }
   }
 
-  @Post('ecritures/generer-ventes')
-  async genererVentes(@Body() body: unknown, @Req() req: AuthedRequest) {
-    const parsed = z.object({ annee: anneeSchema }).safeParse(body);
+  @Post('reconciliation/ventes/retry')
+  async retrySalesReconciliation(@Body() body: unknown, @Req() req: AuthedRequest) {
+    const parsed = z
+      .object({
+        ids: z.array(z.string().uuid()).min(1).optional(),
+        annee: anneeSchema.optional(),
+      })
+      .safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     try {
       const actor = actorFrom(req);
-      // Backfill BOTH legs so no collected TVA is lost: sale écritures first (they
-      // credit 4455), then the encaissement écritures for already-paid invoices
-      // (they transfer 4455→4456 → the TVA becomes declarable). The safety net.
-      const crees = await this.compta.genererEcrituresVentes(parsed.data.annee, actor);
-      const encaissements = await this.compta.genererEcrituresEncaissements(
-        parsed.data.annee,
+      if (!actor) throw new BadRequestException('Identité acteur requise.');
+      return await this.autoPosting.reconcileSalesEvents({
+        ids: parsed.data.ids,
+        year: parsed.data.annee,
         actor,
-      );
-      return { crees, encaissements };
+      });
     } catch (error) {
       toComptaHttp(error);
     }
@@ -314,11 +318,11 @@ export class ComptaCoreController {
   }
 
   /** Réconciliation : factures confirmées/payées dont l'écriture manque. */
-  @Get('reconciliation')
-  async reconciliation(@Query('annee') anneeStr?: string) {
+  @Get('reconciliation/ventes')
+  async salesReconciliation(@Query('annee') anneeStr?: string) {
     const parsed = anneeSchema.safeParse(anneeStr);
     const annee = parsed.success ? parsed.data : new Date().getFullYear();
-    return this.compta.reconciliationVentes(annee);
+    return this.autoPosting.listSalesReconciliation({ year: annee });
   }
 
   // Livres.

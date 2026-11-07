@@ -1,116 +1,180 @@
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { Logger } from '@nestjs/common';
-import { ComptaAutoPostingService } from './compta-auto-posting.service';
-import type { ComptaRepository } from './compta.repository';
-import type { VentePostingResult } from './compta-ventes.domain';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+  ComptaAutoPostingService,
+  type AccountingProjectionPort,
+  type SalesAccountingEvent,
+  type SalesAccountingEventStore,
+} from './compta-auto-posting.service';
 
-// The service must be NON-THROWING but NEVER SILENT: it returns the structured
-// posting outcome and logs — WARN for "should have posted but couldn't" reasons
-// (closed exercice, incoherent totals, unexpected error), quiet for benign no-ops.
+const EVENT: SalesAccountingEvent = {
+  id: 'event-1',
+  eventKey: 'invoice_issued:invoice-1:2',
+  eventType: 'invoice_issued',
+  sourceId: 'invoice-1',
+  sourceVersion: 2,
+  occurredAt: new Date('2026-06-21T00:00:00Z'),
+  status: 'pending',
+  attempts: 0,
+  payload: {
+    reference: 'FAC-2026-000001',
+    clientName: 'Client BTP',
+    totalHtCents: 100_000,
+    tvaCents: 20_000,
+    totalTtcCents: 120_000,
+  },
+};
 
-function makeService(impl: () => Promise<VentePostingResult>) {
-  const genererEcritureVente = vi.fn(impl);
-  const genererEcritureEncaissement = vi.fn(impl);
-  const repo = {
-    genererEcritureVente,
-    genererEcritureEncaissement,
-  } as unknown as ComptaRepository;
+function makeHarness(event: SalesAccountingEvent = EVENT) {
+  let stored = { ...event };
+  const events: SalesAccountingEventStore = {
+    getEvent: vi.fn(async () => stored),
+    listReconciliation: vi.fn(async () => [stored]),
+    markProjected: vi.fn(async (_id, entryId) => {
+      stored = {
+        ...stored,
+        status: 'projected',
+        accountingEntryId: entryId,
+        attempts: stored.attempts + 1,
+        lastErrorCode: undefined,
+        lastErrorMessage: undefined,
+      };
+      return stored;
+    }),
+    markBlocked: vi.fn(async (_id, code, message) => {
+      stored = {
+        ...stored,
+        status: 'blocked',
+        attempts: stored.attempts + 1,
+        lastErrorCode: code,
+        lastErrorMessage: message,
+      };
+      return stored;
+    }),
+    markRetryableFailure: vi.fn(async (_id, code, message) => {
+      stored = {
+        ...stored,
+        status: 'pending',
+        attempts: stored.attempts + 1,
+        lastErrorCode: code,
+        lastErrorMessage: message,
+      };
+      return stored;
+    }),
+  };
+  const projection: AccountingProjectionPort = {
+    getContext: vi.fn(async () => ({
+      faitGenerateurTva: 'encaissement' as const,
+      exerciseOpen: true,
+      accounts: {
+        client: '3421',
+        revenue: '71242',
+        tvaPending: '4455',
+        tvaDue: '4456',
+      },
+    })),
+    findEntryByEvent: vi.fn(async () => null),
+    createDraftEntry: vi.fn(async () => ({
+      id: 'entry-1',
+      status: 'brouillon' as const,
+    })),
+  };
   return {
-    service: new ComptaAutoPostingService(repo),
-    genererEcritureVente,
-    genererEcritureEncaissement,
+    service: new ComptaAutoPostingService(events, projection),
+    events,
+    projection,
   };
 }
 
-describe('ComptaAutoPostingService.onInvoiceConfirmed', () => {
-  let warn: ReturnType<typeof vi.spyOn>;
-  let log: ReturnType<typeof vi.spyOn>;
-  let error: ReturnType<typeof vi.spyOn>;
+describe('ComptaAutoPostingService.projectEvent', () => {
+  let harness: ReturnType<typeof makeHarness>;
 
   beforeEach(() => {
-    warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-    log = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-    error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-  });
-  afterEach(() => vi.restoreAllMocks());
-
-  test('returns the result and logs on a successful post', async () => {
-    const { service, genererEcritureVente } = makeService(async () => ({
-      created: true,
-      validated: true,
-      reason: 'posted',
-    }));
-
-    const result = await service.onInvoiceConfirmed('inv-1', 'compta-user');
-
-    expect(genererEcritureVente).toHaveBeenCalledWith('inv-1', 'compta-user');
-    expect(result).toEqual({ created: true, validated: true, reason: 'posted' });
-    expect(log).toHaveBeenCalledTimes(1);
-    expect(warn).not.toHaveBeenCalled();
+    harness = makeHarness();
   });
 
-  test('WARNs (never silent) when a closed exercice blocks posting', async () => {
-    const { service } = makeService(async () => ({
-      created: false,
-      reason: 'exercice_cloture',
-    }));
-
-    const result = await service.onInvoiceConfirmed('inv-2', 'u');
-
-    expect(result.reason).toBe('exercice_cloture');
-    expect(warn).toHaveBeenCalledTimes(1);
+  test('creates one balanced draft and marks the event projected', async () => {
+    const result = await harness.service.projectEvent('event-1', 'comptable-1');
+    expect(result.status).toBe('projected');
+    expect(harness.projection.createDraftEntry).toHaveBeenCalledWith(
+      EVENT,
+      expect.objectContaining({ kind: 'ready' }),
+      'comptable-1',
+    );
+    expect(harness.events.markProjected).toHaveBeenCalledWith(
+      'event-1',
+      'entry-1',
+    );
   });
 
-  test('WARNs when totals are incoherent (e.g. a zero-total invoice)', async () => {
-    const { service } = makeService(async () => ({ created: false, reason: 'incoherent' }));
-
-    await service.onInvoiceConfirmed('inv-3', 'u');
-
-    expect(warn).toHaveBeenCalledTimes(1);
-  });
-
-  test('a benign already-posted no-op neither warns nor logs', async () => {
-    const { service } = makeService(async () => ({ created: false, reason: 'already_posted' }));
-
-    const result = await service.onInvoiceConfirmed('inv-4', 'u');
-
-    expect(result.reason).toBe('already_posted');
-    expect(warn).not.toHaveBeenCalled();
-    expect(log).not.toHaveBeenCalled();
-  });
-
-  test('an unexpected repo error is caught, logged ERROR, and surfaced as reason=error', async () => {
-    const { service } = makeService(async () => {
-      throw new Error('numéro collision');
+  test('replay returns the existing entry without duplication', async () => {
+    vi.mocked(harness.projection.findEntryByEvent).mockResolvedValue({
+      id: 'entry-existing',
+      status: 'brouillon',
     });
-
-    const result = await service.onInvoiceConfirmed('inv-5', 'u');
-
-    expect(result).toEqual({ created: false, reason: 'error' });
-    expect(error).toHaveBeenCalledTimes(1);
+    const result = await harness.service.projectEvent('event-1', 'comptable-1');
+    expect(result.accountingEntryId).toBe('entry-existing');
+    expect(harness.projection.createDraftEntry).not.toHaveBeenCalled();
   });
 
-  test('onInvoicePaid routes to the encaissement poster with the chosen method', async () => {
-    const { service, genererEcritureEncaissement } = makeService(async () => ({
-      created: true,
-      validated: true,
-      reason: 'posted',
-    }));
+  test.each([
+    ['non_configure', true, 'fait_generateur_tva_non_configure'],
+    ['encaissement', false, 'exercice_cloture'],
+  ] as const)(
+    'marks %s context blocked with a stable code',
+    async (faitGenerateurTva, exerciseOpen, code) => {
+      vi.mocked(harness.projection.getContext).mockResolvedValue({
+        faitGenerateurTva,
+        exerciseOpen,
+        accounts: {
+          client: '3421',
+          revenue: '71242',
+          tvaPending: '4455',
+          tvaDue: '4456',
+        },
+      });
+      const result = await harness.service.projectEvent('event-1', 'comptable-1');
+      expect(result.status).toBe('blocked');
+      expect(result.lastErrorCode).toBe(code);
+      expect(harness.projection.createDraftEntry).not.toHaveBeenCalled();
+    },
+  );
 
-    const result = await service.onInvoicePaid('inv-6', 'u', 'espece');
-
-    expect(genererEcritureEncaissement).toHaveBeenCalledWith('inv-6', 'u', {
-      method: 'espece',
+  test('missing account mapping blocks without guessing an account', async () => {
+    vi.mocked(harness.projection.getContext).mockResolvedValue({
+      faitGenerateurTva: 'debits',
+      exerciseOpen: true,
+      accounts: {
+        client: '3421',
+        revenue: null,
+        tvaPending: '4455',
+        tvaDue: '4456',
+      },
     });
-    expect(result.reason).toBe('posted');
-    expect(log).toHaveBeenCalledTimes(1);
+    const result = await harness.service.projectEvent('event-1', 'comptable-1');
+    expect(result.lastErrorCode).toBe('compte_manquant');
   });
 
-  test('onInvoicePaid WARNs (never silent) when the encaissement cannot post', async () => {
-    const { service } = makeService(async () => ({ created: false, reason: 'incoherent' }));
+  test('transient persistence failure increments attempts and remains retryable', async () => {
+    vi.mocked(harness.projection.createDraftEntry).mockRejectedValueOnce(
+      new Error('database unavailable'),
+    );
+    const result = await harness.service.projectEvent('event-1', 'comptable-1');
+    expect(result.status).toBe('pending');
+    expect(result.attempts).toBe(1);
+    expect(result.lastErrorCode).toBe('projection_transitoire');
+  });
 
-    await service.onInvoicePaid('inv-7', 'u');
-
-    expect(warn).toHaveBeenCalledTimes(1);
+  test('successful retry clears the previous blocking message', async () => {
+    harness = makeHarness({
+      ...EVENT,
+      status: 'blocked',
+      attempts: 1,
+      lastErrorCode: 'exercice_cloture',
+      lastErrorMessage: 'Exercice fermé',
+    });
+    const result = await harness.service.projectEvent('event-1', 'comptable-1');
+    expect(result.status).toBe('projected');
+    expect(result.lastErrorCode).toBeUndefined();
+    expect(result.lastErrorMessage).toBeUndefined();
   });
 });

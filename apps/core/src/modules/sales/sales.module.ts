@@ -21,6 +21,7 @@ import { ComptaRepositoryModule } from '../compta/compta-repository.module';
 import { ComptaAutoPostingService } from '../compta/compta-auto-posting.service';
 import { DrizzleSalesRepository } from './sales.drizzle.repository';
 import { InMemorySalesRepository } from './sales.repository';
+import { SalesAccountingEventModule } from './sales-accounting-event.module';
 import {
   SALES_REPOSITORY,
   type SalesRepository,
@@ -405,8 +406,9 @@ const salesRepositoryProvider = {
 };
 
 @Module({
-  imports: [ComptaRepositoryModule],
+  imports: [ComptaRepositoryModule, SalesAccountingEventModule],
   controllers: [SalesController],
   providers: [salesRepositoryProvider],
+  exports: [salesRepositoryProvider, SalesAccountingEventModule],
 })
 export class SalesModule {}
