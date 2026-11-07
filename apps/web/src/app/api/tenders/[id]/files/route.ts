@@ -1,24 +1,11 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { unzipSync } from 'fflate';
 import { auth } from '@/auth';
+import type { DceFileKind } from '@/lib/dce-file-kind';
 
 const API_URL = process.env.ATLAS_API_URL ?? 'http://localhost:3000/api';
 
-/** datao's "Voir le fichier source": lists the documents inside a tender's DCE
- *  ZIP so the drawer can open any of them inline. Reuses the core /dossier
- *  endpoint (which lazily retrieves + caches the ZIP in MinIO), fetches the ZIP
- *  server-side, and returns the entry list classified by viewer kind. */
-
-type FileKind = 'pdf' | 'excel' | 'word' | 'image' | 'other';
-
-function kindOf(name: string): FileKind {
-  const ext = name.split('.').pop()?.toLowerCase() ?? '';
-  if (ext === 'pdf') return 'pdf';
-  if (ext === 'xls' || ext === 'xlsx' || ext === 'xlsm' || ext === 'csv') return 'excel';
-  if (ext === 'doc' || ext === 'docx' || ext === 'rtf') return 'word';
-  if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff', 'webp'].includes(ext)) return 'image';
-  return 'other';
-}
+/** Authenticated BFF for Core's metadata-only DCE listing. Core reads the ZIP
+ * central directory without inflating every document. */
 
 /** Junk entries that get zipped into DCEs but aren't real documents: Word/Excel
  *  owner-lock temp files (~$…), OS metadata, and hidden dotfiles. */
@@ -51,7 +38,7 @@ export async function GET(
     return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
   }
 
-  const metaRes = await fetch(`${API_URL}/tender/tenders/${id}/dossier`, {
+  const metaRes = await fetch(`${API_URL}/tender/tenders/${encodeURIComponent(id)}/files`, {
     headers: { Authorization: `Bearer ${session.accessToken}` },
     cache: 'no-store',
   });
@@ -61,31 +48,17 @@ export async function GET(
       { status: metaRes.status },
     );
   }
-  const meta = (await metaRes.json()) as { url: string; filename: string };
-
-  const zipRes = await fetch(meta.url, { cache: 'no-store' });
-  if (!zipRes.ok) {
-    return NextResponse.json({ error: 'ZIP indisponible' }, { status: 502 });
-  }
-  const zipBytes = new Uint8Array(await zipRes.arrayBuffer());
-
-  let entries: Record<string, Uint8Array>;
-  try {
-    entries = unzipSync(zipBytes, {
-      filter: (f) => !f.name.endsWith('/') && f.originalSize > 0 && !isJunk(f.name),
-    });
-  } catch {
-    return NextResponse.json({ error: 'ZIP illisible' }, { status: 502 });
-  }
-
-  const files = Object.entries(entries)
-    .map(([name, bytes]) => ({
-      name,
-      label: name.split('/').pop() || name,
-      kind: kindOf(name),
-      sizeBytes: bytes.length,
-    }))
+  const payload = (await metaRes.json()) as {
+    files: Array<{
+      name: string;
+      label: string;
+      kind: DceFileKind;
+      sizeBytes: number;
+    }>;
+  };
+  const files = payload.files
+    .filter((file) => !isJunk(file.name))
     .sort((a, b) => priority(a.name) - priority(b.name) || a.label.localeCompare(b.label));
 
-  return NextResponse.json({ filename: meta.filename, files });
+  return NextResponse.json({ files });
 }

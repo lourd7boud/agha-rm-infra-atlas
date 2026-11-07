@@ -4,8 +4,8 @@
 //    public: AO ouvert/restreint/présélection, concours, négocié; bons de
 //    commande plafonnés à 500 000 DH TTC/an/nature — art. 91; sous-traitance
 //    notifiée au maître d'ouvrage; groupement conjoint/solidaire; privé).
-// 2. Moteur des coûts réels terrain: main d'œuvre (pointage) + matériel +
-//    consommations + dépenses → coût total vs décompte cumulé → marge.
+// 2. Resource valuations and unreconciled expenses are separate: no profit can
+//    be inferred until coverage, duplicates and tax basis have been reconciled.
 import { z } from 'zod';
 
 // ─── Notre entreprise (autofill quand NOUS sommes l'attributaire) ────────────
@@ -175,6 +175,12 @@ export interface CoutsTerrainInput {
   /** Dernier décompte TTC cumulé (0 si aucun). */
   decompteCumuleTtcMad: number;
   montantMarcheMad: number;
+  latestDecompte?: CoutsTerrain['latestDecompte'];
+  missingValuations?: CoutsTerrain['missingValuations'];
+  reconciledExpensesMad?: number;
+  expensesAwaitingReconciliationMad?: number;
+  unresolvedExpenseCount?: number;
+  reconciledExpenseCount?: number;
 }
 
 export interface CoutsTerrain {
@@ -182,11 +188,32 @@ export interface CoutsTerrain {
   materielMad: number;
   consommationsMad: number;
   depensesMad: number;
-  totalMad: number;
+  /** Unavailable until costs, overlap and tax basis have been reconciled. */
+  totalMad: number | null;
+  operationalResourceCostsMad: number;
+  /** Known resource valuations plus standalone expenses explicitly reconciled by office. */
+  knownCostsMad: number;
+  reconciledExpensesMad: number;
+  unresolvedExpenseCount: number;
+  reconciledExpenseCount: number;
+  expensesAwaitingReconciliationMad: number;
+  reconciliationStatus: 'pending';
+  costBasis: 'unreconciled';
+  missingValuations: {
+    mainOeuvre: number;
+    materiel: number;
+    consommations: number;
+  };
+  latestDecompte: {
+    id: string;
+    numero: number;
+    dateDecompte: Date | null;
+    statut: string;
+  } | null;
   decompteCumuleTtcMad: number;
-  /** Décompte cumulé − coûts réels (positif = marge brute). */
-  margeBruteMad: number;
-  /** Part de chaque poste dans le coût total (0 quand total = 0). */
+  /** Unavailable: cumulative TTC cannot be compared with unreconciled costs. */
+  margeBruteMad: number | null;
+  /** Shares of known operational valuations; expenses are excluded (0). */
   repartitionPct: {
     mainOeuvre: number;
     materiel: number;
@@ -194,32 +221,45 @@ export interface CoutsTerrain {
     depenses: number;
   };
   /** Coûts réels / montant marché (indicateur de dérive budget). */
-  coutSurMarchePct: number;
+  coutSurMarchePct: number | null;
 }
 
 const r2 = (n: number): number => Math.round(n * 100) / 100;
 
 export function computeCoutsTerrain(input: CoutsTerrainInput): CoutsTerrain {
-  const total = r2(
-    input.mainOeuvreMad + input.materielMad + input.consommationsMad + input.depensesMad,
-  );
+  const total = r2(input.mainOeuvreMad + input.materielMad + input.consommationsMad);
   const pct = (part: number): number => (total > 0 ? r2((part / total) * 100) : 0);
   return {
     mainOeuvreMad: r2(input.mainOeuvreMad),
     materielMad: r2(input.materielMad),
     consommationsMad: r2(input.consommationsMad),
     depensesMad: r2(input.depensesMad),
-    totalMad: total,
+    totalMad: null,
+    operationalResourceCostsMad: total,
+    knownCostsMad: r2(total + (input.reconciledExpensesMad ?? 0)),
+    reconciledExpensesMad: r2(input.reconciledExpensesMad ?? 0),
+    unresolvedExpenseCount: input.unresolvedExpenseCount ?? 0,
+    reconciledExpenseCount: input.reconciledExpenseCount ?? 0,
+    expensesAwaitingReconciliationMad: r2(
+      input.expensesAwaitingReconciliationMad ?? input.depensesMad,
+    ),
+    reconciliationStatus: 'pending',
+    costBasis: 'unreconciled',
+    missingValuations: input.missingValuations ?? {
+      mainOeuvre: 0,
+      materiel: 0,
+      consommations: 0,
+    },
+    latestDecompte: input.latestDecompte ?? null,
     decompteCumuleTtcMad: r2(input.decompteCumuleTtcMad),
-    margeBruteMad: r2(input.decompteCumuleTtcMad - total),
+    margeBruteMad: null,
     repartitionPct: {
       mainOeuvre: pct(input.mainOeuvreMad),
       materiel: pct(input.materielMad),
       consommations: pct(input.consommationsMad),
-      depenses: pct(input.depensesMad),
+      depenses: 0,
     },
-    coutSurMarchePct:
-      input.montantMarcheMad > 0 ? r2((total / input.montantMarcheMad) * 100) : 0,
+    coutSurMarchePct: null,
   };
 }
 

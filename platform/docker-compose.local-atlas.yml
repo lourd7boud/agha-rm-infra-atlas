@@ -1,0 +1,183 @@
+# Temporary single-user local ATLAS stack.
+# Start from the repository root with:
+#   docker compose -f platform/docker-compose.local-atlas.yml up -d --build
+name: atlas-local
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: atlas-local
+    ports: ["127.0.0.1:15433:5432"]
+    volumes:
+      - atlas_local_pgdata:/var/lib/postgresql/data
+      - ../LOCAL_BACKUPS/migration-20260830:/restore:ro
+      - ./local-postgres-indexes.sql:/docker-entrypoint-initdb.d/20-local-indexes.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout:  3s
+      retries:  20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "1gb", "--maxmemory-policy", "noeviction"]
+    ports: ["127.0.0.1:16380:6379"]
+    volumes: ["atlas_local_redisdata:/data"]
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports: ["127.0.0.1:19000:9000", "127.0.0.1:19001:9001"]
+    volumes: ["atlas_local_miniodata:/data"]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    restart: unless-stopped
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Force a stable frontend URL so tokens ALWAYS carry
+      # iss=http://localhost:18081/realms/atlas regardless of which network
+      # path (browser localhost vs container keycloak:8080) requested them.
+
+
+
+      # Without this, the web container's token exchange produces
+      # iss=http://keycloak:8080/realms/atlas (or host.docker.internal:18081)
+      # and Auth.js rejects it against the browser-facing issuer →
+      # CallbackRouteError "unexpected iss".
+      KC_HOSTNAME: http://localhost:18081
+    ports: ["127.0.0.1:18081:8080"]
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+      - atlas_local_kcdata:/opt/keycloak/data
+
+  preview-worker:
+    build:
+      context: ..
+      dockerfile: apps/preview-worker/Dockerfile
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 96
+    cpus: 1.0
+    mem_limit: 320m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,mode=1777
+    volumes:
+      - atlas_local_preview_socket:/run/atlas-preview
+    healthcheck:
+      test: ["CMD", "node", "-e", "const n=require('node:net').connect('/run/atlas-preview/worker.sock',()=>{n.write('GET /health HTTP/1.0\\r\\n\\r\\n')});n.on('data',d=>process.exit(d.includes('200')?0:1));n.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),3000)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  core:
+    build:
+      context: ..
+      dockerfile: apps/core/Dockerfile
+    restart: unless-stopped
+    env_file: ../.atlas-local.env
+    environment:
+      DATABASE_URL: postgres://atlas:atlas-local@postgres:5432/atlas
+      # KC_HOSTNAME forces iss=http://localhost:18081/realms/atlas in all
+      # tokens, so OIDC_ISSUER must match. JWKS is fetched via the host
+      # gateway (host.docker.internal) which reaches Keycloak's published port.
+
+
+
+
+      OIDC_ISSUER: http://localhost:18081/realms/atlas
+      OIDC_JWKS_ISSUER: http://host.docker.internal:18081/realms/atlas
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      WATCH_WORKER_ENABLED: "false"
+      PREVIEW_WORKER_SOCKET: /run/atlas-preview/worker.sock
+      PORT: "3000"
+    ports: ["127.0.0.1:13000:3000"]
+    volumes:
+      - atlas_local_preview_socket:/run/atlas-preview
+    depends_on:
+      postgres: { condition: service_healthy }
+      preview-worker: { condition: service_healthy }
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/core/Dockerfile
+    restart: unless-stopped
+    env_file: ../.atlas-local.env
+    environment:
+      DATABASE_URL: postgres://atlas:atlas-local@postgres:5432/atlas
+      OIDC_ISSUER: http://localhost:18081/realms/atlas
+      OIDC_JWKS_ISSUER: http://host.docker.internal:18081/realms/atlas
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      WATCH_WORKER_ENABLED: "true"
+      PORT: "3000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+      keycloak: { condition: service_started }
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    env_file: ../.atlas-local.env
+    environment:
+      CORE_API_URL: http://core:3000
+      ATLAS_API_URL: http://core:3000/api
+      NEXT_PUBLIC_API_URL: http://localhost:13000
+      AUTH_URL: http://localhost:13001
+      # The issuer MUST match the `iss` claim in tokens. KC_HOSTNAME forces
+      # iss=http://localhost:18081/realms/atlas in all tokens.
+
+
+
+
+
+
+      AUTH_KEYCLOAK_ISSUER: http://localhost:18081/realms/atlas
+      # Browser authorization URL:the user's browser reaches Keycloak via the
+      # host-published port.
+      AUTH_KEYCLOAK_BROWSER_ISSUER: http://localhost:18081/realms/atlas
+      # Server-side issuer:the web container reaches Keycloak via the host
+      # gateway (host.docker.internal) for discovery/token/userinfo.
+
+
+
+
+
+      AUTH_KEYCLOAK_SERVER_ISSUER: http://host.docker.internal:18081/realms/atlas
+      NODE_ENV: production
+    ports: ["127.0.0.1:13001:3001"]
+    healthcheck:
+
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/login >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout:  10s
+      retries:  5
+      start_period:  30s
+    depends_on:
+      core: { condition: service_started }
+      keycloak: { condition: service_started }
+
+volumes:
+  atlas_local_pgdata:
+  atlas_local_redisdata:
+  atlas_local_miniodata:
+  atlas_local_kcdata:
+  atlas_local_preview_socket:

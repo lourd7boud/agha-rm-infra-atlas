@@ -12,14 +12,21 @@ import {
   clients,
   deliveryLines,
   deliveryNotes,
+  docSequences,
   invoiceLines,
   invoices,
   quoteLines,
   quotes,
 } from '../../db/schema';
-import { computeDocTotals, lineTotal } from './sales.domain';
+import {
+  computeDocTotals,
+  docExercice,
+  formatDocReference,
+  lineTotal,
+} from './sales.domain';
 import type {
   DeliveryNoteStatus,
+  DocType,
   InvoiceStatus,
   QuoteStatus,
 } from './sales.domain';
@@ -57,8 +64,43 @@ type DeliveryLineRow = typeof deliveryLines.$inferSelect;
 type InvoiceRow = typeof invoices.$inferSelect;
 type InvoiceLineRow = typeof invoiceLines.$inferSelect;
 
+/** The transaction handle drizzle passes to a `.transaction()` callback — the
+ *  type the sequence-minting helper runs on so the counter bump commits (or
+ *  rolls back) together with the document insert. */
+type SalesTx = Parameters<Parameters<Db['transaction']>[0]>[0];
+
 export class DrizzleSalesRepository implements SalesRepository {
   constructor(private readonly db: Db) {}
+
+  /**
+   * Mints the next gap-free sequential reference for a document, inside the
+   * caller's transaction. A single INSERT … ON CONFLICT DO UPDATE … RETURNING
+   * atomically bumps sales.doc_sequence for (company, docType, exercice): the
+   * first document of a fiscal year inserts last_number = 1, every next one
+   * increments the stored value. Sharing the insert's transaction means a
+   * rollback also unwinds the counter, so the sequence never skips a number
+   * (art. 145 CGI). Concurrent inserts serialize on the conflicting PK row.
+   */
+  private async nextReference(
+    tx: SalesTx,
+    docType: DocType,
+    date: Date,
+  ): Promise<string> {
+    const exercice = docExercice(date);
+    const [row] = await tx
+      .insert(docSequences)
+      .values({ docType, exercice, lastNumber: 1 })
+      .onConflictDoUpdate({
+        target: [
+          docSequences.companyId,
+          docSequences.docType,
+          docSequences.exercice,
+        ],
+        set: { lastNumber: sql`${docSequences.lastNumber} + 1` },
+      })
+      .returning({ lastNumber: docSequences.lastNumber });
+    return formatDocReference(docType, exercice, Number(row?.lastNumber ?? 1));
+  }
 
   async upsertClient(input: UpsertClient): Promise<ClientRecord> {
     // One atomic INSERT … ON CONFLICT keyed on (company_id, name). The SET clause
@@ -141,12 +183,15 @@ export class DrizzleSalesRepository implements SalesRepository {
     // must never leave a header with no lines. Mirrors InMemory's single
     // mutation; same transactional shape across the sales create paths.
     return this.db.transaction(async (tx) => {
+      const reference =
+        input.reference ??
+        (await this.nextReference(tx, 'devis', input.quoteDate));
       const [head] = await tx
         .insert(quotes)
         .values({
           clientId: input.clientId,
           projectId: input.projectId,
-          reference: input.reference,
+          reference,
           objet: input.objet,
           quoteDate: input.quoteDate,
           validUntil: input.validUntil,
@@ -241,13 +286,16 @@ export class DrizzleSalesRepository implements SalesRepository {
   ): Promise<DeliveryNoteRecord> {
     // Parent + lines commit (or roll back) atomically — same as createQuote.
     return this.db.transaction(async (tx) => {
+      const reference =
+        input.reference ??
+        (await this.nextReference(tx, 'bl', input.deliveryDate));
       const [head] = await tx
         .insert(deliveryNotes)
         .values({
           clientId: input.clientId,
           projectId: input.projectId,
           quoteId: input.quoteId,
-          reference: input.reference,
+          reference,
           deliveryDate: input.deliveryDate,
           notes: input.notes,
         })
@@ -328,13 +376,16 @@ export class DrizzleSalesRepository implements SalesRepository {
     const totals = computeDocTotals(input.lines, input.tvaPct);
     // Parent + lines commit (or roll back) atomically — same as createQuote.
     return this.db.transaction(async (tx) => {
+      const reference =
+        input.reference ??
+        (await this.nextReference(tx, 'facture', input.invoiceDate));
       const [head] = await tx
         .insert(invoices)
         .values({
           clientId: input.clientId,
           projectId: input.projectId,
           quoteId: input.quoteId,
-          reference: input.reference,
+          reference,
           invoiceDate: input.invoiceDate,
           dueDate: input.dueDate,
           totalHtMad: totals.totalHtMad.toString(),

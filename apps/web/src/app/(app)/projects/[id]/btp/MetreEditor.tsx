@@ -13,10 +13,13 @@ import { useEffect, useMemo, useState, useTransition } from 'react';
 import {
   computeLignePartielClient,
   DIAMETRES_DISPONIBLES,
+  metreOpenStateKey,
   metreCalcType,
   normaliseNombreElements,
   POIDS_ACIER,
+  restoreMetreOpenState,
   round2Client,
+  serializeMetreOpenState,
   type MetreContext,
   type MetreLigne,
   type MetreSection,
@@ -27,9 +30,39 @@ import { PreviousPeriodes } from './PreviousPeriodes';
 
 interface EntryState {
   bordereauLigneId: string;
+  /** True when Core already has a row, so clearing its last measure must be persisted. */
+  persisted: boolean;
   sections: MetreSection[];
   sousSections: MetreSousSection[];
   lignes: MetreLigne[];
+}
+
+export function buildMetreSavePayload(entries: Record<string, EntryState>) {
+  return Object.values(entries)
+    .filter(
+      (entry) =>
+        entry.persisted || entry.lignes.length > 0 || entry.sections.length > 0,
+    )
+    .map((entry) => ({
+      bordereauLigneId: entry.bordereauLigneId,
+      sections: entry.sections,
+      sousSections: entry.sousSections,
+      lignes: entry.lignes,
+    }));
+}
+
+export function markPersistedMetreEntries(
+  entries: Record<string, EntryState>,
+  persistedIds: ReadonlySet<string>,
+): Record<string, EntryState> {
+  let next = entries;
+  for (const [key, entry] of Object.entries(entries)) {
+    if (!entry.persisted && persistedIds.has(entry.bordereauLigneId)) {
+      if (next === entries) next = { ...entries };
+      next[key] = { ...entry, persisted: true };
+    }
+  }
+  return next;
 }
 
 function newId(prefix: string): string {
@@ -91,10 +124,9 @@ function DecimalInput({
 const SECTION_COLORS = ['#22d3ee', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#f472b6'];
 
 /**
- * Saisie d'un comptage d'éléments : entiers positifs uniquement (clavier
- * numérique sur mobile), brouillon texte pendant la frappe, valeurs vides ou
- * invalides ramenées à 1 — le moteur applique le même défaut, ce qui garantit
- * des résultats identiques pour les métrés enregistrés avant ce champ.
+ * Saisie d'un comptage d'éléments : entier non nul, avec signe négatif pour une
+ * déduction. Les valeurs vides, nulles ou invalides retombent à 1 comme dans le
+ * moteur serveur.
  */
 function IntegerInput({
   value,
@@ -119,16 +151,14 @@ function IntegerInput({
   return (
     <input
       type="text"
-      inputMode="numeric"
-      pattern="[0-9]*"
+      inputMode="decimal"
       placeholder="1"
       title={title}
       value={draft}
       onChange={(e) => {
         const raw = e.target.value;
         setDraft(raw);
-        // Vide / 0 / négatif / décimal → entier ≥ 1 (jamais de division par 0,
-        // jamais de partiel négatif).
+        // Vide / 0 / invalide → 1 ; le signe d'une déduction est conservé.
         onCommit(normaliseNombreElements(parseNum(raw)));
       }}
       onFocus={() => setFocused(true)}
@@ -140,13 +170,13 @@ function IntegerInput({
 
 /** Rappel affiché sous chaque table de ferraillage. */
 const ACIER_LEGENDE =
-  'Nombre = barres / pièces dans UN élément · Nombre d’éléments = éléments identiques répétés (8 poteaux, 6 poutres…) — vide = 1 · poids = Nombre × Nombre d’éléments × Longueur × poids du Ø.';
+  'Nombre = barres / pièces dans UN élément · Nombre d’éléments = éléments identiques répétés (8 poteaux, 6 poutres…) — vide = 1 · négatif = déduction · poids = Nombre × Nombre d’éléments × Longueur × poids du Ø.';
 
 const NOMBRE_ELEMENTS_HINT =
-  'Nombre d’éléments structurels identiques répétés pour cette mesure (ex. 8 poteaux, 6 poutres, 4 bassins). Vide = 1. « Nombre » reste le nombre de barres dans UN seul élément.';
+  'Nombre d’éléments structurels identiques répétés pour cette mesure (ex. 8 poteaux, 6 poutres, 4 bassins). Vide = 1, négatif = déduction. « Nombre » reste le nombre de barres dans UN seul élément.';
 
 const SOUS_SECTION_ELEMENTS_HINT =
-  'Nombre d’éléments identiques de cet élément (multiplie ses mesures acier). Se cumule avec le « Nombre d’éléments » saisi sur chaque ligne.';
+  'Nombre d’éléments identiques de cet élément (multiplie ses mesures acier). Une valeur négative crée une déduction. Se cumule avec le « Nombre d’éléments » saisi sur chaque ligne.';
 
 /** Détail du calcul d'un partiel acier (attribut title de la cellule). */
 function poidsPartielTitle(
@@ -176,6 +206,15 @@ export function MetreEditor({
   action: (formData: FormData) => Promise<void>;
 }) {
   const bordereauLignes = context.bordereau?.lignes ?? [];
+  const entryKeys = useMemo(
+    () => bordereauLignes.map((ligne) => ligne.id ?? String(ligne.numero)),
+    [bordereauLignes],
+  );
+  const openStorageKey = metreOpenStateKey(projectId, periodeId);
+  const persistedEntryIds = useMemo(
+    () => new Set(context.metres.map((metre) => metre.bordereauLigneId)),
+    [context.metres],
+  );
   const [entries, setEntries] = useState<Record<string, EntryState>>(() => {
     const initial: Record<string, EntryState> = {};
     for (const ligne of bordereauLignes) {
@@ -183,6 +222,7 @@ export function MetreEditor({
       const existing = context.metres.find((m) => m.bordereauLigneId === key);
       initial[key] = {
         bordereauLigneId: key,
+        persisted: existing !== undefined,
         sections: existing?.sections ?? [],
         sousSections: existing?.sousSections ?? [],
         lignes: existing?.lignes ?? [],
@@ -198,7 +238,40 @@ export function MetreEditor({
     }
     return state;
   });
+  const [openStateReadyKey, setOpenStateReadyKey] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+
+  // A same-route Server Action refresh may preserve this Client Component's
+  // local state. Promote newly created rows once the refreshed server context
+  // confirms them, without overwriting any in-progress local measurements.
+  useEffect(() => {
+    setEntries((current) => markPersistedMetreEntries(current, persistedEntryIds));
+  }, [persistedEntryIds]);
+
+  useEffect(() => {
+    setOpenStateReadyKey(null);
+    setOpen((defaults) => {
+      try {
+        return restoreMetreOpenState(
+          window.localStorage.getItem(openStorageKey),
+          entryKeys,
+          defaults,
+        );
+      } catch {
+        return restoreMetreOpenState(null, entryKeys, defaults);
+      }
+    });
+    setOpenStateReadyKey(openStorageKey);
+  }, [entryKeys, openStorageKey]);
+
+  useEffect(() => {
+    if (openStateReadyKey !== openStorageKey) return;
+    try {
+      window.localStorage.setItem(openStorageKey, serializeMetreOpenState(open, entryKeys));
+    } catch {
+      // Restricted/private browser storage must not block métré entry.
+    }
+  }, [entryKeys, open, openStateReadyKey, openStorageKey]);
 
   function mutate(key: string, mutator: (entry: EntryState) => EntryState) {
     setEntries((prev) => {
@@ -223,7 +296,7 @@ export function MetreEditor({
         let partiel = computeLignePartielClient(unite, ligne);
         if (type === 'poids' && ligne.subSectionId) {
           const nombreElements = bySousSection.get(ligne.subSectionId)?.nombreElements;
-          if (nombreElements && nombreElements > 0 && nombreElements !== 1) {
+          if (nombreElements && Number.isFinite(nombreElements) && nombreElements !== 1) {
             partiel *= nombreElements;
           }
         }
@@ -235,16 +308,10 @@ export function MetreEditor({
   }, [entries, bordereauLignes]);
 
   function save() {
-    const payload = Object.values(entries)
-      .filter((entry) => entry.lignes.length > 0 || entry.sections.length > 0)
-      .map((entry) => ({
-        bordereauLigneId: entry.bordereauLigneId,
-        sections: entry.sections,
-        // nombreElements (ligne et sous-section) est transmis tel quel : le
-        // schéma serveur l'accepte et le moteur applique son défaut (1).
-        sousSections: entry.sousSections,
-        lignes: entry.lignes,
-      }));
+    // Persisted empty entries are deliberate deletions of the last measure.
+    // Unsaved empty bordereau entries stay out of the request to avoid creating
+    // hundreds of inert metre rows.
+    const payload = buildMetreSavePayload(entries);
     if (payload.length === 0) return;
     const formData = new FormData();
     formData.set('projectId', projectId);
@@ -566,7 +633,7 @@ function LignesTable({
   // Multiplicateur de la sous-section (l'élément entier) — métrique historique,
   // indépendante du « Nombre d’éléments » propre à chaque ligne de mesure.
   const sousSectionMult =
-    type === 'poids' && nombreElements && nombreElements > 0 ? nombreElements : 1;
+    type === 'poids' && nombreElements && Number.isFinite(nombreElements) ? nombreElements : 1;
   // Une ligne acier répétée à la fois par sa sous-section et par sa colonne
   // « Nombre d’éléments » verrait ses kg comptés deux fois : on le signale.
   const ligneMult =

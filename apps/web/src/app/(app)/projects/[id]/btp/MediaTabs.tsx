@@ -3,6 +3,7 @@
 import { apiGet } from '@/lib/api';
 import {
   assetFileHref,
+  assetThumbnailHref,
   fmtDate,
   fmtFileSize,
   type Album,
@@ -129,19 +130,25 @@ export async function PhotosTab({ project }: { project: BtpProjectDetail }) {
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {photos.map((photo) => {
             const fileHref = assetFileHref(project.id, photo);
+            const thumbnailHref = assetThumbnailHref(project.id, photo);
             return (
             <figure
               key={photo.id}
               className="group relative overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm"
+              style={{ contentVisibility: 'auto', containIntrinsicSize: '280px' }}
             >
-              {fileHref ? (
+              {fileHref && thumbnailHref ? (
                 <a href={fileHref} target="_blank" rel="noreferrer">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
-                    src={fileHref}
+                    src={thumbnailHref}
                     alt={photo.originalName ?? 'photo chantier'}
                     loading="lazy"
-                    className="aspect-square w-full object-cover transition group-hover:scale-105"
+                    decoding="async"
+                    fetchPriority="low"
+                    width={640}
+                    height={640}
+                    className="aspect-square w-full object-cover"
                   />
                 </a>
               ) : (

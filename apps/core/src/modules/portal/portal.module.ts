@@ -36,6 +36,29 @@ import { LiveParticipantsCrawlerService } from './live-participants.crawler';
 const QUEUE_NAME = 'portal';
 const PORTAL_QUEUE = Symbol('PORTAL_QUEUE');
 
+interface PortalRepositoryFactoryOptions {
+  nodeEnv?: string;
+  databaseUrl?: string;
+  warn?: (message: string) => void;
+}
+
+export function createPortalRepository(
+  options: PortalRepositoryFactoryOptions,
+): PortalRepository {
+  if (options.databaseUrl) {
+    return new DrizzlePortalRepository(getDb(options.databaseUrl));
+  }
+  if (options.nodeEnv === 'production') {
+    throw new Error(
+      'DATABASE_URL is required for portal reconciliation in production',
+    );
+  }
+  (options.warn ?? ((message) => new Logger('PortalModule').warn(message)))(
+    'DATABASE_URL not set — portal uses a non-persistent in-memory repository',
+  );
+  return new InMemoryPortalRepository();
+}
+
 function redisConnection() {
   const url = new URL(process.env.REDIS_URL ?? 'redis://127.0.0.1:6380');
   return { host: url.hostname, port: Number(url.port || 6379) };
@@ -72,14 +95,11 @@ export class PortalController {
 
 const portalRepositoryProvider = {
   provide: PORTAL_REPOSITORY,
-  useFactory: (): PortalRepository => {
-    const url = process.env.DATABASE_URL;
-    if (url) return new DrizzlePortalRepository(getDb(url));
-    new Logger('PortalModule').warn(
-      'DATABASE_URL not set — portal uses a non-persistent in-memory repository',
-    );
-    return new InMemoryPortalRepository();
-  },
+  useFactory: (): PortalRepository =>
+    createPortalRepository({
+      nodeEnv: process.env.NODE_ENV,
+      databaseUrl: process.env.DATABASE_URL,
+    }),
 };
 
 const portalSessionProvider = {
@@ -163,7 +183,13 @@ export class PortalModule implements OnModuleInit, OnModuleDestroy {
       return;
     }
     await this.reponses.harvest();
-    await this.cautions.harvest();
+    if (process.env.MES_CAUTIONS_URL?.trim()) {
+      await this.cautions.harvest();
+    } else {
+      this.logger.warn(
+        'Mes cautions harvest disabled: no verified account URL (MES_CAUTIONS_URL unset)',
+      );
+    }
   }
 
   async onModuleDestroy(): Promise<void> {

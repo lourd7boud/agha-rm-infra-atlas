@@ -105,11 +105,10 @@ export interface MetreLigne {
   nombre?: number;
   /**
    * Nombre d'éléments structurels IDENTIQUES répétés pour cette mesure (8
-   * poteaux, 6 poutres, 4 bassins, 4 kms d'étriers…). « nombre » reste le
-   * nombre de barres/pièces DANS un seul élément. Absent, vide, 0, négatif ou
-   * non entier → normalisé à 1 (cf. normaliseNombreElements) : les métrés
-   * enregistrés avant l'ajout du champ conservent donc exactement leur
-   * résultat. Uniquement appliqué aux lignes de type poids (KG/T).
+   * poteaux, 6 poutres, 4 bassins, 4 kms d'étriers…). Une valeur négative est
+   * une déduction. « nombre » reste le nombre de barres/pièces DANS un seul
+   * élément. Absent, vide ou 0 → 1 ; un décimal est tronqué. Uniquement
+   * appliqué aux lignes de type poids (KG/T).
    */
   nombreElements?: number;
   diametre?: number;
@@ -119,15 +118,14 @@ export interface MetreLigne {
 }
 
 /**
- * Normalise le « nombre d'éléments » d'une ligne : entier ≥ 1.
- * Absent / null / NaN / 0 / négatif → 1 (compatibilité totale avec les mesures
- * enregistrées avant l'ajout du champ) ; un décimal est tronqué (2,7 → 2) puis
- * borné à 1 minimum.
+ * Normalise le « nombre d'éléments » d'une ligne en entier non nul. Absent,
+ * null, NaN ou 0 → 1 pour la compatibilité historique. Le signe est conservé
+ * afin qu'une répétition négative représente une déduction.
  */
 export function normaliseNombreElements(value: number | null | undefined): number {
   if (value == null || !Number.isFinite(value)) return 1;
-  const entier = Math.floor(value);
-  return entier >= 1 ? entier : 1;
+  const entier = Math.trunc(value);
+  return entier === 0 ? 1 : entier;
 }
 
 /**
@@ -137,7 +135,9 @@ export function normaliseNombreElements(value: number | null | undefined): numbe
 export function computeLignePartiel(unite: string, ligne: MetreLigne): number {
   const config = resolveUniteConfig(unite);
   const multiplier = toDecimal(
-    ligne.nombreSemblables && ligne.nombreSemblables > 0 ? ligne.nombreSemblables : 1,
+    ligne.nombreSemblables && Number.isFinite(ligne.nombreSemblables)
+      ? ligne.nombreSemblables
+      : 1,
   );
 
   const hasDimensionInput =
@@ -209,7 +209,7 @@ export function computeMetreTotals(
     let partiel = computeLignePartiel(unite, ligne);
     if (config.type === 'poids' && ligne.subSectionId) {
       const nombreElements = bySousSection.get(ligne.subSectionId)?.nombreElements;
-      if (nombreElements && nombreElements > 0 && nombreElements !== 1) {
+      if (nombreElements && Number.isFinite(nombreElements) && nombreElements !== 1) {
         partiel = toNumber(toDecimal(partiel).times(nombreElements));
       }
     }

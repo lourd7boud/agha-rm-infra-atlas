@@ -1,45 +1,43 @@
 import {
   BadRequestException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { unzipSync } from 'fflate';
+import {
+  classifyDceFile,
+  mimeForDceFile,
+  type DceFileKind,
+} from '@atlas/contracts';
+import { unzipSync, type UnzipFileInfo } from 'fflate';
 import { OBJECT_STORAGE, type ObjectStorage } from '../vault/storage';
 import { normalizeArchiveToZip } from './dossier-archive';
 import { buildFullDossierMarkdown } from './dossier-fulltext';
 import { pdfParseExtract } from './pdf-ocr';
 import { defaultBinaryExtractor } from './dossier-binary';
-
-/** Map a file extension to its standard MIME type. Returns octet-stream for
- *  anything unknown so the browser still downloads it safely. */
-const MIME_BY_EXT: Record<string, string> = {
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  xls: 'application/vnd.ms-excel',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  doc: 'application/msword',
-  pdf: 'application/pdf',
-  ods: 'application/vnd.oasis.opendocument.spreadsheet',
-  odt: 'application/vnd.oasis.opendocument.text',
-  csv: 'text/csv',
-  txt: 'text/plain',
-  rtf: 'application/rtf',
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-};
-
-function mimeFor(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
-  return MIME_BY_EXT[ext] ?? 'application/octet-stream';
-}
+import {
+  assertDossierArchiveSize,
+  assertDossierEntrySize,
+  assertSelectedDossierEntry,
+  createDossierMetadataBudget,
+  DossierArchiveAccessGate,
+  readBoundedResponse,
+  trackDossierEntryMetadata,
+} from './dossier-archive-safety';
 
 export interface DossierFileResult {
   filename: string;
   bytes: Buffer;
   mime: string;
+}
+
+export interface LeasedDossierFile {
+  file: DossierFileResult;
+  /** Idempotent; must be held until the HTTP response finishes or closes. */
+  release: () => void;
 }
 
 export interface DossierFileInfo {
@@ -48,7 +46,7 @@ export interface DossierFileInfo {
   /** Display label = bare leaf without the parent folder. */
   label: string;
   /** Coarse kind for the UI viewer (pdf/excel/word/image/other). */
-  kind: 'pdf' | 'excel' | 'word' | 'image' | 'other';
+  kind: DceFileKind;
   sizeBytes: number;
 }
 
@@ -65,14 +63,6 @@ function filePriority(label: string): number {
   return 4;
 }
 
-function kindFor(name: string): DossierFileInfo['kind'] {
-  const ext = name.split('.').pop()?.toLowerCase() ?? '';
-  if (ext === 'pdf') return 'pdf';
-  if (ext === 'xlsx' || ext === 'xls' || ext === 'ods' || ext === 'csv') return 'excel';
-  if (ext === 'docx' || ext === 'doc' || ext === 'odt' || ext === 'rtf') return 'word';
-  if (ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'gif' || ext === 'webp') return 'image';
-  return 'other';
-}
 import {
   dceIdentityFromEnv,
   downloadDce,
@@ -125,6 +115,8 @@ function readDossierMeta(raw: Record<string, unknown> | null): DossierMeta | nul
 @Injectable()
 export class DossierService {
   private readonly logger = new Logger('Dossier');
+  private readonly archiveAccess = new DossierArchiveAccessGate();
+  private readonly payloadAccess = new DossierArchiveAccessGate();
 
   constructor(
     @Inject(TENDER_REPOSITORY) private readonly tenders: TenderRepository,
@@ -132,7 +124,11 @@ export class DossierService {
   ) {}
 
   /** Presigned URL to the tender's DCE ZIP; downloads + caches on first call. */
-  async ensureDossier(tenderId: string): Promise<DossierResult> {
+  async ensureDossier(tenderId: string, signal?: AbortSignal): Promise<DossierResult> {
+    return this.archiveAccess.run(() => this.ensureDossierUnlocked(tenderId), signal);
+  }
+
+  private async ensureDossierUnlocked(tenderId: string): Promise<DossierResult> {
     const tender = await this.tenders.findById(tenderId);
     if (!tender) throw new NotFoundException(`Tender not found: ${tenderId}`);
 
@@ -179,24 +175,43 @@ export class DossierService {
    *  "Voir le fichier source" overlay (mirrors datao's split-pane preview).
    *  Inflation is SKIPPED (filter returns false): we read only the central
    *  directory entries to get names + uncompressed sizes, no memory cost. */
-  async listDossierFiles(tenderId: string): Promise<DossierFileInfo[]> {
-    const dossier = await this.ensureDossier(tenderId);
-    const r = await fetch(dossier.url);
+  async listDossierFiles(
+    tenderId: string,
+    signal?: AbortSignal,
+  ): Promise<DossierFileInfo[]> {
+    return this.archiveAccess.run(
+      () => this.listDossierFilesUnlocked(tenderId, signal),
+      signal,
+    );
+  }
+
+  private async listDossierFilesUnlocked(
+    tenderId: string,
+    signal?: AbortSignal,
+  ): Promise<DossierFileInfo[]> {
+    const dossier = await this.ensureDossierUnlocked(tenderId);
+    assertDossierArchiveSize(dossier.sizeBytes);
+    const r = await fetch(dossier.url, { signal });
     if (!r.ok) {
       throw new ServiceUnavailableException(`Lecture du dossier impossible (HTTP ${r.status})`);
     }
-    const zipBuf = Buffer.from(await r.arrayBuffer());
+    const zipBuf = await readBoundedResponse(r);
 
     const files: DossierFileInfo[] = [];
+    const budget = createDossierMetadataBudget();
     try {
       unzipSync(zipBuf, {
         filter: (file) => {
+          trackDossierEntryMetadata(file, budget);
           if (!file.name.endsWith('/') && file.originalSize > 0) {
+            if (files.length >= 2_000) {
+              throw new BadRequestException('Archive DCE avec trop de fichiers affichables');
+            }
             const leaf = file.name.split('/').pop() ?? file.name;
             files.push({
               name: file.name,
               label: leaf,
-              kind: kindFor(file.name),
+              kind: classifyDceFile(file.name),
               sizeBytes: file.originalSize,
             });
           }
@@ -204,6 +219,7 @@ export class DossierService {
         },
       });
     } catch (err) {
+      if (err instanceof HttpException) throw err;
       throw new ServiceUnavailableException(
         `Archive DCE illisible: ${(err as Error).message}`,
       );
@@ -225,45 +241,103 @@ export class DossierService {
    * accepts either the bare leaf ("Bordereau.xlsx") or the full path inside
    * the ZIP ("AO 09 DR4 2026/Bordereau.xlsx") — buyers ship both shapes.
    */
-  async getDossierFile(tenderId: string, name: string): Promise<DossierFileResult> {
+  async acquireDossierFile(
+    tenderId: string,
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<LeasedDossierFile> {
+    const release = await this.payloadAccess.lease(signal);
+    try {
+      return {
+        file: await this.getDossierFile(tenderId, name, signal),
+        release,
+      };
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
+  private async getDossierFile(
+    tenderId: string,
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<DossierFileResult> {
     if (!name || name.includes('..') || name.includes('\0')) {
       throw new BadRequestException('Nom de fichier invalide');
     }
+    return this.archiveAccess.run(
+      () => this.getDossierFileUnlocked(tenderId, name, signal),
+      signal,
+    );
+  }
+
+  private async getDossierFileUnlocked(
+    tenderId: string,
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<DossierFileResult> {
     // Ensure the ZIP is cached + grab a fresh presigned URL.
-    const dossier = await this.ensureDossier(tenderId);
-    const r = await fetch(dossier.url);
+    const dossier = await this.ensureDossierUnlocked(tenderId);
+    assertDossierArchiveSize(dossier.sizeBytes);
+    const r = await fetch(dossier.url, { signal });
     if (!r.ok) {
       throw new ServiceUnavailableException(`Lecture du dossier impossible (HTTP ${r.status})`);
     }
-    const zipBuf = Buffer.from(await r.arrayBuffer());
+    const zipBuf = await readBoundedResponse(r);
 
-    // Targeted unzip: only inflate the requested file (avoids OOM on big DCEs).
+    // First pass reads central-directory metadata only. Size is rejected before
+    // the selected entry can allocate its uncompressed buffer.
     const leaf = name.split('/').pop()!.toLowerCase();
-    let entries: Record<string, Uint8Array>;
+    const matches: UnzipFileInfo[] = [];
+    const budget = createDossierMetadataBudget();
     try {
-      entries = unzipSync(zipBuf, {
+      unzipSync(zipBuf, {
         filter: (file) => {
+          trackDossierEntryMetadata(file, budget);
           const fileLeaf = file.name.split('/').pop()?.toLowerCase() ?? '';
-          return file.name === name || fileLeaf === leaf;
+          if (!file.name.endsWith('/') && (file.name === name || fileLeaf === leaf)) {
+            if (matches.length >= 20) {
+              throw new BadRequestException('Nom de fichier DCE ambigu');
+            }
+            matches.push({ ...file });
+          }
+          return false;
         },
       });
     } catch (err) {
+      if (err instanceof HttpException) throw err;
       throw new ServiceUnavailableException(
         `Archive DCE illisible: ${(err as Error).message}`,
       );
     }
-    // Prefer an exact path match; fall back to the first leaf match.
-    const exact = entries[name];
-    const found = exact ?? Object.entries(entries).find(([k]) =>
-      (k.split('/').pop()?.toLowerCase() ?? '') === leaf,
-    )?.[1];
+    const selected = matches.find((entry) => entry.name === name) ?? matches[0];
+    if (!selected) {
+      throw new NotFoundException(`Fichier "${name}" introuvable dans le dossier`);
+    }
+    assertSelectedDossierEntry(selected);
+
+    // Second pass inflates only the already-bounded selected entry.
+    let entries: Record<string, Uint8Array>;
+    try {
+      entries = unzipSync(zipBuf, {
+        filter: (file) => file.name === selected.name,
+      });
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      throw new ServiceUnavailableException(
+        `Archive DCE illisible: ${(err as Error).message}`,
+      );
+    }
+    const found = entries[selected.name];
     if (!found) {
       throw new NotFoundException(`Fichier "${name}" introuvable dans le dossier`);
     }
+    assertDossierEntrySize(found.byteLength);
     return {
       filename: name.split('/').pop()!,
-      bytes: Buffer.from(found),
-      mime: mimeFor(name),
+      bytes: Buffer.from(found.buffer, found.byteOffset, found.byteLength),
+      mime: mimeForDceFile(selected.name),
     };
   }
 
@@ -301,25 +375,31 @@ export class DossierService {
     }
     // 2) Build from the archive (cached zip, or a one-time portal download).
     try {
-      const dossier = await this.ensureDossier(tenderId);
-      const r = await fetch(dossier.url);
-      if (!r.ok) return null;
-      const zip = await normalizeArchiveToZip(new Uint8Array(await r.arrayBuffer()));
-      const { markdown } = await buildFullDossierMarkdown(
-        zip,
-        pdfParseExtract,
-        defaultBinaryExtractor,
-      );
-      if (!markdown.trim()) return null;
-      await this.storage.put(
-        mdKey,
-        Buffer.from(markdown, 'utf8'),
-        'text/markdown; charset=utf-8',
-      );
-      this.logger.log(
-        `dossier markdown built ${tenderId} → ${markdown.length} chars`,
-      );
-      return markdown;
+      return await this.archiveAccess.run(async () => {
+        const dossier = await this.ensureDossierUnlocked(tenderId);
+        assertDossierArchiveSize(dossier.sizeBytes);
+        const r = await fetch(dossier.url);
+        if (!r.ok) return null;
+        const archive = await readBoundedResponse(r);
+        const zip = await normalizeArchiveToZip(
+          new Uint8Array(archive.buffer, archive.byteOffset, archive.byteLength),
+        );
+        const { markdown } = await buildFullDossierMarkdown(
+          zip,
+          pdfParseExtract,
+          defaultBinaryExtractor,
+        );
+        if (!markdown.trim()) return null;
+        await this.storage.put(
+          mdKey,
+          Buffer.from(markdown, 'utf8'),
+          'text/markdown; charset=utf-8',
+        );
+        this.logger.log(
+          `dossier markdown built ${tenderId} → ${markdown.length} chars`,
+        );
+        return markdown;
+      });
     } catch (err) {
       this.logger.warn(
         `getDossierMarkdown failed (${tenderId}): ${(err as Error).message}`,

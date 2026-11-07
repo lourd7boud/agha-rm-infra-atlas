@@ -1,10 +1,47 @@
 import { describe, expect, test } from 'vitest';
 import {
+  assetThumbnailHref,
   computeLignePartielClient,
   METRE_CHAMPS,
+  metreOpenStateKey,
   normaliseNombreElements,
   POIDS_ACIER,
+  restoreMetreOpenState,
+  serializeMetreOpenState,
 } from './btp-shared';
+
+describe('assetThumbnailHref', () => {
+  test('uses the optimized thumbnail endpoint for stored project photos', () => {
+    expect(
+      assetThumbnailHref('project-1', { id: 'photo-1', storageKey: 'btp/project/photo.jpg' }),
+    ).toBe('/api/btp-asset/project-1/photo-1?variant=thumbnail');
+    expect(assetThumbnailHref('project-1', { id: 'photo-1', storageKey: null })).toBeNull();
+  });
+});
+
+describe('état ouvert/fermé des postes de métré', () => {
+  test('restaure exactement les postes ouverts et fermés pour une période', () => {
+    expect(metreOpenStateKey('p1', 'per1')).not.toBe(metreOpenStateKey('p1', 'per2'));
+    const keys = ['ligne-1', 'ligne-2', 'ligne-3'];
+    const stored = serializeMetreOpenState(
+      { 'ligne-1': false, 'ligne-2': true, 'ligne-3': false },
+      keys,
+    );
+    expect(
+      restoreMetreOpenState(stored, keys, {
+        'ligne-1': true,
+        'ligne-2': true,
+        'ligne-3': true,
+      }),
+    ).toEqual({ 'ligne-1': false, 'ligne-2': true, 'ligne-3': false });
+  });
+
+  test('ignore un stockage illisible et conserve les valeurs par défaut', () => {
+    expect(
+      restoreMetreOpenState('{invalide', ['ligne-1'], { 'ligne-1': true }),
+    ).toEqual({ 'ligne-1': true });
+  });
+});
 
 // Miroir client du moteur serveur : sur les lignes acier (KG/T) le partiel vaut
 // Nombre × Nombre d’éléments × Longueur × poids du Ø, où « Nombre » reste le
@@ -18,11 +55,11 @@ describe('normaliseNombreElements', () => {
     expect(normaliseNombreElements(20)).toBe(20);
   });
 
-  test('absent, vide, zéro, négatif ou NaN → 1 (compatibilité anciennes mesures)', () => {
+  test('absent, vide, zéro ou NaN → 1; négatif conservé comme déduction', () => {
     expect(normaliseNombreElements(undefined)).toBe(1);
     expect(normaliseNombreElements(null)).toBe(1);
     expect(normaliseNombreElements(0)).toBe(1);
-    expect(normaliseNombreElements(-4)).toBe(1);
+    expect(normaliseNombreElements(-4)).toBe(-4);
     expect(normaliseNombreElements(Number.NaN)).toBe(1);
     expect(normaliseNombreElements(0.4)).toBe(1);
   });
@@ -34,6 +71,18 @@ describe('normaliseNombreElements', () => {
 });
 
 describe('computeLignePartielClient — acier (KG)', () => {
+  test('une répétition négative devient une déduction', () => {
+    expect(
+      computeLignePartielClient('KG', {
+        id: 'deduction-acier',
+        nombre: 4,
+        nombreElements: -2,
+        longueur: 3,
+        diametre: 12,
+      }),
+    ).toBeCloseTo(-21.312, 10);
+  });
+
   test('sans « Nombre d’éléments » ou avec 1 : résultat identique à l’ancien calcul', () => {
     const ancien = 4 * 3 * POIDS_ACIER[12]!;
     expect(
@@ -75,8 +124,8 @@ describe('computeLignePartielClient — acier (KG)', () => {
     ).toBeCloseTo(85.32, 10);
   });
 
-  test('valeur vide / zéro / négative : traitée comme 1, jamais de partiel cassé', () => {
-    for (const nombreElements of [undefined, 0, -3, Number.NaN]) {
+  test('valeur vide / zéro / NaN : traitée comme 1, jamais de partiel cassé', () => {
+    for (const nombreElements of [undefined, 0, Number.NaN]) {
       expect(
         computeLignePartielClient('KG', {
           id: 'l4',
@@ -116,6 +165,18 @@ describe('computeLignePartielClient — acier (KG)', () => {
 });
 
 describe('computeLignePartielClient — unités non acier', () => {
+  test('nombreSemblables négatif soustrait la mesure', () => {
+    expect(
+      computeLignePartielClient('M³', {
+        id: 'deduction-volume',
+        nombreSemblables: -2,
+        longueur: 2,
+        largeur: 3,
+        profondeur: 0.5,
+      }),
+    ).toBe(-6);
+  });
+
   test('volume, surface, linéaire et unité ignorent le nombre d’éléments', () => {
     expect(
       computeLignePartielClient('M³', {

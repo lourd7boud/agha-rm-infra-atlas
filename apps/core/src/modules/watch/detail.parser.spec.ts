@@ -24,6 +24,16 @@ describe('parseMoneyMad', () => {
     expect(parseMoneyMad('350 000')).toBe(350000);
   });
 
+  it('parses NBSP and narrow-NBSP thousands separators', () => {
+    const nbsp = String.fromCharCode(0x00a0);
+    const narrowNbsp = String.fromCharCode(0x202f);
+
+    expect(parseMoneyMad(`7${nbsp}700,00 MAD`)).toBe(7700);
+    expect(parseMoneyMad(`1${narrowNbsp}250${narrowNbsp}000,50 Dhs`)).toBe(
+      1250000.5,
+    );
+  });
+
   it('returns null when there is no number', () => {
     expect(parseMoneyMad('—')).toBeNull();
     expect(parseMoneyMad('Estimation (en Dhs TTC)')).toBeNull();

@@ -18,8 +18,10 @@ export async function GET(
   if (!UUID_RE.test(projectId) || !UUID_RE.test(assetId)) {
     return NextResponse.json({ error: 'Identifiants invalides' }, { status: 400 });
   }
+  const isThumbnail = request.nextUrl.searchParams.get('variant') === 'thumbnail';
+  const assetPath = isThumbnail ? 'thumbnail' : 'download';
   const upstream = await fetch(
-    `${API_URL}/btp/projects/${projectId}/assets/${assetId}/download`,
+    `${API_URL}/btp/projects/${projectId}/assets/${assetId}/${assetPath}`,
     {
       headers: { Authorization: `Bearer ${session.accessToken}` },
       cache: 'no-store',
@@ -34,8 +36,11 @@ export async function GET(
   }
   const headers: Record<string, string> = {
     'Content-Type': upstream.headers.get('Content-Type') ?? 'application/octet-stream',
-    // Les fichiers sont immuables (clé UUID) — cache privé long pour la grille photos.
-    'Cache-Control': 'private, max-age=3600',
+    // Thumbnail keys are versioned and immutable. Keep them in the browser so
+    // revisiting or scrolling the gallery never decodes the originals again.
+    'Cache-Control': isThumbnail
+      ? 'private, max-age=86400, stale-while-revalidate=604800'
+      : 'private, max-age=3600',
   };
   const disposition = upstream.headers.get('Content-Disposition');
   if (disposition) headers['Content-Disposition'] = disposition;

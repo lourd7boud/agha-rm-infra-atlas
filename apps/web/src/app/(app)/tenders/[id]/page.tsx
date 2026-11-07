@@ -139,13 +139,6 @@ const NEXT_ACTIONS: Partial<
       tone: 'bg-emerald-600 text-paper hover:bg-emerald-700',
     },
   ],
-  preparing: [
-    {
-      to: 'submitted',
-      label: 'Marquer soumis (G3)',
-      tone: 'bg-violet-600 text-paper hover:bg-violet-700',
-    },
-  ],
   submitted: [
     {
       to: 'opened',
@@ -288,8 +281,15 @@ export default async function TenderDetailPage({
             )}
           </dl>
 
-          {actions.length > 0 && (
-            <div className="mt-6 flex flex-wrap gap-3 border-t border-line pt-5">
+          <div className="mt-6 flex flex-wrap gap-3 border-t border-line pt-5">
+            <Link
+              href={`/tenders/${id}/participation`}
+              className="rounded-md bg-cyan px-4 py-2 text-sm font-semibold text-paper transition hover:bg-cyan-deep"
+            >
+              Ouvrir l’espace de participation
+            </Link>
+            {actions.length > 0 && (
+              <>
               {actions.map((action) => (
                 <form key={action.to} action={transitionTo}>
                   <input type="hidden" name="to" value={action.to} />
@@ -300,8 +300,9 @@ export default async function TenderDetailPage({
                   </button>
                 </form>
               ))}
-            </div>
-          )}
+              </>
+            )}
+          </div>
         </section>
 
         <section className="rounded-xl border border-line bg-paper-2 p-6 shadow-sm">

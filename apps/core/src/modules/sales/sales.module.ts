@@ -12,10 +12,13 @@ import {
   Patch,
   Post,
   Query,
+  Req,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
+import { ComptaRepositoryModule } from '../compta/compta-repository.module';
+import { ComptaAutoPostingService } from '../compta/compta-auto-posting.service';
 import { DrizzleSalesRepository } from './sales.drizzle.repository';
 import { InMemorySalesRepository } from './sales.repository';
 import {
@@ -54,7 +57,7 @@ const deliveryLineSchema = z.object({
 const quoteSchema = z.object({
   clientId: z.string().uuid(),
   projectId: z.string().uuid().optional(),
-  reference: z.string().min(2).max(100),
+  // No `reference`: the server assigns a gap-free sequential number (art. 145).
   objet: z.string().max(500).optional(),
   quoteDate: z.coerce.date(),
   validUntil: z.coerce.date().optional(),
@@ -67,7 +70,7 @@ const deliveryNoteSchema = z.object({
   clientId: z.string().uuid(),
   projectId: z.string().uuid().optional(),
   quoteId: z.string().uuid().optional(),
-  reference: z.string().min(2).max(100),
+  // No `reference`: the server assigns BL-{exercice}-NNNN sequentially.
   deliveryDate: z.coerce.date(),
   notes: z.string().max(2000).optional(),
   lines: z.array(deliveryLineSchema).min(1),
@@ -77,7 +80,8 @@ const invoiceSchema = z.object({
   clientId: z.string().uuid(),
   projectId: z.string().uuid().optional(),
   quoteId: z.string().uuid().optional(),
-  reference: z.string().min(2).max(100),
+  // No `reference`: the server assigns the legal sequential FAC-{exercice}-NNNN
+  // (art. 145 CGI) — invoice numbers must be system-controlled, never user-typed.
   invoiceDate: z.coerce.date(),
   dueDate: z.coerce.date().optional(),
   tvaPct: z.number().min(0).max(100),
@@ -95,6 +99,10 @@ const deliveryNoteStatusSchema = z.object({
 
 const invoiceStatusSchema = z.object({
   status: z.enum(['brouillon', 'envoyee', 'payee', 'annulee']),
+  // Optional payment method (only meaningful for → payee) — drives the trésorerie
+  // account/journal of the auto-generated encaissement écriture. Defaults server-
+  // side to virement (bank) when omitted.
+  method: z.enum(['virement', 'cheque', 'espece', 'carte']).optional(),
 });
 
 // ── pagination (datao-parity: DB-side LIMIT/OFFSET) ──────────────────────────
@@ -117,6 +125,8 @@ function parsePaging(page?: string, limit?: string): { limit: number; offset: nu
 export class SalesController {
   constructor(
     @Inject(SALES_REPOSITORY) private readonly repository: SalesRepository,
+    // Auto-posting bridge: confirming an invoice generates its écriture at once.
+    private readonly autoPosting: ComptaAutoPostingService,
   ) {}
 
   // ── clients ─────────────────────────────────────────────────────────────────
@@ -334,7 +344,11 @@ export class SalesController {
 
   @Roles('direction', 'finance', 'admin-si')
   @Patch('invoices/:id/status')
-  async setInvoiceStatus(@Param('id') id: string, @Body() body: unknown) {
+  async setInvoiceStatus(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Req() req: { user?: { username?: string; sub?: string } },
+  ) {
     const parsed = invoiceStatusSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const existing = await this.repository.getInvoice(id);
@@ -342,13 +356,39 @@ export class SalesController {
     if (existing.status === 'annulee') {
       throw new ConflictException('Facture déjà annulée');
     }
-    const paidAt = parsed.data.status === 'payee' ? new Date() : undefined;
-    if (parsed.data.status === 'payee') {
-      new Logger('Sales').log(
-        `invoice.paid ${existing.reference} (${existing.totalTtcMad} MAD TTC)`,
-      );
+    // Stamp paidAt only on the FIRST transition into 'payee' — re-marking an
+    // already-paid invoice must not drift the audit date (undefined preserves the
+    // stored value in the repo), keeping it consistent with the idempotent écriture.
+    const isFirstPayment =
+      parsed.data.status === 'payee' && existing.status !== 'payee';
+    const paidAt = isFirstPayment ? new Date() : undefined;
+    const updated = await this.repository.setInvoiceStatus(
+      id,
+      parsed.data.status,
+      paidAt,
+    );
+    // Confirming an invoice (leaving 'brouillon') auto-generates its sale
+    // écriture in compta — the accountant only supervises. Idempotent &
+    // best-effort: it never fails the status change.
+    if (parsed.data.status === 'envoyee' || parsed.data.status === 'payee') {
+      const actor = req.user?.username ?? req.user?.sub ?? null;
+      const ecriture = await this.autoPosting.onInvoiceConfirmed(id, actor);
+      // The encaissement (D 514x/516x / C 3421) CLEARS the client receivable, so it
+      // must only post once the sale écriture that OPENED that receivable exists —
+      // otherwise 3421 would be credited with no matching debit. Gate on it.
+      const saleExists =
+        ecriture.created ||
+        ecriture.reason === 'already_posted' ||
+        ecriture.reason === 'raced';
+      const reglement =
+        parsed.data.status === 'payee' && saleExists
+          ? await this.autoPosting.onInvoicePaid(id, actor, parsed.data.method)
+          : undefined;
+      // Surface the posting outcomes so the UI can warn immediately when an
+      // écriture was not generated (e.g. closed exercice) — not just a server log.
+      return { ...updated, ecriture, ...(reglement ? { reglement } : {}) };
     }
-    return this.repository.setInvoiceStatus(id, parsed.data.status, paidAt);
+    return updated;
   }
 }
 
@@ -365,6 +405,7 @@ const salesRepositoryProvider = {
 };
 
 @Module({
+  imports: [ComptaRepositoryModule],
   controllers: [SalesController],
   providers: [salesRepositoryProvider],
 })

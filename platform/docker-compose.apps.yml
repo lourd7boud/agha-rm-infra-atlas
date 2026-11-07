@@ -13,6 +13,30 @@ x-json-logging: &json-logging
     max-file: "3"
 
 services:
+  preview-worker:
+    build:
+      context: ..
+      dockerfile: apps/preview-worker/Dockerfile
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 96
+    cpus: 0.75
+    mem_limit: 320m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,mode=1777
+    volumes:
+      - preview_socket:/run/atlas-preview
+    logging: *json-logging
+    healthcheck:
+      test: ["CMD", "node", "-e", "const n=require('node:net').connect('/run/atlas-preview/worker.sock',()=>{n.write('GET /health HTTP/1.0\\r\\n\\r\\n')});n.on('data',d=>process.exit(d.includes('200')?0:1));n.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),3000)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
   core:
     build:
       context: ..
@@ -27,11 +51,14 @@ services:
       # stays free for HTTP requests and Next.js SSR (no more /tenders 504s
       # during extraction bursts).
       WATCH_WORKER_ENABLED: "false"
+      PREVIEW_WORKER_SOCKET: /run/atlas-preview/worker.sock
     # Caps sized for the 2 vCPU / 3.7 GB VPS: no single container may starve
     # the box. cpus are ceilings, not reservations.
     cpus: 1.5
     mem_limit: 512m
     logging: *json-logging
+    volumes:
+      - preview_socket:/run/atlas-preview
     healthcheck:
       test:
         [
@@ -45,6 +72,9 @@ services:
       retries: 3
       start_period: 20s
     # No published port: Caddy reaches core:3000 on the shared network.
+    depends_on:
+      preview-worker:
+        condition: service_healthy
 
   worker:
     # Same image as `core` (built once), different role: this container is the
@@ -126,3 +156,6 @@ networks:
   default:
     name: atlas-platform_default
     external: true
+
+volumes:
+  preview_socket:

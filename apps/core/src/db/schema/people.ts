@@ -76,6 +76,9 @@ export const workDays = people.table(
     daysWorked: numeric('days_worked', { precision: 4, scale: 2 })
       .notNull()
       .default('1'),
+    // Effective daily MAD rate frozen on creation; NULL = historical/unknown.
+    // Multiply by daysWorked; changing an assignment never revalues this row.
+    costSnapshotMad: numeric('cost_snapshot_mad', { precision: 14, scale: 6 }),
     notes: text('notes'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

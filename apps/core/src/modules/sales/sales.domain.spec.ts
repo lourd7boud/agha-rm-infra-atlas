@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { computeDocTotals, lineTotal, type DocLine } from './sales.domain';
+import {
+  computeDocTotals,
+  docExercice,
+  formatDocReference,
+  lineTotal,
+  type DocLine,
+} from './sales.domain';
 
 describe('lineTotal', () => {
   test('multiplies quantity by unit price', () => {
@@ -93,5 +99,48 @@ describe('computeDocTotals', () => {
     expect(totals.totalHtMad).toBe(99.99);
     expect(totals.tvaMad).toBe(20);
     expect(totals.totalTtcMad).toBe(119.99);
+  });
+});
+
+describe('docExercice', () => {
+  test('is the UTC calendar year of the document date', () => {
+    // Arrange
+    const date = new Date('2026-06-21T00:00:00Z');
+
+    // Act + Assert
+    expect(docExercice(date)).toBe(2026);
+  });
+
+  test('a 1st-of-January midnight-Z date stays in its own year', () => {
+    // Arrange — the trap: getFullYear() in a negative-offset tz would yield 2025.
+    const date = new Date('2026-01-01T00:00:00Z');
+
+    // Act + Assert
+    expect(docExercice(date)).toBe(2026);
+  });
+});
+
+describe('formatDocReference', () => {
+  test('formats a facture as PREFIX-year-NNNN (4-digit padded)', () => {
+    // Arrange + Act
+    const ref = formatDocReference('facture', 2026, 1);
+
+    // Assert
+    expect(ref).toBe('FAC-2026-0001');
+  });
+
+  test('each document kind carries its own prefix', () => {
+    // Arrange + Act + Assert
+    expect(formatDocReference('devis', 2026, 7)).toBe('DEV-2026-0007');
+    expect(formatDocReference('bl', 2026, 12)).toBe('BL-2026-0012');
+    expect(formatDocReference('avoir', 2026, 3)).toBe('AV-2026-0003');
+  });
+
+  test('counters beyond 9999 keep every digit (no truncation)', () => {
+    // Arrange + Act
+    const ref = formatDocReference('facture', 2026, 12345);
+
+    // Assert — padding is a minimum, never a cap.
+    expect(ref).toBe('FAC-2026-12345');
   });
 });

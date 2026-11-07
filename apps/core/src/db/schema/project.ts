@@ -194,10 +194,8 @@ export const chantierMateriel = project.table(
     heuresUtilisation: numeric('heures_utilisation', { precision: 6, scale: 1 }),
     carburantL: numeric('carburant_l', { precision: 8, scale: 1 }),
     coutCarburantMad: numeric('cout_carburant_mad', { precision: 12, scale: 2 })
-      .notNull()
       .default('0'),
     coutLocationMad: numeric('cout_location_mad', { precision: 12, scale: 2 })
-      .notNull()
       .default('0'),
     note: text('note'),
     saisiPar: text('saisi_par').notNull(),
@@ -220,7 +218,7 @@ export const chantierConsommations = project.table(
     unite: text('unite').notNull().default('u'),
     quantite: numeric('quantite', { precision: 12, scale: 3 }).notNull(),
     prixUnitaireMad: numeric('prix_unitaire_mad', { precision: 12, scale: 2 }),
-    coutMad: numeric('cout_mad', { precision: 12, scale: 2 }).notNull().default('0'),
+    coutMad: numeric('cout_mad', { precision: 12, scale: 2 }).default('0'),
     fournisseur: text('fournisseur'),
     bonLivraison: text('bon_livraison'),
     note: text('note'),
@@ -249,6 +247,9 @@ export const chantierAttachements = project.table(
     quantite: numeric('quantite', { precision: 14, scale: 3 }).notNull(),
     note: text('note'),
     statut: text('statut').notNull().default('saisi'), // saisi | integre
+    metreId: uuid('metre_id'),
+    integratedAt: timestamp('integrated_at', { withTimezone: true }),
+    integratedBy: text('integrated_by'),
     saisiPar: text('saisi_par').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

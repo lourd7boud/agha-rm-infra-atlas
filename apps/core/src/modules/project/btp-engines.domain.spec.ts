@@ -139,6 +139,42 @@ describe('computeDecompte', () => {
 });
 
 describe('métré engine', () => {
+  it('applique les valeurs négatives comme déductions dans toutes les dimensions saisissables', () => {
+    expect(
+      computeLignePartiel('M³', {
+        id: 'deduction-volume',
+        nombreSemblables: -2,
+        longueur: 2,
+        largeur: 3,
+        profondeur: 0.5,
+      }),
+    ).toBe(-6);
+    expect(
+      computeLignePartiel('KG', {
+        id: 'deduction-acier',
+        nombre: 4,
+        nombreElements: -2,
+        longueur: 3,
+        diametre: 12,
+      }),
+    ).toBeCloseTo(-21.312, 10);
+    expect(
+      computeMetreTotals(
+        'KG',
+        [{ id: 'ss-deduction', titre: 'Déduction poteaux', nombreElements: -3 }],
+        [
+          {
+            id: 'deduction-sous-section',
+            subSectionId: 'ss-deduction',
+            nombre: 4,
+            longueur: 3,
+            diametre: 12,
+          },
+        ],
+      ).totalPartiel,
+    ).toBe(-31.97);
+  });
+
   it('volume = L×l×P × nombreSemblables', () => {
     expect(
       computeLignePartiel('M³', {
@@ -188,12 +224,12 @@ describe('métré engine', () => {
 // « Nombre » qui reste le nombre de barres DANS un seul élément. Défaut = 1,
 // donc tout métré antérieur au champ garde exactement son résultat.
 describe("métré — nombre d'éléments par ligne (acier)", () => {
-  it('normaliseNombreElements : entier ≥ 1, tout le reste retombe à 1', () => {
+  it('normaliseNombreElements : entier non nul, signe de déduction conservé', () => {
     expect(normaliseNombreElements(undefined)).toBe(1);
     expect(normaliseNombreElements(null)).toBe(1);
     expect(normaliseNombreElements(Number.NaN)).toBe(1);
     expect(normaliseNombreElements(0)).toBe(1);
-    expect(normaliseNombreElements(-8)).toBe(1);
+    expect(normaliseNombreElements(-8)).toBe(-8);
     expect(normaliseNombreElements(1)).toBe(1);
     expect(normaliseNombreElements(8)).toBe(8);
     expect(normaliseNombreElements(20)).toBe(20);
@@ -219,15 +255,19 @@ describe("métré — nombre d'éléments par ligne (acier)", () => {
     ).toBeCloseTo(47.4, 10);
   });
 
-  it('vide, 0, négatif, NaN, décimal : ramenés à 1 · champ ignoré hors acier', () => {
+  it('vide, 0 et NaN → 1; négatif → déduction; champ ignoré hors acier', () => {
     const base = { nombre: 4, longueur: 3, diametre: 12 };
     const expected = 4 * 1 * 3 * 0.888;
-    for (const nombreElements of [undefined, 0, -5, Number.NaN, 1, 0.5]) {
+    for (const nombreElements of [undefined, 0, Number.NaN, 1, 0.5]) {
       expect(computeLignePartiel('KG', { id: 'e', ...base, nombreElements })).toBeCloseTo(
         expected,
         10,
       );
     }
+    expect(computeLignePartiel('KG', { id: 'e', ...base, nombreElements: -5 })).toBeCloseTo(
+      -4 * 5 * 3 * 0.888,
+      10,
+    );
     expect(computeLignePartiel('KG', { id: 'e', ...base, nombreElements: 2.9 })).toBeCloseTo(
       4 * 2 * 3 * 0.888,
       10,
@@ -442,7 +482,7 @@ describe('délais & pénalités', () => {
 });
 
 describe('terrain — coûts réels & acquisition', () => {
-  it('agrège les coûts, la répartition et la marge brute', () => {
+  it('sépare les ressources des dépenses non rapprochées sans annoncer de marge', () => {
     const couts = computeCoutsTerrain({
       mainOeuvreMad: 40_000,
       materielMad: 25_000,
@@ -451,11 +491,13 @@ describe('terrain — coûts réels & acquisition', () => {
       decompteCumuleTtcMad: 150_000,
       montantMarcheMad: 400_500,
     });
-    expect(couts.totalMad).toBe(100_000);
-    expect(couts.margeBruteMad).toBe(50_000);
-    expect(couts.repartitionPct.mainOeuvre).toBe(40);
-    expect(couts.repartitionPct.depenses).toBe(5);
-    expect(couts.coutSurMarchePct).toBe(24.97);
+    expect(couts.operationalResourceCostsMad).toBe(95_000);
+    expect(couts.expensesAwaitingReconciliationMad).toBe(5_000);
+    expect(couts.totalMad).toBeNull();
+    expect(couts.margeBruteMad).toBeNull();
+    expect(couts.repartitionPct.mainOeuvre).toBe(42.11);
+    expect(couts.repartitionPct.depenses).toBe(0);
+    expect(couts.coutSurMarchePct).toBeNull();
   });
 
   it('coût pointage: taux jour direct et salaire mensuel /26', () => {

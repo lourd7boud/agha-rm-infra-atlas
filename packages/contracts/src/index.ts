@@ -1,5 +1,9 @@
 import { z } from 'zod';
 
+export * from './bid';
+export * from './dce';
+export * from './terrain';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Vault — company document vault (10-architecture/03-data-architecture.md §3-4)
 // Domain language stays French per data-architecture §2.

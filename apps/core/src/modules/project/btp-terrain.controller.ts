@@ -14,10 +14,13 @@ import {
   Post,
   Query,
   Req,
+  UseInterceptors,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { Roles } from '../auth/auth.module';
-import { actorFrom, WRITE_ROLES, type AuthedRequest } from './btp-http.helpers';
+import { actorFrom, toHttp, WRITE_ROLES, type AuthedRequest } from './btp-http.helpers';
+import { BTP_EXECUTION_REPOSITORY, type BtpExecutionRepository } from './btp.repository';
+import { BtpTerrainErrorInterceptor } from './btp-terrain-errors.interceptor';
 import {
   DEPENSE_CATEGORIES,
   DEPENSE_METHODES,
@@ -56,8 +59,8 @@ const materielSchema = z.object({
   regime: z.enum(['propre', 'location']).default('propre'),
   heuresUtilisation: z.number().min(0).max(10_000).nullish(),
   carburantL: z.number().min(0).max(100_000).nullish(),
-  coutCarburantMad: z.number().min(0).max(10_000_000).default(0),
-  coutLocationMad: z.number().min(0).max(10_000_000).default(0),
+  coutCarburantMad: z.number().min(0).max(10_000_000).nullable().default(null),
+  coutLocationMad: z.number().min(0).max(10_000_000).nullable().default(null),
   note: z.string().max(1000).nullish(),
 });
 
@@ -67,7 +70,7 @@ const consommationSchema = z.object({
   unite: z.string().min(1).max(20).default('u'),
   quantite: z.number().positive().max(1_000_000_000),
   prixUnitaireMad: z.number().min(0).max(10_000_000).nullish(),
-  coutMad: z.number().min(0).max(100_000_000).default(0),
+  coutMad: z.number().min(0).max(100_000_000).nullable().default(null),
   fournisseur: z.string().max(300).nullish(),
   bonLivraison: z.string().max(200).nullish(),
   note: z.string().max(1000).nullish(),
@@ -103,9 +106,11 @@ const pointageSchema = z.object({
 
 // ─── Controller ──────────────────────────────────────────────────────────────
 @Controller('btp/projects/:projectId/terrain')
+@UseInterceptors(BtpTerrainErrorInterceptor)
 export class BtpTerrainController {
   constructor(
     @Inject(BTP_TERRAIN_REPOSITORY) private readonly terrain: BtpTerrainRepository,
+    @Inject(BTP_EXECUTION_REPOSITORY) private readonly execution: BtpExecutionRepository,
   ) {}
 
   /** Tableau de bord terrain: coûts réels + compteurs + derniers rapports. */
@@ -265,13 +270,16 @@ export class BtpTerrainController {
   ) {
     const parsed = attachementSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const bordereau = await this.execution.getBordereau(projectId);
+    const ligne = bordereau?.lignes.find((l) => (l.id ?? String(l.numero)) === parsed.data.ligneId);
+    if (!ligne) throw new BadRequestException('La ligne du bordereau n’appartient pas à ce projet');
     return this.terrain.createAttachement({
       projectId,
       date: parsed.data.date,
       ligneId: parsed.data.ligneId,
-      numeroPrix: parsed.data.numeroPrix ?? null,
-      designation: parsed.data.designation,
-      unite: parsed.data.unite,
+      numeroPrix: String(ligne.numero),
+      designation: ligne.designation,
+      unite: ligne.unite,
       quantite: parsed.data.quantite,
       note: parsed.data.note ?? null,
       saisiPar: actorFrom(req).name,
@@ -281,10 +289,12 @@ export class BtpTerrainController {
   /** L'intégration au métré officiel reste un geste du bureau. */
   @Roles(...WRITE_ROLES)
   @Post('attachements/:id/integrer')
-  async integrerAttachement(@Param('projectId') projectId: string, @Param('id') id: string) {
-    const updated = await this.terrain.setAttachementStatut(projectId, id, 'integre');
-    if (!updated) throw new NotFoundException(`Attachement introuvable: ${id}`);
-    return updated;
+  async integrerAttachement(@Param('projectId') projectId: string, @Param('id') id: string, @Body() body: unknown, @Req() req: AuthedRequest) {
+    const parsed = z.object({ periodeId: z.string().uuid() }).safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    try {
+      return await this.execution.integrateTerrainAttachement(projectId, id, parsed.data.periodeId, actorFrom(req).name);
+    } catch (error) { toHttp(error); }
   }
 
   @Roles(...TERRAIN_ROLES)
@@ -334,10 +344,10 @@ export class BtpTerrainController {
 
   // Pointage
   @Get('pointage')
-  async pointage(@Param('projectId') projectId: string) {
+  async pointage(@Param('projectId') projectId: string, @Query('history') history?: string) {
     const [crew, pointages] = await Promise.all([
       this.terrain.getCrew(projectId),
-      this.terrain.listPointages(projectId, 120),
+      this.terrain.listPointages(projectId, history === 'all' ? null : 120),
     ]);
     return { crew, pointages };
   }

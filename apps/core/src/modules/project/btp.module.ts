@@ -35,6 +35,8 @@ import { computeDelaiInfo } from './btp-registres.domain';
 import { calculateDecompteRevision, type IndexValues } from './btp-revision.domain';
 import { round2, toDecimal, toNumber } from './btp-finance.domain';
 import { BtpEntrepriseController, BtpTerrainController } from './btp-terrain.controller';
+import { BtpJourneeModule } from './btp-journee.module';
+import { BtpTerrainReconciliationModule } from './btp-terrain-reconciliation.module';
 import {
   MODES_OBTENTION,
   NOTRE_ENTREPRISE,
@@ -140,16 +142,15 @@ const metreLigneSchema = z.object({
   subSectionId: z.string().optional(),
   numero: z.number().optional(),
   designation: z.string().max(1000).optional(),
-  nombreSemblables: z.number().nonnegative().optional(),
-  longueur: z.number().nonnegative().optional(),
-  largeur: z.number().nonnegative().optional(),
-  profondeur: z.number().nonnegative().optional(),
-  nombre: z.number().nonnegative().optional(),
+  nombreSemblables: z.number().optional(),
+  longueur: z.number().optional(),
+  largeur: z.number().optional(),
+  profondeur: z.number().optional(),
+  nombre: z.number().optional(),
   // Nombre d'éléments identiques répétés d'une mesure (8 poteaux, 6 poutres…).
-  // Le moteur le normalise en entier ≥ 1 (absent / 0 / décimal → 1 / troncature,
-  // cf. normaliseNombreElements) : « nombre » reste le nombre de barres dans un
-  // seul élément et les métrés enregistrés sans ce champ gardent leur résultat.
-  nombreElements: z.number().nonnegative().optional(),
+  // Le moteur le normalise en entier non nul : absent / 0 → 1, négatif →
+  // déduction. « nombre » reste le nombre de barres dans un seul élément.
+  nombreElements: z.number().optional(),
   diametre: z.number().nonnegative().optional(),
   partiel: z.number().optional(),
   observations: z.string().max(1000).optional(),
@@ -174,7 +175,7 @@ const metreSaveSchema = z.object({
             sectionId: z.string().optional(),
             titre: z.string().max(300),
             ordre: z.number().optional(),
-            nombreElements: z.number().nonnegative().optional(),
+            nombreElements: z.number().optional(),
           }),
         ),
         lignes: z.array(metreLigneSchema).max(2000),
@@ -645,14 +646,45 @@ export class BtpExecutionController {
     return this.exports.attachement(projectId, periodeId || undefined);
   }
 
+  @Get('export/attachement.pdf')
+  async exportAttachementPdf(
+    @Param('projectId') projectId: string,
+    @Query('periodeId') periodeId?: string,
+  ) {
+    return this.exports.attachementPdf(projectId, periodeId);
+  }
+
+  @Get('export/metre.xlsx')
+  async exportMetreXlsx(
+    @Param('projectId') projectId: string,
+    @Query('periodeId') periodeId?: string,
+  ) {
+    if (!periodeId) throw new BadRequestException('periodeId requis');
+    return this.exports.metreXlsx(projectId, periodeId);
+  }
+
+  @Get('export/metre.pdf')
+  async exportMetrePdf(
+    @Param('projectId') projectId: string,
+    @Query('periodeId') periodeId?: string,
+  ) {
+    if (!periodeId) throw new BadRequestException('periodeId requis');
+    return this.exports.metrePdf(projectId, periodeId);
+  }
+
   @Get('export/recapitulatif')
   async exportRecapitulatif(@Param('projectId') projectId: string) {
     return this.exports.recapitulatif(projectId);
   }
+
+  @Get('export/depenses')
+  async exportDepenses(@Param('projectId') projectId: string) {
+    return this.exports.depenses(projectId);
+  }
 }
 
 @Module({
-  imports: [BtpRepositoryModule, VaultModule],
+  imports: [BtpRepositoryModule, VaultModule, BtpJourneeModule, BtpTerrainReconciliationModule],
   controllers: [
     BtpProjectsController,
     BtpExecutionController,

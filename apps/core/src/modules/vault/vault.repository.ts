@@ -16,6 +16,8 @@ export interface CreateVaultDocument {
 export interface VaultFileInfo {
   bucket: string;
   objectKey: string;
+  filename: string;
+  sizeBytes: number;
   sha256: string;
   mime: string;
 }
@@ -25,6 +27,8 @@ export interface VaultDocumentRecord extends CreateVaultDocument {
   createdAt: Date;
   bucket?: string;
   objectKey?: string;
+  filename?: string;
+  sizeBytes?: number;
   sha256?: string;
   mime?: string;
 }
@@ -112,6 +116,8 @@ export class DrizzleVaultRepository implements VaultRepository {
       .set({
         bucket: file.bucket,
         objectKey: file.objectKey,
+        filename: file.filename,
+        sizeBytes: file.sizeBytes,
         sha256: file.sha256,
         mime: file.mime,
         updatedAt: new Date(),
@@ -135,6 +141,8 @@ function toRecord(row: VaultRow): VaultDocumentRecord {
     notes: row.notes ?? undefined,
     bucket: row.bucket ?? undefined,
     objectKey: row.objectKey ?? undefined,
+    filename: row.filename ?? undefined,
+    sizeBytes: row.sizeBytes ?? undefined,
     sha256: row.sha256 ?? undefined,
     mime: row.mime ?? undefined,
     createdAt: row.createdAt,

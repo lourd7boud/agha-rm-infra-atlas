@@ -62,4 +62,14 @@ describe('InMemoryObjectStorage', () => {
       'memory://',
     );
   });
+
+  test('deletes an object explicitly', async () => {
+    const storage = new InMemoryObjectStorage();
+    await storage.put('temporary/signed.pdf', Buffer.from('signed'), 'application/pdf');
+
+    await storage.delete('temporary/signed.pdf');
+
+    expect(storage.get('temporary/signed.pdf')).toBeUndefined();
+    await expect(storage.getObject('temporary/signed.pdf')).rejects.toThrow(/No object/);
+  });
 });

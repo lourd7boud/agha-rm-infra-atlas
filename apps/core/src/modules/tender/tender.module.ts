@@ -4,9 +4,11 @@ import { BrainModule } from '../brain/brain.module';
 import { VaultModule } from '../vault/vault.module';
 import { IntelModule } from '../intel/intel.module';
 import { PortalModule } from '../portal/portal.module';
+import { SuiviAnalyseService } from '../watch/suivi-analyse.service';
 import { TenderController } from './tender.controller';
 import { TenderListsController } from './tender-lists.controller';
 import { DossierService } from './dossier.service';
+import { OfficePreviewService } from './office-preview.service';
 import { DossierExtractionService } from './dossier-extraction.service';
 import { EnrichmentService } from './enrichment.service';
 import { TenderChatService } from './tender-chat.service';
@@ -94,11 +96,13 @@ const tenderListsServiceProvider = {
     QualifierService,
     EnrichmentService,
     DossierService,
+    OfficePreviewService,
     DossierExtractionService,
     TenderChatService,
     CompanyLegalService,
     TenderAssistantService,
     PricingService,
+    SuiviAnalyseService,
   ],
   // EnrichmentService + DossierExtractionService are exported so the Sentinel
   // (watch module) can chain a bounded enrich+extract after each crawl — making

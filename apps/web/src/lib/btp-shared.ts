@@ -88,16 +88,26 @@ export interface TerrainCouts {
   materielMad: number;
   consommationsMad: number;
   depensesMad: number;
-  totalMad: number;
+  totalMad: number | null;
   decompteCumuleTtcMad: number;
-  margeBruteMad: number;
+  margeBruteMad: number | null;
+  operationalResourceCostsMad: number;
+  expensesAwaitingReconciliationMad: number;
+  reconciledExpensesMad: number;
+  knownCostsMad: number;
+  unresolvedExpenseCount: number;
+  reconciledExpenseCount: number;
+  reconciliationStatus: 'pending';
+  costBasis: 'unreconciled';
+  missingValuations: { mainOeuvre: number; materiel: number; consommations: number };
+  latestDecompte: { id: string; numero: number; dateDecompte: string | null; statut: string } | null;
   repartitionPct: {
     mainOeuvre: number;
     materiel: number;
     consommations: number;
     depenses: number;
   };
-  coutSurMarchePct: number;
+  coutSurMarchePct: number | null;
 }
 
 export interface TerrainCounts {
@@ -135,8 +145,8 @@ export interface TerrainMateriel {
   regime: string;
   heuresUtilisation: number | null;
   carburantL: number | null;
-  coutCarburantMad: number;
-  coutLocationMad: number;
+  coutCarburantMad: number | null;
+  coutLocationMad: number | null;
   note: string | null;
   saisiPar: string;
 }
@@ -148,7 +158,7 @@ export interface TerrainConsommation {
   unite: string;
   quantite: number;
   prixUnitaireMad: number | null;
-  coutMad: number;
+  coutMad: number | null;
   fournisseur: string | null;
   bonLivraison: string | null;
   note: string | null;
@@ -156,6 +166,9 @@ export interface TerrainConsommation {
 }
 
 export interface TerrainAttachement {
+  metreId: string | null;
+  integratedAt: string | null;
+  integratedBy: string | null;
   id: string;
   date: string;
   ligneId: string;
@@ -183,6 +196,8 @@ export interface TerrainDepense {
 }
 
 export interface TerrainCrewMember {
+  startDate?: string;
+  endDate?: string | null;
   assignmentId: string;
   employeeId: string;
   fullName: string;
@@ -199,7 +214,7 @@ export interface TerrainPointage {
   workDate: string;
   daysWorked: number;
   notes: string | null;
-  coutMad: number;
+  coutMad: number | null;
 }
 
 export interface TerrainOverview {
@@ -344,9 +359,9 @@ export interface MetreLigne {
   /**
    * Nombre d'éléments structurels identiques répétés pour cette mesure
    * (8 poteaux, 6 poutres, 4 bassins…). « nombre » reste le nombre de
-   * barres/pièces DANS un seul élément. Vide / absent / 0 / négatif / non
-   * entier → 1, exactement comme le moteur serveur (normaliseNombreElements) :
-   * les métrés enregistrés avant l'ajout du champ gardent leur résultat.
+   * barres/pièces DANS un seul élément. Une valeur négative est une déduction.
+   * Vide / absent / 0 → 1 et les décimales sont tronquées, exactement comme le
+   * moteur serveur (normaliseNombreElements).
    */
   nombreElements?: number;
   diametre?: number;
@@ -632,6 +647,16 @@ export function assetFileHref(projectId: string, asset: Pick<Asset, 'id' | 'stor
   return asset.storageKey ? `/api/btp-asset/${projectId}/${asset.id}` : null;
 }
 
+/** Lightweight square preview; the original stays available through assetFileHref. */
+export function assetThumbnailHref(
+  projectId: string,
+  asset: Pick<Asset, 'id' | 'storageKey'>,
+) {
+  return asset.storageKey
+    ? `/api/btp-asset/${projectId}/${asset.id}?variant=thumbnail`
+    : null;
+}
+
 export interface DelaiOverviewRow {
   project: {
     id: string;
@@ -848,22 +873,67 @@ export const METRE_CHAMPS: Record<MetreCalcType, string[]> = {
   unite: ['nombreSemblables', 'nombre'],
 };
 
+const METRE_OPEN_STATE_PREFIX = 'atlas.metre.open.v1';
+
+/** Browser-local UI preference, isolated by project and période. */
+export function metreOpenStateKey(projectId: string, periodeId: string): string {
+  return `${METRE_OPEN_STATE_PREFIX}:${projectId}:${periodeId}`;
+}
+
 /**
- * Normalise le « nombre d'éléments » d'une ligne : entier ≥ 1. Miroir exact de
- * normaliseNombreElements du moteur serveur (btp-metre.domain.ts) — absent,
- * vide, 0, négatif, NaN → 1 ; décimal tronqué (2,7 → 2).
+ * Restore only known line ids and boolean values. Corrupt or stale storage is
+ * ignored so it can never hide a newly-added bordereau line by accident.
+ */
+export function restoreMetreOpenState(
+  raw: string | null,
+  keys: string[],
+  defaults: Record<string, boolean>,
+): Record<string, boolean> {
+  let stored: Record<string, unknown> = {};
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        stored = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Keep the server-derived defaults when localStorage is malformed.
+    }
+  }
+  return Object.fromEntries(
+    keys.map((key) => [
+      key,
+      typeof stored[key] === 'boolean' ? stored[key] : (defaults[key] ?? false),
+    ]),
+  );
+}
+
+/** Persist a compact, allow-listed snapshot (never arbitrary storage data). */
+export function serializeMetreOpenState(
+  state: Record<string, boolean>,
+  keys: string[],
+): string {
+  return JSON.stringify(Object.fromEntries(keys.map((key) => [key, state[key] ?? false])));
+}
+
+/**
+ * Normalise le « nombre d'éléments » d'une ligne en entier non nul. Miroir du
+ * moteur serveur : absent, vide, 0 ou NaN → 1 ; le signe est conservé pour les
+ * déductions et les décimales sont tronquées.
  */
 export function normaliseNombreElements(value: number | null | undefined): number {
   if (value == null || !Number.isFinite(value)) return 1;
-  const entier = Math.floor(value);
-  return entier >= 1 ? entier : 1;
+  const entier = Math.trunc(value);
+  return entier === 0 ? 1 : entier;
 }
 
 /** Live partiel — mirrors computeLignePartiel in the core engine. */
 export function computeLignePartielClient(unite: string, ligne: MetreLigne): number {
   const type = metreCalcType(unite);
   const multiplier =
-    ligne.nombreSemblables && ligne.nombreSemblables > 0 ? ligne.nombreSemblables : 1;
+    ligne.nombreSemblables && Number.isFinite(ligne.nombreSemblables)
+      ? ligne.nombreSemblables
+      : 1;
   const hasDims =
     ligne.longueur != null ||
     ligne.largeur != null ||

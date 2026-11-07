@@ -2,6 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, test, vi } from 'vitest';
 import type { BordereauLigne, Metre, MetreContext } from '@/lib/btp-shared';
+import * as MetreEditorModule from './MetreEditor';
 import { MetreEditor } from './MetreEditor';
 
 // Rendu réel (SSR) de l'éditeur de métré : les lignes acier (KG) exposent deux
@@ -99,8 +100,8 @@ describe('MetreEditor — ferraillage (KG) : deux comptages distincts', () => {
     expect(html).toContain('Ø (mm)');
     expect(html).toContain('barres ou de pièces de ferraillage dans UN seul élément');
     expect(html).toContain('éléments structurels identiques répétés');
-    // Saisie entière uniquement (clavier numérique mobile) et défaut à 1.
-    expect(html).toContain('inputMode="numeric"');
+    // Clavier décimal pour exposer le signe négatif des déductions ; défaut à 1.
+    expect(html).toContain('inputMode="decimal"');
     expect(html).toContain('placeholder="1"');
     expect(html).toContain('Nombre × Nombre d’éléments × Longueur × poids du Ø');
   });
@@ -246,6 +247,81 @@ describe('MetreEditor — les autres unités ne bougent pas', () => {
     expect(html).not.toContain('Nombre d’éléments');
     expect(html).not.toContain('Nombre × Nombre d’éléments');
     expect(html).toContain('6,00'); // 2 × 2 × 3 × 0,5 : total de la période
+  });
+});
+
+describe('MetreEditor — sauvegarde après suppression', () => {
+  test('conserve dans la sauvegarde un poste dont la dernière mesure a été supprimée', () => {
+    const buildPayload = (
+      MetreEditorModule as typeof MetreEditorModule & {
+        buildMetreSavePayload?: (entries: Record<string, unknown>) => unknown;
+      }
+    ).buildMetreSavePayload;
+
+    expect(
+      buildPayload?.({
+        b1: {
+          bordereauLigneId: 'b1',
+          persisted: true,
+          sections: [],
+          sousSections: [],
+          lignes: [],
+        },
+        b2: {
+          bordereauLigneId: 'b2',
+          persisted: false,
+          sections: [],
+          sousSections: [],
+          lignes: [],
+        },
+      }),
+    ).toEqual([
+      {
+        bordereauLigneId: 'b1',
+        sections: [],
+        sousSections: [],
+        lignes: [],
+      },
+    ]);
+  });
+
+  test('reconnaît comme persisté un nouveau poste confirmé par le contexte serveur', () => {
+    const markPersisted = (
+      MetreEditorModule as typeof MetreEditorModule & {
+        markPersistedMetreEntries?: (
+          entries: Record<string, unknown>,
+          persistedIds: ReadonlySet<string>,
+        ) => Record<string, unknown>;
+      }
+    ).markPersistedMetreEntries;
+    const buildPayload = (
+      MetreEditorModule as typeof MetreEditorModule & {
+        buildMetreSavePayload: (entries: Record<string, unknown>) => unknown;
+      }
+    ).buildMetreSavePayload;
+
+    const afterServerRefresh = markPersisted?.(
+      {
+        b1: {
+          bordereauLigneId: 'b1',
+          persisted: false,
+          sections: [],
+          sousSections: [],
+          lignes: [],
+        },
+      },
+      new Set(['b1']),
+    );
+
+    expect(afterServerRefresh).toBeDefined();
+    expect(buildPayload(afterServerRefresh!)).toEqual([
+      {
+        bordereauLigneId: 'b1',
+        sections: [],
+        sousSections: [],
+        lignes: [],
+      },
+    ]);
   });
 });
 

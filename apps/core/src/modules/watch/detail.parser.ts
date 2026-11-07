@@ -90,15 +90,15 @@ export interface DetailFields {
 /** "7 000,00 MAD" / "1 250 000,50 Dhs" → number (MAD), or null. */
 export function parseMoneyMad(text: string | null | undefined): number | null {
   if (!text) return null;
-  // Drop currency words and any non [digit , . space] noise, keep separators.
+  // Drop currency words and keep French numeric separators. `\s` deliberately
+  // covers ordinary spaces plus NBSP/NNBSP emitted by portal HTML entities.
   const cleaned = text
-    .replace(/ /g, ' ')
     .replace(/mad|dhs?|dirhams?|ttc|ht/gi, '')
     .trim();
-  const m = /\d[\d .]*(?:,\d+)?/.exec(cleaned);
+  const m = /\d[\d\s.]*(?:,\d+)?/.exec(cleaned);
   if (!m) return null;
   // French format: space = thousands separator, comma = decimal.
-  const normalized = m[0].replace(/[ ]/g, '').replace(',', '.');
+  const normalized = m[0].replace(/\s/g, '').replace(',', '.');
   const value = Number(normalized);
   return Number.isFinite(value) ? value : null;
 }
@@ -249,7 +249,7 @@ function parseIntOrNull(value: string | null): number | null {
  * ctl-index with a labelReferentielZoneText value span (and a mirrored hidden
  * oldValue input). Pick the repeater whose titre mentions "estimation".
  */
-function parseReferentielEstimation(html: string): number | null {
+export function parseReferentielEstimation(html: string): number | null {
   const titreRe = /RepeaterReferentielZoneText_ctl(\d+)_titre"[^>]*>([^<]*)/gi;
   let m: RegExpExecArray | null;
   while ((m = titreRe.exec(html))) {

@@ -7,6 +7,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+PUBLIC_APP_URL="${ATLAS_PUBLIC_URL:-https://atlas.marocinfra.com}"
+case "$PUBLIC_APP_URL" in
+  https://*) ;;
+  *) echo "ATLAS_PUBLIC_URL must be the canonical HTTPS origin" >&2; exit 1 ;;
+esac
+
 cat > docker-compose.override.yml <<'EOF'
 services:
   keycloak:
@@ -28,8 +34,13 @@ if [ ! -f .env.apps ]; then
   sed -i "s|S3_ACCESS_KEY=CHANGE_ME|S3_ACCESS_KEY=$(grep MINIO_ROOT_USER .env | cut -d= -f2)|" .env.apps
   sed -i "s|S3_SECRET_KEY=CHANGE_ME|S3_SECRET_KEY=$(grep MINIO_ROOT_PASSWORD .env | cut -d= -f2)|" .env.apps
   sed -i "s|AUTH_SECRET=CHANGE_ME|AUTH_SECRET=$(openssl rand -hex 32)|" .env.apps
-  sed -i "s|AUTH_URL=.*|AUTH_URL=http://localhost:3001|" .env.apps
+  sed -i "s|AUTH_URL=.*|AUTH_URL=$PUBLIC_APP_URL|" .env.apps
   sed -i "s|AUTH_KEYCLOAK_SECRET=CHANGE_ME|AUTH_KEYCLOAK_SECRET=|" .env.apps
+fi
+
+if ! grep -qx "AUTH_URL=$PUBLIC_APP_URL" .env.apps; then
+  echo ".env.apps AUTH_URL must equal $PUBLIC_APP_URL" >&2
+  exit 1
 fi
 
 docker compose up -d keycloak

@@ -1,7 +1,7 @@
 // Repository Terrain — saisie chantier (rapports, matériel, consommations,
 // attachements), dépenses projet (finance.expense) et pointage main d'œuvre
 // (people.assignment/work_day, réutilisés — pas de table doublon).
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import {
   assignments,
@@ -14,7 +14,8 @@ import {
   expenses,
   projects,
 } from '../../db/schema';
-import { computeCoutsTerrain, coutPointage, type CoutsTerrain } from './btp-terrain.domain';
+import { computeCoutsTerrain, type CoutsTerrain } from './btp-terrain.domain';
+import { BtpTransitionError } from './btp-registres.domain';
 
 export const BTP_TERRAIN_REPOSITORY = Symbol('BTP_TERRAIN_REPOSITORY');
 
@@ -52,8 +53,8 @@ export interface MaterielRecord {
   regime: string;
   heuresUtilisation: number | null;
   carburantL: number | null;
-  coutCarburantMad: number;
-  coutLocationMad: number;
+  coutCarburantMad: number | null;
+  coutLocationMad: number | null;
   note: string | null;
   saisiPar: string;
 }
@@ -66,7 +67,7 @@ export interface ConsommationRecord {
   unite: string;
   quantite: number;
   prixUnitaireMad: number | null;
-  coutMad: number;
+  coutMad: number | null;
   fournisseur: string | null;
   bonLivraison: string | null;
   note: string | null;
@@ -84,6 +85,9 @@ export interface AttachementRecord {
   quantite: number;
   note: string | null;
   statut: string;
+  metreId: string | null;
+  integratedAt: Date | null;
+  integratedBy: string | null;
   saisiPar: string;
 }
 
@@ -121,7 +125,7 @@ export interface PointageRecord {
   workDate: Date;
   daysWorked: number;
   notes: string | null;
-  coutMad: number;
+  coutMad: number | null;
 }
 
 export interface TerrainCounts {
@@ -153,7 +157,9 @@ export interface BtpTerrainRepository {
   deleteConsommation(projectId: string, id: string): Promise<boolean>;
   // Attachements terrain
   listAttachements(projectId: string): Promise<AttachementRecord[]>;
-  createAttachement(input: Omit<AttachementRecord, 'id' | 'statut'>): Promise<AttachementRecord>;
+  createAttachement(
+    input: Omit<AttachementRecord, 'id' | 'statut' | 'metreId' | 'integratedAt' | 'integratedBy'>,
+  ): Promise<AttachementRecord>;
   setAttachementStatut(
     projectId: string,
     id: string,
@@ -177,7 +183,7 @@ export interface BtpTerrainRepository {
   deleteDepense(projectId: string, id: string): Promise<boolean>;
   // Pointage (people.*)
   getCrew(projectId: string): Promise<CrewMember[]>;
-  listPointages(projectId: string, limit?: number): Promise<PointageRecord[]>;
+  listPointages(projectId: string, limit?: number | null): Promise<PointageRecord[]>;
   upsertPointage(input: {
     assignmentId: string;
     workDate: Date;
@@ -222,8 +228,8 @@ function mapMateriel(r: typeof chantierMateriel.$inferSelect): MaterielRecord {
     regime: r.regime,
     heuresUtilisation: r.heuresUtilisation == null ? null : num(r.heuresUtilisation),
     carburantL: r.carburantL == null ? null : num(r.carburantL),
-    coutCarburantMad: num(r.coutCarburantMad),
-    coutLocationMad: num(r.coutLocationMad),
+    coutCarburantMad: r.coutCarburantMad == null ? null : num(r.coutCarburantMad),
+    coutLocationMad: r.coutLocationMad == null ? null : num(r.coutLocationMad),
     note: r.note,
     saisiPar: r.saisiPar,
   };
@@ -238,7 +244,7 @@ function mapConsommation(r: typeof chantierConsommations.$inferSelect): Consomma
     unite: r.unite,
     quantite: num(r.quantite),
     prixUnitaireMad: r.prixUnitaireMad == null ? null : num(r.prixUnitaireMad),
-    coutMad: num(r.coutMad),
+    coutMad: r.coutMad == null ? null : num(r.coutMad),
     fournisseur: r.fournisseur,
     bonLivraison: r.bonLivraison,
     note: r.note,
@@ -258,6 +264,9 @@ function mapAttachement(r: typeof chantierAttachements.$inferSelect): Attachemen
     quantite: num(r.quantite),
     note: r.note,
     statut: r.statut,
+    metreId: r.metreId,
+    integratedAt: r.integratedAt,
+    integratedBy: r.integratedBy,
     saisiPar: r.saisiPar,
   };
 }
@@ -375,8 +384,8 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
         heuresUtilisation:
           input.heuresUtilisation != null ? String(input.heuresUtilisation) : undefined,
         carburantL: input.carburantL != null ? String(input.carburantL) : undefined,
-        coutCarburantMad: String(input.coutCarburantMad ?? 0),
-        coutLocationMad: String(input.coutLocationMad ?? 0),
+        coutCarburantMad: input.coutCarburantMad == null ? null : String(input.coutCarburantMad),
+        coutLocationMad: input.coutLocationMad == null ? null : String(input.coutLocationMad),
         note: input.note,
         saisiPar: input.saisiPar,
       })
@@ -405,11 +414,11 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
   async createConsommation(input: Omit<ConsommationRecord, 'id'>): Promise<ConsommationRecord> {
     // coût = quantité × PU quand le PU est fourni et le coût omis.
     const cout =
-      input.coutMad > 0
+      input.coutMad != null
         ? input.coutMad
         : input.prixUnitaireMad != null
           ? Math.round(input.quantite * input.prixUnitaireMad * 100) / 100
-          : 0;
+          : null;
     const [row] = await this.db
       .insert(chantierConsommations)
       .values({
@@ -419,7 +428,7 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
         unite: input.unite,
         quantite: String(input.quantite),
         prixUnitaireMad: input.prixUnitaireMad != null ? String(input.prixUnitaireMad) : undefined,
-        coutMad: String(cout),
+        coutMad: cout == null ? null : String(cout),
         fournisseur: input.fournisseur,
         bonLivraison: input.bonLivraison,
         note: input.note,
@@ -448,7 +457,7 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
   }
 
   async createAttachement(
-    input: Omit<AttachementRecord, 'id' | 'statut'>,
+    input: Omit<AttachementRecord, 'id' | 'statut' | 'metreId' | 'integratedAt' | 'integratedBy'>,
   ): Promise<AttachementRecord> {
     const [row] = await this.db
       .insert(chantierAttachements)
@@ -472,20 +481,42 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
     id: string,
     statut: 'saisi' | 'integre',
   ): Promise<AttachementRecord | null> {
+    if (statut === 'integre') {
+      throw new BtpTransitionError(
+        'Intégrez la quantité à un métré pour confirmer son intégration',
+      );
+    }
     const [row] = await this.db
       .update(chantierAttachements)
       .set({ statut })
-      .where(and(eq(chantierAttachements.id, id), eq(chantierAttachements.projectId, projectId)))
+      .where(
+        and(
+          eq(chantierAttachements.id, id),
+          eq(chantierAttachements.projectId, projectId),
+          isNull(chantierAttachements.metreId),
+        ),
+      )
       .returning();
     return row ? mapAttachement(row) : null;
   }
 
   async deleteAttachement(projectId: string, id: string): Promise<boolean> {
-    const rows = await this.db
-      .delete(chantierAttachements)
-      .where(and(eq(chantierAttachements.id, id), eq(chantierAttachements.projectId, projectId)))
-      .returning({ id: chantierAttachements.id });
-    return rows.length > 0;
+    return this.db.transaction(async (tx) => {
+      const [source] = await tx
+        .select({ metreId: chantierAttachements.metreId })
+        .from(chantierAttachements)
+        .where(and(eq(chantierAttachements.id, id), eq(chantierAttachements.projectId, projectId)))
+        .for('update');
+      if (source?.metreId)
+        throw new BtpTransitionError(
+          'Cette quantité est intégrée à un métré — suppression impossible',
+        );
+      const rows = await tx
+        .delete(chantierAttachements)
+        .where(and(eq(chantierAttachements.id, id), eq(chantierAttachements.projectId, projectId)))
+        .returning({ id: chantierAttachements.id });
+      return rows.length > 0;
+    });
   }
 
   // Dépenses
@@ -529,11 +560,26 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
   }
 
   async deleteDepense(projectId: string, id: string): Promise<boolean> {
-    const rows = await this.db
-      .delete(expenses)
-      .where(and(eq(expenses.id, id), eq(expenses.projectId, projectId)))
-      .returning({ id: expenses.id });
-    return rows.length > 0;
+    return this.db.transaction(async (tx) => {
+      const [expense] = await tx
+        .select({ id: expenses.id })
+        .from(expenses)
+        .where(and(eq(expenses.id, id), eq(expenses.projectId, projectId)))
+        .for('update');
+      if (!expense) return false;
+      const classified =
+        await tx.execute(sql`select expense_id from project.terrain_expense_reconciliation
+        where expense_id=${id}`);
+      if (classified.rows.length)
+        throw new BtpTransitionError(
+          'Cette dépense est rapprochée — son historique doit être conservé',
+        );
+      const rows = await tx
+        .delete(expenses)
+        .where(and(eq(expenses.id, id), eq(expenses.projectId, projectId)))
+        .returning({ id: expenses.id });
+      return rows.length > 0;
+    });
   }
 
   // Pointage — réutilise people.assignment / people.work_day
@@ -565,10 +611,10 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
     }));
   }
 
-  async listPointages(projectId: string, limit = 120): Promise<PointageRecord[]> {
+  async listPointages(projectId: string, limit: number | null = 120): Promise<PointageRecord[]> {
     const result = await this.db.execute(sql`
       select wd.id, wd.assignment_id, e.full_name, e.metier, wd.work_date,
-             wd.days_worked, wd.notes, a.rate_type, a.rate_amount_mad
+             wd.days_worked, wd.notes, wd.cost_snapshot_mad
       from people.work_day wd
       join people.assignment a on a.id = wd.assignment_id
       join people.employee e on e.id = a.employee_id
@@ -586,11 +632,10 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
         workDate: new Date(String(r.work_date)),
         daysWorked: days,
         notes: (r.notes as string | null) ?? null,
-        coutMad: coutPointage(
-          days,
-          (r.rate_type as string | null) ?? null,
-          r.rate_amount_mad == null ? null : num(r.rate_amount_mad as string),
-        ),
+        coutMad:
+          r.cost_snapshot_mad == null
+            ? null
+            : Math.round(days * num(r.cost_snapshot_mad as string) * 100) / 100,
       };
     });
   }
@@ -603,9 +648,13 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
   }): Promise<void> {
     // Même clé naturelle que people: (assignment, date) — UPSERT idempotent.
     await this.db.execute(sql`
-      insert into people.work_day (assignment_id, work_date, days_worked, notes)
-      values (${input.assignmentId}, ${input.workDate.toISOString().slice(0, 10)},
-              ${String(input.daysWorked)}, ${input.notes ?? null})
+      insert into people.work_day (assignment_id, work_date, days_worked, notes, cost_snapshot_mad)
+      select a.id, ${input.workDate.toISOString().slice(0, 10)},
+             ${String(input.daysWorked)}::numeric, ${input.notes ?? null},
+             case when a.rate_amount_mad > 0 and a.rate_type = 'mois' then a.rate_amount_mad / 26.0
+                  when a.rate_amount_mad > 0 and a.rate_type = 'jour' then a.rate_amount_mad
+                  else null end
+      from people.assignment a where a.id = ${input.assignmentId}
       on conflict (assignment_id, work_date)
       do update set days_worked = excluded.days_worked, notes = excluded.notes
     `);
@@ -613,46 +662,108 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
 
   // Agrégats
   async getCouts(projectId: string): Promise<CoutsTerrain> {
-    const [mo, mat, conso, dep, dec, proj] = await Promise.all([
+    const [mo, mat, conso, dep, dec, proj, temporary] = await Promise.all([
       this.db.execute(sql`
-        select coalesce(sum(wd.days_worked *
-          case when a.rate_type = 'mois' then coalesce(a.rate_amount_mad, 0) / 26.0
-               else coalesce(a.rate_amount_mad, 0) end), 0) as total
+        select coalesce(sum(round(wd.days_worked * wd.cost_snapshot_mad, 2)), 0) as total,
+               count(*) filter (where wd.cost_snapshot_mad is null) as missing
         from people.work_day wd
         join people.assignment a on a.id = wd.assignment_id
         where a.project_id = ${projectId}
       `),
       this.db
         .select({
-          total: sql<string>`coalesce(sum(${chantierMateriel.coutCarburantMad} + ${chantierMateriel.coutLocationMad}), 0)`,
+          total: sql<string>`coalesce(sum(coalesce(${chantierMateriel.coutCarburantMad}, 0) + coalesce(${chantierMateriel.coutLocationMad}, 0)), 0)`,
+          missing: sql<string>`count(*) filter (where ${chantierMateriel.coutCarburantMad} is null or ${chantierMateriel.coutLocationMad} is null)`,
         })
         .from(chantierMateriel)
         .where(eq(chantierMateriel.projectId, projectId)),
       this.db
-        .select({ total: sql<string>`coalesce(sum(${chantierConsommations.coutMad}), 0)` })
+        .select({
+          total: sql<string>`coalesce(sum(${chantierConsommations.coutMad}), 0)`,
+          missing: sql<string>`count(*) filter (where ${chantierConsommations.coutMad} is null)`,
+        })
         .from(chantierConsommations)
         .where(eq(chantierConsommations.projectId, projectId)),
+      this.db.execute(sql`
+        with classified as (
+          select e.amount_mad, r.treatment,
+            coalesce(r.project_id=e.project_id and r.expense_amount_mad=e.amount_mad and
+              (r.treatment <> 'linked_resource' or
+                case r.resource_kind
+                  when 'main_oeuvre' then exists (
+                    select 1 from people.work_day w join people.assignment a on a.id=w.assignment_id
+                    where w.id=r.resource_id and a.project_id=e.project_id
+                      and round(w.days_worked*w.cost_snapshot_mad,2)=r.resource_amount_mad)
+                  when 'materiel' then exists (
+                    select 1 from project.chantier_materiel m where m.id=r.resource_id and m.project_id=e.project_id
+                      and m.cout_carburant_mad+m.cout_location_mad=r.resource_amount_mad)
+                  when 'consommation' then exists (
+                    select 1 from project.chantier_consommation c where c.id=r.resource_id and c.project_id=e.project_id
+                      and c.cout_mad=r.resource_amount_mad)
+                  else false end), false) as reconciled
+          from finance.expense e left join project.terrain_expense_reconciliation r on r.expense_id=e.id
+          where e.project_id=${projectId}
+        )
+        select coalesce(sum(amount_mad),0) as total,
+          coalesce(sum(amount_mad) filter (where reconciled and treatment='standalone'),0) as standalone,
+          coalesce(sum(amount_mad) filter (where not reconciled),0) as unresolved,
+          count(*) filter (where reconciled) as reconciled_count,
+          count(*) filter (where not reconciled) as unresolved_count from classified
+      `),
       this.db
-        .select({ total: sql<string>`coalesce(sum(${expenses.amountMad}), 0)` })
-        .from(expenses)
-        .where(eq(expenses.projectId, projectId)),
-      this.db
-        .select({ total: sql<string>`coalesce(max(${decomptes.totalTtcMad}), 0)` })
+        .select({
+          total: decomptes.totalTtcMad,
+          id: decomptes.id,
+          numero: decomptes.numero,
+          dateDecompte: decomptes.dateDecompte,
+          statut: decomptes.statut,
+        })
         .from(decomptes)
-        .where(eq(decomptes.projectId, projectId)),
+        .where(and(eq(decomptes.projectId, projectId), isNull(decomptes.deletedAt)))
+        .orderBy(desc(decomptes.numero))
+        .limit(1),
       this.db
         .select({ montant: projects.montantMarcheMad })
         .from(projects)
         .where(eq(projects.id, projectId))
         .limit(1),
+      this.db.execute(sql`select count(*) as missing from project.terrain_journee j
+        cross join lateral jsonb_array_elements(coalesce(j.payload->'attendance','[]'::jsonb)) a
+        where j.project_id=${projectId} and j.status='reviewed'
+          and a->>'assignmentId' is null and (a->>'daysWorked')::numeric > 0`),
     ]);
     return computeCoutsTerrain({
       mainOeuvreMad: num((mo.rows[0] as { total?: string } | undefined)?.total),
       materielMad: num(mat[0]?.total),
       consommationsMad: num(conso[0]?.total),
-      depensesMad: num(dep[0]?.total),
+      depensesMad: num((dep.rows[0] as { total?: string } | undefined)?.total),
+      reconciledExpensesMad: num((dep.rows[0] as { standalone?: string } | undefined)?.standalone),
+      expensesAwaitingReconciliationMad: num(
+        (dep.rows[0] as { unresolved?: string } | undefined)?.unresolved,
+      ),
+      unresolvedExpenseCount: num(
+        (dep.rows[0] as { unresolved_count?: string } | undefined)?.unresolved_count,
+      ),
+      reconciledExpenseCount: num(
+        (dep.rows[0] as { reconciled_count?: string } | undefined)?.reconciled_count,
+      ),
       decompteCumuleTtcMad: num(dec[0]?.total),
       montantMarcheMad: num(proj[0]?.montant),
+      latestDecompte: dec[0]
+        ? {
+            id: dec[0].id,
+            numero: dec[0].numero,
+            dateDecompte: dec[0].dateDecompte,
+            statut: dec[0].statut,
+          }
+        : null,
+      missingValuations: {
+        mainOeuvre:
+          num((mo.rows[0] as { missing?: string } | undefined)?.missing) +
+          num((temporary.rows[0] as { missing?: string } | undefined)?.missing),
+        materiel: num(mat[0]?.missing),
+        consommations: num(conso[0]?.missing),
+      },
     });
   }
 
@@ -680,7 +791,7 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
         .where(
           and(
             eq(chantierAttachements.projectId, projectId),
-            eq(chantierAttachements.statut, 'saisi'),
+            isNull(chantierAttachements.metreId),
           ),
         ),
       this.db

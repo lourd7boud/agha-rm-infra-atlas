@@ -10,6 +10,8 @@ import {
   type BtpProjectDetail,
 } from '@/lib/btp';
 import { ApercuTab } from './btp/ApercuTab';
+import { JourneeTab } from './btp/JourneeTab';
+import { ProductionTab } from './btp/ProductionTab';
 import { BordereauTab, DecomptesTab, ExportTab, MetresTab } from './btp/ExecutionTabs';
 import { RevisionTab } from './btp/RevisionTab';
 import { AvenantsTab, OdsTab, PenalitesTab, ValidationsTab } from './btp/RegistresTabs';
@@ -43,6 +45,8 @@ const ADMIN_TABS = [
 
 const TERRAIN_TABS = [
   { key: 't-apercu', label: 'Vue terrain' },
+  { key: 'journee', label: 'Journée du chantier' },
+  { key: 'production', label: 'Production' },
   { key: 'rapports', label: 'Rapports' },
   { key: 'pointage', label: 'Pointage' },
   { key: 'materiel', label: 'Matériel' },
@@ -96,6 +100,10 @@ export default async function ProjectDetailPage({
   const savedMessage = query.saved ? 'Modifications enregistrées.' : undefined;
   const overrun = project.progressPct > 100;
   const progressWidth = Math.min(100, Math.max(0, project.progressPct));
+  // Reste à réaliser TTC = montant du marché − dernier décompte cumulé.
+  const resteTtcMad = project.dernierDecompte
+    ? project.montantMarcheMad - project.dernierDecompte.totalTtcMad
+    : null;
 
   const counts: Partial<Record<TabKey, number>> = {
     bordereau: project.counts.bordereauLignes,
@@ -113,7 +121,7 @@ export default async function ProjectDetailPage({
       </Link>
 
       {/* En-tête marché */}
-      <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
+      <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="font-mono text-2xl font-black tracking-tight text-cyan">
@@ -191,6 +199,14 @@ export default async function ProjectDetailPage({
                 {fmtMad(project.dernierDecompte.totalTtcMad)}
               </strong>{' '}
               TTC cumulé
+            </span>
+          )}
+          {resteTtcMad !== null && (
+            <span>
+              Reste TTC —{' '}
+              <strong className={`font-mono ${resteTtcMad < 0 ? 'text-clay' : 'text-emerald'}`}>
+                {fmtMad(resteTtcMad)}
+              </strong>
             </span>
           )}
         </div>
@@ -271,6 +287,8 @@ export default async function ProjectDetailPage({
         {tab === 'documents' && <DocumentsTab project={project} />}
         {tab === 'export' && <ExportTab project={project} />}
         {tab === 't-apercu' && <TerrainApercuTab project={project} />}
+        {tab === 'journee' && <JourneeTab project={project} date={query.date} />}
+        {tab === 'production' && <ProductionTab project={project} />}
         {tab === 'rapports' && <RapportsTab project={project} />}
         {tab === 'pointage' && <PointageTab project={project} />}
         {tab === 'materiel' && <MaterielTab project={project} />}

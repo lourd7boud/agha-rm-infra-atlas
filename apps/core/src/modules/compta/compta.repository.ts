@@ -27,11 +27,31 @@ import {
   type LigneInput,
 } from './compta-livres.domain';
 import { round2, toDecimal } from './compta-fiscal.domain';
+import {
+  buildVenteEcriture,
+  type VentePostingResult,
+} from './compta-ventes.domain';
+import {
+  buildEncaissementEcriture,
+  type ReglementMethod,
+} from './compta-reglements.domain';
 
 const num = (value: unknown): number => {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
 };
+
+/** Postgres unique-violation (SQLSTATE 23505) on a SPECIFIC index/constraint. The
+ *  `constraint` field lets us tell a benign duplicate apart from a real collision
+ *  (e.g. a numéro race) so the latter is never silently swallowed. */
+function isUniqueViolationOn(error: unknown, constraint: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === '23505' &&
+    (error as { constraint?: unknown }).constraint === constraint
+  );
+}
 
 /** Date civile locale (YYYY-MM-DD) — toISOString décalerait d'un jour en UTC+1. */
 export function isoLocal(date: Date): string {
@@ -140,6 +160,22 @@ export interface EcritureInput {
   lignes: LigneInput[];
 }
 
+/** A confirmed/paid invoice missing its expected écriture (reconciliation gap). */
+export interface FactureSansEcriture {
+  id: string;
+  reference: string;
+  clientName: string;
+  status: string;
+  totalTtcMad: number;
+}
+
+/** Reconciliation of the sales cycle: invoices whose accounting legs are missing —
+ *  the durable safety-net view so no vente/encaissement écriture is forgotten. */
+export interface ReconciliationVentes {
+  ventesManquantes: FactureSansEcriture[];
+  encaissementsManquants: FactureSansEcriture[];
+}
+
 export class ComptaError extends Error {
   constructor(
     message: string,
@@ -187,8 +223,34 @@ export interface ComptaRepository {
   createEcriture(input: EcritureInput, createdBy: string | null): Promise<EcritureRecord>;
   updateEcriture(id: string, input: EcritureInput): Promise<EcritureRecord>;
   validerEcriture(id: string): Promise<EcritureRecord>;
+  /** Bulk-approve: validate every brouillon écriture of the exercice at once (the
+   *  supervisor's one-click "tout valider" after reviewing the queue). Returns count. */
+  validerTousBrouillons(annee: number): Promise<number>;
   deleteEcriture(id: string): Promise<boolean>;
+  /** Reconciliation safety-net: confirmed/paid invoices whose vente/encaissement
+   *  écriture is missing — so a gap (closed exercice, crash, import) is always visible. */
+  reconciliationVentes(annee: number): Promise<ReconciliationVentes>;
   genererEcrituresVentes(annee: number, createdBy: string | null): Promise<number>;
+  /** Auto-post ONE confirmed sales invoice → écriture VTE (event-driven, fired
+   *  when the invoice leaves 'brouillon'). Idempotent (skips if already posted or
+   *  still draft); auto-validates when the mapping is `certaine`. */
+  genererEcritureVente(
+    invoiceId: string,
+    createdBy: string | null,
+    opts?: { autoValidate?: boolean },
+  ): Promise<VentePostingResult>;
+  /** Auto-post ONE paid invoice's ENCAISSEMENT → écriture BQ/CAI (event-driven,
+   *  fired on status → 'payee'): D 514x/516x / C 3421. Idempotent (source=
+   *  'reglement'); auto-validates when certain. */
+  genererEcritureEncaissement(
+    invoiceId: string,
+    createdBy: string | null,
+    opts?: { method?: ReglementMethod; autoValidate?: boolean },
+  ): Promise<VentePostingResult>;
+  /** Batch safety-net: backfill ENCAISSEMENT écritures for already-'payee' invoices
+   *  that have a sale écriture but no 'reglement' one yet — so the 4455→4456 TVA-due
+   *  transfer (hence the TVA declaration) is never silently missed. Brouillon. */
+  genererEcrituresEncaissements(annee: number, createdBy: string | null): Promise<number>;
   /** Dépenses chantier/terrain (finance.expense) → écritures CAI/BQ/ACH. */
   genererEcrituresDepenses(annee: number, createdBy: string | null): Promise<number>;
 
@@ -575,9 +637,18 @@ export class DrizzleComptaRepository implements ComptaRepository {
     createdBy: string | null,
     source: string,
     sourceId: string | null,
+    statut: 'brouillon' | 'validee' = 'brouillon',
   ): Promise<string> {
     const totals = validateEcriture(input.lignes);
     await this.assertComptesExistent(tx, input.lignes);
+    // Serialize numéro allocation per (exercice, journal): a transaction-scoped
+    // advisory lock (auto-released at commit/rollback) so two concurrent posts to
+    // the same journal cannot read the same max(numero) and collide on
+    // compta_ecriture_journal_numero_uniq. Protects every write path that funnels
+    // through here (manuel, vente, dépense).
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`${exerciceId}:${input.journalCode}`})::bigint)`,
+    );
     const [aggregate] = await tx
       .select({ maxNumero: sql<number>`coalesce(max(numero), 0)::int` })
       .from(ecritures)
@@ -595,6 +666,7 @@ export class DrizzleComptaRepository implements ComptaRepository {
         libelle: input.libelle,
         source,
         sourceId,
+        statut,
         totalDebit: String(totals.totalDebit),
         totalCredit: String(totals.totalCredit),
         createdBy,
@@ -680,6 +752,86 @@ export class DrizzleComptaRepository implements ComptaRepository {
     return mapEcriture(row);
   }
 
+  async validerTousBrouillons(annee: number): Promise<number> {
+    const exercice = await this.ensureExercice(annee);
+    const rows = await this.db
+      .update(ecritures)
+      .set({ statut: 'validee', updatedAt: new Date() })
+      .where(
+        and(
+          eq(ecritures.exerciceId, exercice.id),
+          eq(ecritures.statut, 'brouillon'),
+          isNull(ecritures.deletedAt),
+        ),
+      )
+      .returning({ id: ecritures.id });
+    return rows.length;
+  }
+
+  async reconciliationVentes(annee: number): Promise<ReconciliationVentes> {
+    const projection = {
+      id: salesInvoices.id,
+      reference: salesInvoices.reference,
+      clientName: salesClients.name,
+      status: salesInvoices.status,
+      totalTtc: salesInvoices.totalTtcMad,
+    };
+    const toFacture = (r: {
+      id: string;
+      reference: string;
+      clientName: string;
+      status: string;
+      totalTtc: unknown;
+    }): FactureSansEcriture => ({
+      id: r.id,
+      reference: r.reference,
+      clientName: r.clientName,
+      status: r.status,
+      totalTtcMad: num(r.totalTtc),
+    });
+
+    // Confirmed invoices (envoyee|payee) of the year without a sale écriture.
+    const ventesRows = await this.db
+      .select(projection)
+      .from(salesInvoices)
+      .innerJoin(salesClients, eq(salesClients.id, salesInvoices.clientId))
+      .where(
+        and(
+          sql`${salesInvoices.status} in ('envoyee', 'payee')`,
+          sql`extract(year from ${salesInvoices.invoiceDate}) = ${annee}`,
+          sql`not exists (
+            select 1 from "compta"."ecriture" e
+            where e.source = 'vente' and e.source_id = ${salesInvoices.id}
+              and e.deleted_at is null
+          )`,
+        ),
+      )
+      .orderBy(asc(salesInvoices.invoiceDate));
+
+    // Paid invoices of the year without an encaissement écriture (→ TVA not shifted).
+    const encaissementsRows = await this.db
+      .select(projection)
+      .from(salesInvoices)
+      .innerJoin(salesClients, eq(salesClients.id, salesInvoices.clientId))
+      .where(
+        and(
+          sql`${salesInvoices.status} = 'payee'`,
+          sql`extract(year from coalesce(${salesInvoices.paidAt}, ${salesInvoices.invoiceDate})) = ${annee}`,
+          sql`not exists (
+            select 1 from "compta"."ecriture" e
+            where e.source = 'reglement' and e.source_id = ${salesInvoices.id}
+              and e.deleted_at is null
+          )`,
+        ),
+      )
+      .orderBy(asc(salesInvoices.paidAt));
+
+    return {
+      ventesManquantes: ventesRows.map(toFacture),
+      encaissementsManquants: encaissementsRows.map(toFacture),
+    };
+  }
+
   async deleteEcriture(id: string): Promise<boolean> {
     const existing = await this.getEcriture(id);
     if (!existing) return false;
@@ -729,28 +881,306 @@ export class DrizzleComptaRepository implements ComptaRepository {
 
     let crees = 0;
     for (const invoice of rows) {
-      const ht = num(invoice.totalHt);
-      const ttc = num(invoice.totalTtc);
-      const tva = round2(toDecimal(ttc).minus(ht));
-      if (ttc <= 0) continue;
-      const lignes: LigneInput[] = [
-        { compteCode: '3421', debit: ttc, credit: 0, tiers: invoice.clientName },
-        { compteCode: '71242', debit: 0, credit: ht },
-      ];
-      if (tva > 0) lignes.push({ compteCode: '4455', debit: 0, credit: tva });
+      const built = buildVenteEcriture({
+        reference: invoice.reference,
+        clientName: invoice.clientName,
+        totalHtMad: num(invoice.totalHt),
+        totalTtcMad: num(invoice.totalTtc),
+      });
+      if (!built) continue;
+      // Batch backfill stays review-first (brouillon) — the accountant validates.
       await this.db.transaction((tx) =>
         this.insertEcritureTx(
           tx,
           exercice.id,
           {
-            journalCode: 'VTE',
+            journalCode: built.journalCode,
             dateEcriture: invoice.invoiceDate,
-            pieceRef: invoice.reference,
-            libelle: `Facture ${invoice.reference} — ${invoice.clientName}`,
-            lignes,
+            pieceRef: built.pieceRef,
+            libelle: built.libelle,
+            lignes: built.lignes,
           },
           createdBy,
           'vente',
+          invoice.id,
+        ),
+      );
+      crees += 1;
+    }
+    return crees;
+  }
+
+  /**
+   * Insert a source-stamped écriture in its own transaction and normalise the
+   * outcome to a VentePostingResult. A duplicate on the (source,source_id) index
+   * means a concurrent post already won — an idempotent `raced` no-op; any OTHER
+   * error (incl. a different 23505 such as a numéro collision) propagates so it
+   * can never hide. Shared by the vente and encaissement auto-post paths.
+   */
+  private async insertSourceEcritureTx(
+    exerciceId: string,
+    input: EcritureInput,
+    createdBy: string | null,
+    source: string,
+    sourceId: string,
+    validated: boolean,
+  ): Promise<VentePostingResult> {
+    try {
+      const ecritureId = await this.db.transaction((tx) =>
+        this.insertEcritureTx(
+          tx,
+          exerciceId,
+          input,
+          createdBy,
+          source,
+          sourceId,
+          validated ? 'validee' : 'brouillon',
+        ),
+      );
+      return { created: true, ecritureId, validated, reason: 'posted' };
+    } catch (error) {
+      if (isUniqueViolationOn(error, 'compta_ecriture_source_uniq')) {
+        return { created: false, reason: 'raced' };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Event-driven twin of the batch above: post the sale écriture for ONE invoice
+   * the moment it is confirmed (leaves 'brouillon'). Always resolves (never
+   * throws) with a `reason` so the caller can surface the "should have posted but
+   * couldn't" cases (`incoherent`, `exercice_cloture`) — nothing is silent. When
+   * the mapping is `certaine` and autoValidate is on (default), the écriture is
+   * born 'validee' so the accountant only supervises; otherwise it lands
+   * 'brouillon' for review. Idempotent: an existing écriture (checked in-query AND
+   * at the (source,source_id) unique index) is a no-op.
+   */
+  async genererEcritureVente(
+    invoiceId: string,
+    createdBy: string | null,
+    opts?: { autoValidate?: boolean },
+  ): Promise<VentePostingResult> {
+    const [invoice] = await this.db
+      .select({
+        reference: salesInvoices.reference,
+        invoiceDate: salesInvoices.invoiceDate,
+        status: salesInvoices.status,
+        totalHt: salesInvoices.totalHtMad,
+        totalTtc: salesInvoices.totalTtcMad,
+        clientName: salesClients.name,
+      })
+      .from(salesInvoices)
+      .innerJoin(salesClients, eq(salesClients.id, salesInvoices.clientId))
+      .where(eq(salesInvoices.id, invoiceId))
+      .limit(1);
+    if (!invoice) return { created: false, reason: 'not_found' };
+    if (invoice.status === 'brouillon') return { created: false, reason: 'still_draft' };
+
+    const [existing] = await this.db
+      .select({ id: ecritures.id })
+      .from(ecritures)
+      .where(
+        and(
+          eq(ecritures.source, 'vente'),
+          eq(ecritures.sourceId, invoiceId),
+          isNull(ecritures.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (existing) return { created: false, reason: 'already_posted' };
+
+    const built = buildVenteEcriture({
+      reference: invoice.reference,
+      clientName: invoice.clientName,
+      totalHtMad: num(invoice.totalHt),
+      totalTtcMad: num(invoice.totalTtc),
+    });
+    if (!built) return { created: false, reason: 'incoherent' };
+
+    // UTC year — matches the invoice's own reference exercice (docExercice) so the
+    // écriture is never attached to the wrong fiscal year under a non-UTC server TZ.
+    const exercice = await this.ensureExercice(
+      new Date(invoice.invoiceDate).getUTCFullYear(),
+    );
+    // A closed exercice legitimately refuses new entries — but surface it (reason)
+    // instead of throwing into a silent catch, so the caller can warn a human.
+    if (exercice.statut === 'cloture') {
+      return { created: false, reason: 'exercice_cloture' };
+    }
+    const validated = (opts?.autoValidate ?? true) && built.certaine;
+    return this.insertSourceEcritureTx(
+      exercice.id,
+      {
+        journalCode: built.journalCode,
+        dateEcriture: invoice.invoiceDate,
+        pieceRef: built.pieceRef,
+        libelle: built.libelle,
+        lignes: built.lignes,
+      },
+      createdBy,
+      'vente',
+      invoiceId,
+      validated,
+    );
+  }
+
+  /**
+   * Post the ENCAISSEMENT écriture for a PAID invoice (fired on status → 'payee'):
+   * D 514x/516x (trésorerie, per payment method) / C 3421 (Clients), for the full
+   * TTC, dated on the règlement (paidAt). Same guarantees as genererEcritureVente:
+   * never throws, returns a `reason`, idempotent (source='reglement'), auto-validates
+   * when certain.
+   *
+   * RÉGIME DE L'ENCAISSEMENT: the compound entry also shifts the TVA from 4455
+   * (facturée, en attente) to 4456 (due) so it is declared in the COLLECTION period
+   * (the TVA engine reads 4456), not at invoicing. 'payee' is treated as a FULL
+   * settlement; partial payments (acomptes) are not modelled yet.
+   */
+  async genererEcritureEncaissement(
+    invoiceId: string,
+    createdBy: string | null,
+    opts?: { method?: ReglementMethod; autoValidate?: boolean },
+  ): Promise<VentePostingResult> {
+    const [invoice] = await this.db
+      .select({
+        reference: salesInvoices.reference,
+        invoiceDate: salesInvoices.invoiceDate,
+        paidAt: salesInvoices.paidAt,
+        status: salesInvoices.status,
+        totalHt: salesInvoices.totalHtMad,
+        totalTtc: salesInvoices.totalTtcMad,
+        clientName: salesClients.name,
+      })
+      .from(salesInvoices)
+      .innerJoin(salesClients, eq(salesClients.id, salesInvoices.clientId))
+      .where(eq(salesInvoices.id, invoiceId))
+      .limit(1);
+    if (!invoice) return { created: false, reason: 'not_found' };
+    // The encaissement only exists once the invoice is actually paid.
+    if (invoice.status !== 'payee') return { created: false, reason: 'not_paid' };
+
+    const [existing] = await this.db
+      .select({ id: ecritures.id })
+      .from(ecritures)
+      .where(
+        and(
+          eq(ecritures.source, 'reglement'),
+          eq(ecritures.sourceId, invoiceId),
+          isNull(ecritures.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (existing) return { created: false, reason: 'already_posted' };
+
+    const built = buildEncaissementEcriture({
+      reference: invoice.reference,
+      clientName: invoice.clientName,
+      montantTtc: num(invoice.totalTtc),
+      tvaMad: round2(toDecimal(num(invoice.totalTtc)).minus(num(invoice.totalHt))),
+      method: opts?.method,
+    });
+    if (!built) return { created: false, reason: 'incoherent' };
+
+    // The encaissement belongs to the exercice of the PAYMENT date (paidAt),
+    // which may differ from the sale's exercice — proper cash-basis attribution.
+    const dateReglement = invoice.paidAt ?? invoice.invoiceDate;
+    const exercice = await this.ensureExercice(
+      new Date(dateReglement).getUTCFullYear(),
+    );
+    if (exercice.statut === 'cloture') {
+      return { created: false, reason: 'exercice_cloture' };
+    }
+    const validated = (opts?.autoValidate ?? true) && built.certaine;
+    return this.insertSourceEcritureTx(
+      exercice.id,
+      {
+        journalCode: built.journalCode,
+        dateEcriture: dateReglement,
+        pieceRef: built.pieceRef,
+        libelle: built.libelle,
+        lignes: built.lignes,
+      },
+      createdBy,
+      'reglement',
+      invoiceId,
+      validated,
+    );
+  }
+
+  /**
+   * Batch twin of genererEcritureEncaissement — the safety net that guarantees no
+   * collected TVA is lost. It finds invoices that are 'payee' in the year, ALREADY
+   * carry their sale écriture (the 4455 credit we transfer), but have no
+   * 'reglement' écriture yet, and posts the encaissement (D 514x/C 3421 + 4455→4456)
+   * for each as brouillon. Covers invoices that reached 'payee' outside the live
+   * PATCH flow (crash between the two posts, data import, a sale fixed later via the
+   * ventes batch). Default method = virement (bank); the accountant adjusts the
+   * brouillon if the real règlement differs. Run AFTER genererEcrituresVentes.
+   */
+  async genererEcrituresEncaissements(
+    annee: number,
+    createdBy: string | null,
+  ): Promise<number> {
+    const exercice = await this.ensureExercice(annee);
+    if (exercice.statut === 'cloture') {
+      throw new ComptaError(`L'exercice ${annee} est clôturé.`, 409);
+    }
+    const rows = await this.db
+      .select({
+        id: salesInvoices.id,
+        reference: salesInvoices.reference,
+        invoiceDate: salesInvoices.invoiceDate,
+        paidAt: salesInvoices.paidAt,
+        totalHt: salesInvoices.totalHtMad,
+        totalTtc: salesInvoices.totalTtcMad,
+        clientName: salesClients.name,
+      })
+      .from(salesInvoices)
+      .innerJoin(salesClients, eq(salesClients.id, salesInvoices.clientId))
+      .where(
+        and(
+          sql`${salesInvoices.status} = 'payee'`,
+          sql`extract(year from coalesce(${salesInvoices.paidAt}, ${salesInvoices.invoiceDate})) = ${annee}`,
+          // The sale écriture (its 4455 credit) must exist before we transfer it —
+          // otherwise the 4455→4456 debit would have no matching credit.
+          sql`exists (
+            select 1 from "compta"."ecriture" e
+            where e.source = 'vente' and e.source_id = ${salesInvoices.id}
+              and e.deleted_at is null
+          )`,
+          sql`not exists (
+            select 1 from "compta"."ecriture" e
+            where e.source = 'reglement' and e.source_id = ${salesInvoices.id}
+              and e.deleted_at is null
+          )`,
+        ),
+      )
+      .orderBy(asc(salesInvoices.paidAt));
+
+    let crees = 0;
+    for (const invoice of rows) {
+      const built = buildEncaissementEcriture({
+        reference: invoice.reference,
+        clientName: invoice.clientName,
+        montantTtc: num(invoice.totalTtc),
+        tvaMad: round2(toDecimal(num(invoice.totalTtc)).minus(num(invoice.totalHt))),
+      });
+      if (!built) continue;
+      const dateReglement = invoice.paidAt ?? invoice.invoiceDate;
+      await this.db.transaction((tx) =>
+        this.insertEcritureTx(
+          tx,
+          exercice.id,
+          {
+            journalCode: built.journalCode,
+            dateEcriture: dateReglement,
+            pieceRef: built.pieceRef,
+            libelle: built.libelle,
+            lignes: built.lignes,
+          },
+          createdBy,
+          'reglement',
           invoice.id,
         ),
       );

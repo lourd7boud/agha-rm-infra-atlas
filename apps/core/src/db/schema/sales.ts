@@ -5,6 +5,7 @@ import {
   integer,
   numeric,
   pgSchema,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -206,4 +207,25 @@ export const invoiceLines = sales.table(
     orderIndex: integer('order_index').default(0),
   },
   (table) => [index('sales_invoice_line_invoice_id_idx').on(table.invoiceId)],
+);
+
+// Per-(company, doc_type, exercice) counter backing the LEGAL sequential
+// numbering (art. 145 CGI: continuous, gap-free, one number used once). The
+// repository increments it atomically inside each document's insert transaction
+// via INSERT … ON CONFLICT DO UPDATE … RETURNING — so a rolled-back insert also
+// rolls back the increment and the sequence never skips a number. doc_type ∈
+// {facture,devis,bl,avoir}; exercice is the fiscal (calendar) year.
+export const docSequences = sales.table(
+  'doc_sequence',
+  {
+    companyId: text('company_id').notNull().default('agha-rm-infra'),
+    docType: text('doc_type').notNull(),
+    exercice: integer('exercice').notNull(),
+    lastNumber: integer('last_number').notNull().default(0),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.companyId, table.docType, table.exercice],
+    }),
+  ],
 );

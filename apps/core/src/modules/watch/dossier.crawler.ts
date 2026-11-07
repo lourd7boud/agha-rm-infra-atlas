@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { readBoundedResponse } from '../tender/dossier-archive-safety';
 import { cookieHeader, PORTAL_UA, PORTAL_TIMEOUT } from './portal-fetch';
 import { parseFormInputs } from './prado';
 
@@ -184,7 +185,9 @@ export async function downloadDce(
   if (!fileRes.ok) {
     throw new Error(`DCE download: file HTTP ${fileRes.status}`);
   }
-  const bytes = Buffer.from(await fileRes.arrayBuffer());
+  // Enforce the archive ceiling at the original portal response. This avoids
+  // buffering an untrusted, unbounded download before it ever reaches MinIO.
+  const bytes = await readBoundedResponse(fileRes);
   const isZip = bytes.length > 4 && bytes[0] === 0x50 && bytes[1] === 0x4b; // "PK"
   const ct = fileRes.headers.get('content-type') ?? '';
   if (!isZip && !ct.includes('zip')) {

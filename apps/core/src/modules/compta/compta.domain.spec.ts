@@ -149,10 +149,13 @@ describe('TVA', () => {
     expect(credit.creditNouveau).toBe(7_000);
   });
 
-  it('pré-remplissage depuis les lignes 4455 / 34551 / 34552', () => {
+  it('pré-remplissage : TVA collectée depuis 4456 (encaissée), déductible 34551 / 34552', () => {
+    // Régime encaissement : la TVA collectée déclarable est celle devenue DUE
+    // (4456, transférée à l'encaissement) — la TVA encore facturée (4455) est ignorée.
     expect(
       computeTvaFromLignes([
-        { compteCode: '4455', debit: 0, credit: 200 },
+        { compteCode: '4456', debit: 0, credit: 200 },
+        { compteCode: '4455', debit: 0, credit: 500 }, // facturée non encore encaissée → ignorée
         { compteCode: '34552', debit: 80, credit: 0 },
         { compteCode: '34551', debit: 30, credit: 0 },
         { compteCode: '6121', debit: 400, credit: 0 },

@@ -12,11 +12,9 @@ import type { PortalSubmissionInput } from './portal.repository';
  * lines, so we split each cell's text by its "Label :" markers rather than relying
  * on inner tags. Mirrors mes-cautions.parser.ts exactly.
  *
- * SYNTHETIC FIXTURE WARNING: real "Mes réponses" HTML could not be captured (a
- * browser guardrail blocked extraction). This parser is modelled on the portal's
- * PRADO results-table idiom (see ../watch/watch.parser.ts +
- * fixtures/mes-reponses.html) and NEEDS a live-HTML validation pass on first real
- * run — the table id, cell order and label wording may need adjustment.
+ * Supports both the portal's older labelled-cell markup and the authenticated
+ * production shape validated on 2026-10-28 (`.ref`, `.info-bulle`, direct `tr`
+ * children without an explicit `tbody`).
  *
  * Defensive: a row that yields no référence or no date limite is skipped
  * (collected, never thrown) so one malformed row can never crash a crawl.
@@ -31,6 +29,10 @@ export interface SkippedReponseRow {
 export interface ParseMesReponsesOutcome {
   submissions: readonly PortalSubmissionInput[];
   skipped: readonly SkippedReponseRow[];
+  /** True only when the authenticated Mes réponses results table is present. */
+  surfaceDetected: boolean;
+  /** Rows containing data cells, including malformed rows. */
+  candidateRows: number;
 }
 
 const MIN_CELLS = 4;
@@ -69,11 +71,46 @@ function stackedCellText(cell: CheerioSelection): string {
     .load(withBreaks)
     .root()
     .text()
-    .replace(/ /g, ' ')
+    .replace(/[\u00a0\u202f]/g, ' ')
     .split('\n')
     .map((line) => line.replace(/[ \t]+/g, ' ').trim())
     .filter((line) => line.length > 0)
     .join('\n');
+}
+
+function compactText(value: string): string | undefined {
+  const compact = value.replace(/[\u00a0\u202f\s]+/g, ' ').trim();
+  return compact.length > 0 ? compact : undefined;
+}
+
+function liveReference(cell: CheerioSelection): string | undefined {
+  return compactText(cell.find('.ref').first().text());
+}
+
+function liveProcedure(cell: CheerioSelection): string | undefined {
+  return compactText(cell.find('.info-bulle').first().text());
+}
+
+function lastStackedLine(text: string): string | undefined {
+  return compactText(text.split('\n').at(-1) ?? '');
+}
+
+function consultationIdFromRow(row: CheerioSelection): string | undefined {
+  let consultationId: string | undefined;
+  row.find('a[href*="refConsultation"]').each((_, link) => {
+    if (consultationId) return;
+    const href = row.find(link).attr('href');
+    if (!href) return;
+    try {
+      consultationId =
+        new URL(href, 'https://www.marchespublics.gov.ma/').searchParams.get(
+          'refConsultation',
+        ) ?? undefined;
+    } catch {
+      // A malformed action URL must not discard the otherwise valid row.
+    }
+  });
+  return consultationId;
 }
 
 /** First "DD/MM/YYYY HH:mm" date in a fragment → UTC Date, or undefined. */
@@ -111,7 +148,8 @@ function parseRow(row: CheerioSelection): PortalSubmissionInput | null {
   const deadlineText = stackedCellText(cell(2));
   const reponseText = stackedCellText(cell(3));
 
-  const reference = labelled(refText, /R[ée]f[ée]rence/);
+  const reference =
+    labelled(refText, /R[ée]f[ée]rence/) ?? liveReference(cell(0));
   if (!reference) return null; // a soumission with no référence is unusable
 
   const deadlineAt = firstDate(deadlineText);
@@ -121,13 +159,16 @@ function parseRow(row: CheerioSelection): PortalSubmissionInput | null {
 
   return {
     reference,
-    procedure: labelled(refText, /Proc[ée]dure/),
-    category: labelled(refText, /Cat[ée]gorie/),
+    procedure:
+      labelled(refText, /Proc[ée]dure/) ?? liveProcedure(cell(0)),
+    category:
+      labelled(refText, /Cat[ée]gorie/) ?? lastStackedLine(refText),
     objet: labelled(objetText, /Objet/),
     organisme: labelled(objetText, /Organisme/),
     deadlineAt,
     submittedAt,
     withdrawnAt,
+    consultationId: consultationIdFromRow(row),
     raw: { refText, objetText, deadlineText, reponseText },
   };
 }
@@ -140,15 +181,19 @@ function parseRow(row: CheerioSelection): PortalSubmissionInput | null {
  */
 export function parseMesReponsesDetailed(html: string): ParseMesReponsesOutcome {
   const $ = cheerio.load(html);
-  const rows = $('table[id*="tableau"] tbody tr');
-  const selected = rows.length > 0 ? rows : $('table.table-results tbody tr');
+  const legacyTable = $('table[id*="tableau"]').first();
+  const table = legacyTable.length > 0 ? legacyTable : $('table.table-results').first();
+  const selected = table.find('tr');
 
   const submissions: PortalSubmissionInput[] = [];
   const skipped: SkippedReponseRow[] = [];
+  let candidateRows = 0;
 
   selected.each((_, el) => {
     const row = $(el);
     if (row.find('th').length > 0 && row.find('td').length === 0) return; // header
+    if (row.find('td').length === 0) return;
+    candidateRows += 1;
     let parsed: PortalSubmissionInput | null;
     try {
       parsed = parseRow(row);
@@ -165,7 +210,12 @@ export function parseMesReponsesDetailed(html: string): ParseMesReponsesOutcome 
     });
   });
 
-  return { submissions, skipped };
+  return {
+    submissions,
+    skipped,
+    surfaceDetected: table.length > 0,
+    candidateRows,
+  };
 }
 
 /**

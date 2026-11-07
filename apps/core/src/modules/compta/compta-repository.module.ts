@@ -13,6 +13,7 @@ import {
   DrizzleComptaRegistresRepository,
   type ComptaRegistresRepository,
 } from './compta-registres.repository';
+import { ComptaAutoPostingService } from './compta-auto-posting.service';
 
 const logMissingDb = (which: string) => {
   new Logger('ComptaRepositoryModule').warn(
@@ -41,7 +42,15 @@ export const comptaRegistresRepositoryProvider = {
 };
 
 @Module({
-  providers: [comptaRepositoryProvider, comptaRegistresRepositoryProvider],
-  exports: [comptaRepositoryProvider, comptaRegistresRepositoryProvider],
+  providers: [
+    comptaRepositoryProvider,
+    comptaRegistresRepositoryProvider,
+    ComptaAutoPostingService,
+  ],
+  exports: [
+    comptaRepositoryProvider,
+    comptaRegistresRepositoryProvider,
+    ComptaAutoPostingService,
+  ],
 })
 export class ComptaRepositoryModule {}

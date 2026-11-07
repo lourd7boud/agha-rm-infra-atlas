@@ -9,7 +9,9 @@ const TRANSITIONS: Record<PipelineState, readonly PipelineState[]> = {
   rejected: ['qualified', 'cancelled'], // human override at gate G0
   go_decided: ['preparing', 'no_go', 'cancelled'],
   no_go: ['go_decided', 'cancelled'], // reversible while the deadline allows
-  preparing: ['submitted', 'no_go', 'cancelled'],
+  // Official submission is owned by the bid workspace receipt command. The
+  // legacy tender pipeline may plan a bid but can no longer claim it was filed.
+  preparing: ['no_go', 'cancelled'],
   submitted: ['opened', 'cancelled'],
   opened: ['won', 'lost', 'cancelled'],
   won: [],

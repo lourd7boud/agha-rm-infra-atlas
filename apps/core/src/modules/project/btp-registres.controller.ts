@@ -34,6 +34,7 @@ import {
   type AssetType,
   type BtpAssetsRepository,
 } from './btp-assets.repository';
+import { getOrCreatePhotoThumbnail } from './btp-photo-thumbnail';
 import { BTP_REGISTRES_REPOSITORY, type BtpRegistresRepository } from './btp-registres.repository';
 import { ODS_TYPES } from './btp-registres.domain';
 import { validateFormula } from './btp-revision.domain';
@@ -710,6 +711,28 @@ export class BtpAssetsController {
     const updated = await this.assets.updateAssetMetadata(projectId, assetId, parsed.data);
     if (!updated) throw new NotFoundException(`Fichier introuvable: ${assetId}`);
     return updated;
+  }
+
+  /** Serves a cached 640px preview so the gallery never downloads originals. */
+  @Get('assets/:assetId/thumbnail')
+  async thumbnailAsset(
+    @Param('projectId') projectId: string,
+    @Param('assetId') assetId: string,
+  ): Promise<StreamableFile> {
+    const asset = await this.assets.getAsset(assetId);
+    if (
+      !asset ||
+      asset.projectId !== projectId ||
+      asset.type !== 'photo' ||
+      !asset.storageKey
+    ) {
+      throw new NotFoundException(`Photo introuvable: ${assetId}`);
+    }
+    const thumbnail = await getOrCreatePhotoThumbnail(this.storage, asset.storageKey);
+    return new StreamableFile(thumbnail.body, {
+      type: thumbnail.mime,
+      length: thumbnail.sizeBytes,
+    });
   }
 
   /** Relaie l'objet MinIO (inline) — seul chemin joignable depuis un navigateur. */

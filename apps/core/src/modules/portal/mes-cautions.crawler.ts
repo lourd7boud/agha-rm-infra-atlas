@@ -18,9 +18,6 @@ import { parseMesCautionsDetailed } from './mes-cautions.parser';
  * one bad row is counted as an error and never crashes the run.
  */
 
-const DEFAULT_MES_CAUTIONS_URL =
-  'https://www.marchespublics.gov.ma/index.php?page=entreprise.MesCautions';
-
 /** Outcome of one harvest, mirroring the result.crawler summary idiom. */
 export interface MesCautionsCrawlSummary {
   /** Cautions the parser yielded from the listing (post-skip). */
@@ -47,7 +44,18 @@ export async function crawlMesCautions(
   deps: MesCautionsCrawlDeps,
 ): Promise<MesCautionsCrawlSummary> {
   const html = await deps.fetchListing();
-  const { cautions, skipped } = parseMesCautionsDetailed(html);
+  const outcome = parseMesCautionsDetailed(html);
+  if (!outcome.surfaceDetected) {
+    throw new Error(
+      'Mes cautions portal surface not detected; refusing a false zero harvest',
+    );
+  }
+  if (outcome.candidateRows > 0 && outcome.cautions.length === 0) {
+    throw new Error(
+      'Mes cautions portal surface contains rows but none could be parsed',
+    );
+  }
+  const { cautions, skipped } = outcome;
 
   let inserted = 0;
   let updated = 0;
@@ -101,7 +109,12 @@ export class MesCautionsCrawlerService {
       );
     }
     const session = this.session;
-    const url = process.env.MES_CAUTIONS_URL ?? DEFAULT_MES_CAUTIONS_URL;
+    const url = process.env.MES_CAUTIONS_URL?.trim();
+    if (!url) {
+      throw new Error(
+        'MesCautions harvest is not configured: the authenticated account exposes no verified cautions URL',
+      );
+    }
     const summary = await crawlMesCautions({
       fetchListing: () => session.authedFetch(url),
       upsertCaution: (input) => this.repository.upsertCaution(input),

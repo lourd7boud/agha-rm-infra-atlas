@@ -1,13 +1,17 @@
 // Section Terrain — la saisie chantier pensée pour le chef de chantier:
 // gros champs, une action par carte, totaux visibles. Chaque tab est un
 // Server Component qui fetch exactement son endpoint /terrain/*.
+import Link from 'next/link';
+import { ExpenseReconciliationPanel } from './ExpenseReconciliationPanel';
 import { apiGet } from '@/lib/api';
+import type { TerrainJourneeRecord } from '@atlas/contracts';
 import {
   DEPENSE_CATEGORIE_LABELS,
   DEPENSE_METHODE_LABELS,
   METEO_LABELS,
   fmtMad,
   type Bordereau,
+  type Periode,
   type BtpProjectDetail,
   type TerrainAttachement,
   type TerrainConsommation,
@@ -35,7 +39,8 @@ import {
 
 const inputClass =
   'w-full rounded-lg border border-line bg-paper px-3 py-2.5 text-base outline-none placeholder:text-faint focus:border-cyan';
-const labelClass = 'block text-[11px] font-semibold uppercase tracking-widest text-faint';
+const labelClass =
+  'block text-[11px] font-semibold uppercase tracking-widest text-faint';
 const cardClass = 'rounded-xl border border-line bg-paper-2 p-5 shadow-sm';
 const btnPrimary =
   'rounded-lg bg-cyan px-6 py-2.5 text-sm font-bold text-paper transition hover:opacity-90';
@@ -57,105 +62,325 @@ function today(): string {
 
 function DeleteButton({ label = 'Suppr.' }: { label?: string }) {
   return (
-    <button type="submit" className="text-xs font-semibold text-clay hover:underline">
+    <button
+      type="submit"
+      className="text-xs font-semibold text-clay hover:underline"
+    >
       {label}
     </button>
   );
 }
 
 // ─── Vue d'ensemble terrain ──────────────────────────────────────────────────
-export async function TerrainApercuTab({ project }: { project: BtpProjectDetail }) {
-  const overview = await apiGet<TerrainOverview>(`/btp/projects/${project.id}/terrain/overview`);
+export async function TerrainApercuTab({
+  project,
+}: {
+  project: BtpProjectDetail;
+}) {
+  const [overview, daily] = await Promise.all([
+    apiGet<TerrainOverview>(`/btp/projects/${project.id}/terrain/overview`),
+    apiGet<TerrainJourneeRecord[]>(
+      `/btp/projects/${project.id}/terrain/journees`,
+    ).catch(() => null),
+  ]);
   const { couts, counts, derniersRapports } = overview;
+  const pending =
+    daily?.filter(
+      (r) =>
+        r.status === 'submitted' ||
+        r.status === 'returned' ||
+        (r.status === 'reviewed' &&
+          (r.payload.attendance.some((a) => !a.assignmentId) ||
+            r.payload.production.some((p) => !p.bpuLigneId))),
+    ) ?? [];
+  const openBlockers =
+    daily?.flatMap((r) =>
+      r.payload.blockers
+        .filter((b) => b.status === 'open')
+        .map((blocker) => ({
+          blocker,
+          date: r.payload.date,
+          zone: r.payload.zone,
+        })),
+    ) ?? [];
+  const missing = couts.missingValuations;
+  const missingTotal =
+    missing.mainOeuvre + missing.materiel + missing.consommations;
+  const dailyHref = `/projects/${project.id}?section=terrain&tab=journee`;
   const kpis = [
-    { label: "Main d'œuvre", value: couts.mainOeuvreMad, pct: couts.repartitionPct.mainOeuvre },
-    { label: 'Matériel & carburant', value: couts.materielMad, pct: couts.repartitionPct.materiel },
     {
-      label: 'Matériaux consommés',
-      value: couts.consommationsMad,
-      pct: couts.repartitionPct.consommations,
+      label: 'Main d’œuvre valorisée',
+      value: couts.mainOeuvreMad,
+      missing: missing.mainOeuvre,
     },
-    { label: 'Dépenses diverses', value: couts.depensesMad, pct: couts.repartitionPct.depenses },
+    {
+      label: 'Matériel & carburant valorisés',
+      value: couts.materielMad,
+      missing: missing.materiel,
+    },
+    {
+      label: 'Consommations valorisées',
+      value: couts.consommationsMad,
+      missing: missing.consommations,
+    },
   ];
-  const margePositive = couts.margeBruteMad >= 0;
   return (
     <div className="space-y-6">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {kpis.map((k) => (
-          <div key={k.label} className={cardClass}>
-            <p className="text-[11px] font-semibold uppercase tracking-widest text-faint">
-              {k.label}
-            </p>
-            <p className="mt-1 font-mono text-xl font-bold tabular-nums">{fmtMad(k.value)}</p>
-            <p className="mt-0.5 text-xs text-muted">{k.pct}% du coût total</p>
-          </div>
-        ))}
-      </div>
-      <div className="grid gap-3 lg:grid-cols-3">
-        <div className={cardClass}>
-          <p className="text-[11px] font-semibold uppercase tracking-widest text-faint">
-            Coût réel total
+      <header className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-line border-l-4 border-l-cyan bg-paper-2 p-5">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-widest text-cyan">
+            Pilotage du chantier
           </p>
-          <p className="mt-1 font-mono text-2xl font-black tabular-nums text-ink">
-            {fmtMad(couts.totalMad)}
-          </p>
-          <p className="mt-0.5 text-xs text-muted">
-            {couts.coutSurMarchePct}% du montant du marché
+          <h2 className="mt-2 text-2xl font-bold">Le terrain, au quotidien</h2>
+          <p className="mt-2 text-sm text-muted">
+            Déclarez la journée, faites vérifier les ressources et suivez les
+            actions du bureau.
           </p>
         </div>
-        <div className={cardClass}>
-          <p className="text-[11px] font-semibold uppercase tracking-widest text-faint">
-            Décompte cumulé (TTC)
+        <Link
+          href={dailyHref}
+          className={`${btnPrimary} inline-flex min-h-11 items-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan`}
+        >
+          Ouvrir la journée du chantier →
+        </Link>
+      </header>
+      <section className={cardClass}>
+        <h3 className="text-lg font-bold">À traiter</h3>
+        {daily === null && (
+          <p className="mt-3 text-sm text-clay">
+            Les journées n’ont pas pu être chargées.{' '}
+            <Link className="font-semibold underline" href={dailyHref}>
+              Ouvrir la saisie pour réessayer
+            </Link>
+            .
           </p>
-          <p className="mt-1 font-mono text-2xl font-black tabular-nums text-cyan">
-            {fmtMad(couts.decompteCumuleTtcMad)}
+        )}
+        <ul className="mt-3 divide-y divide-line text-sm">
+          {pending.map((r) => (
+            <li
+              key={r.id}
+              className="flex flex-wrap items-center justify-between gap-3 py-3"
+            >
+              <div>
+                <strong>
+                  {fmtDate(r.payload.date)} · {r.payload.zone}
+                </strong>
+                <p className="text-muted">
+                  {r.status === 'returned'
+                    ? `Correction attendue : ${r.returnReason ?? 'voir la journée'}`
+                    : r.status === 'reviewed'
+                      ? `${r.payload.attendance.filter((a) => !a.assignmentId).length} personne(s) temporaire(s) · ${r.payload.production.filter((p) => !p.bpuLigneId).length} production(s) hors BPU à rattacher`
+                      : 'Vérification du bureau attendue'}
+                </p>
+              </div>
+              <Link
+                className="inline-flex min-h-11 items-center font-semibold text-cyan underline"
+                href={`${dailyHref}&date=${r.payload.date}`}
+              >
+                Traiter la journée →
+              </Link>
+            </li>
+          ))}
+          <li className="flex flex-wrap items-center justify-between gap-3 py-3">
+            <span>
+              {counts.attachementsASaisir} attachement(s) à intégrer au métré
+            </span>
+            <Link
+              className="inline-flex min-h-11 items-center font-semibold text-cyan underline"
+              href={`/projects/${project.id}?section=terrain&tab=attachements`}
+            >
+              Ouvrir les attachements →
+            </Link>
+          </li>
+          {couts.unresolvedExpenseCount > 0 && (
+            <li className="flex flex-wrap items-center justify-between gap-3 py-3">
+              <span>
+                {couts.unresolvedExpenseCount} dépense(s) à rapprocher
+              </span>
+              <Link
+                href={`/projects/${project.id}?section=terrain&tab=depenses`}
+                className="inline-flex min-h-11 items-center font-semibold text-cyan underline"
+              >
+                Rapprocher les dépenses →
+              </Link>
+            </li>
+          )}
+          {missingTotal > 0 && (
+            <li className="py-3 text-clay">
+              {missingTotal} ressource(s) sans coût connu : compléter leur
+              valorisation avant toute analyse financière.
+            </li>
+          )}
+        </ul>
+        {daily !== null && pending.length === 0 && (
+          <p className="text-sm text-muted">
+            Aucune journée en attente de vérification ou de correction.
           </p>
-          <p className="mt-0.5 text-xs text-muted">Dernier décompte de la chaîne</p>
-        </div>
-        <div className={`${cardClass} ${margePositive ? '' : 'border-clay'}`}>
-          <p className="text-[11px] font-semibold uppercase tracking-widest text-faint">
-            Marge brute estimée
-          </p>
-          <p
-            className={`mt-1 font-mono text-2xl font-black tabular-nums ${margePositive ? 'text-emerald' : 'text-clay'}`}
-          >
-            {fmtMad(couts.margeBruteMad)}
-          </p>
-          <p className="mt-0.5 text-xs text-muted">Décompte cumulé − coûts réels</p>
-        </div>
-      </div>
-      <div className={cardClass}>
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-xs font-semibold uppercase tracking-widest text-cyan">
-            Derniers rapports de chantier
+        )}
+      </section>
+      <section className={cardClass}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-lg font-bold">
+            Blocages ouverts ({openBlockers.length})
           </h3>
-          <span className="text-xs text-faint">
-            {counts.rapports} rapports · {counts.depenses} dépenses ·{' '}
-            {counts.attachementsASaisir} attachements à intégrer
+          <Link
+            href={`/projects/${project.id}?section=terrain&tab=production`}
+            className="inline-flex min-h-11 items-center font-semibold text-cyan underline"
+          >
+            Suivre la production par ouvrage →
+          </Link>
+        </div>
+        {daily === null ? (
+          <p className="mt-3 text-sm text-muted">
+            Les blocages ne sont pas disponibles. Ouvrez la journée pour
+            réessayer.
+          </p>
+        ) : openBlockers.length === 0 ? (
+          <p className="mt-3 text-sm text-muted">
+            Aucun blocage ouvert déclaré dans les journées du chantier.
+          </p>
+        ) : (
+          <ul className="mt-3 grid gap-3 sm:grid-cols-2">
+            {openBlockers.map(({ blocker, date, zone }) => (
+              <li
+                key={blocker.id}
+                className={`rounded-lg border p-4 ${blocker.severity === 'critical' ? 'border-clay' : 'border-line'}`}
+              >
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted">
+                  {blocker.severity === 'critical'
+                    ? 'Critique'
+                    : blocker.severity === 'warning'
+                      ? 'À traiter'
+                      : 'Information'}{' '}
+                  · {zone}
+                </p>
+                <h4 className="mt-2 font-semibold">{blocker.label}</h4>
+                <p className="mt-2 text-sm text-muted">
+                  Responsable : {blocker.owner}
+                  <br />
+                  Échéance :{' '}
+                  {blocker.dueDate ? fmtDate(blocker.dueDate) : 'À préciser'} ·
+                  signalé le {fmtDate(date)}
+                </p>
+                <Link
+                  className="mt-2 inline-flex min-h-11 items-center text-sm font-semibold text-cyan underline"
+                  href={`${dailyHref}&date=${date}`}
+                >
+                  Ouvrir et traiter ce blocage →
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <section aria-label="Situation financière terrain" className="space-y-3">
+        <div className="grid gap-3 lg:grid-cols-3">
+          <div className={cardClass}>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted">
+              Ressources valorisées · cumul
+            </p>
+            <p className="mt-2 font-mono text-2xl font-bold">
+              {fmtMad(couts.operationalResourceCostsMad)}
+            </p>
+            <p className="mt-2 text-sm text-muted">
+              Somme des coûts connus de main-d’œuvre, matériel et consommations.
+              {missingTotal > 0
+                ? ` ${missingTotal} valorisation(s) manquante(s).`
+                : ' Le rapprochement financier reste à réaliser.'}
+            </p>
+          </div>
+          <div className={cardClass}>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted">
+              Dépenses à rapprocher · cumul
+            </p>
+            <p className="mt-2 font-mono text-2xl font-bold">
+              {fmtMad(couts.expensesAwaitingReconciliationMad)}
+            </p>
+            <p className="mt-2 text-sm text-muted">
+              {couts.unresolvedExpenseCount} dépense(s) sans rapprochement. Leur
+              lien avec les ressources doit être vérifié pour éviter les
+              doublons.
+            </p>
+          </div>
+          <div className={cardClass}>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted">
+              Dernier décompte · TTC
+            </p>
+            <p className="mt-2 font-mono text-2xl font-bold text-cyan">
+              {couts.latestDecompte
+                ? fmtMad(couts.decompteCumuleTtcMad)
+                : 'Non disponible'}
+            </p>
+            <p className="mt-2 text-sm text-muted">
+              {couts.latestDecompte
+                ? `N°${couts.latestDecompte.numero} · ${couts.latestDecompte.statut}${couts.latestDecompte.dateDecompte ? ` · ${fmtDate(couts.latestDecompte.dateDecompte)}` : ''}`
+                : 'Aucun décompte actif enregistré.'}
+            </p>
+          </div>
+        </div>
+        <p className="rounded-lg border border-line bg-sand p-3 text-sm text-muted">
+          Coûts connus après rapprochement : {fmtMad(couts.knownCostsMad)} (dont{' '}
+          {fmtMad(couts.reconciledExpensesMad)} de dépenses complémentaires
+          confirmées). Coût total et marge indisponibles avant vérification
+          complète des dépenses et des ressources. Le décompte TTC ne permet pas
+          à lui seul de conclure à la rentabilité.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {kpis.map((k) => (
+            <div key={k.label} className={cardClass}>
+              <p className="text-xs font-semibold text-muted">{k.label}</p>
+              <p className="mt-2 font-mono text-xl font-bold">
+                {fmtMad(k.value)}
+              </p>
+              <p className="mt-1 text-xs text-muted">
+                {k.missing
+                  ? `${k.missing} ligne(s) non valorisée(s)`
+                  : 'Coûts renseignés uniquement'}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className={cardClass}>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-lg font-bold">Derniers rapports de chantier</h3>
+          <span className="text-xs text-muted">
+            {counts.rapports} rapports · {counts.depenses} dépenses
           </span>
         </div>
         {derniersRapports.length === 0 ? (
           <p className="text-sm text-muted">
-            Aucun rapport. La saisie commence dans l&apos;onglet « Rapport du jour ».
+            Aucun rapport enregistré.{' '}
+            <Link
+              className="font-semibold text-cyan underline"
+              href={dailyHref}
+            >
+              Commencer la première journée
+            </Link>
+            .
           </p>
         ) : (
           <ul className="divide-y divide-line">
             {derniersRapports.map((r) => (
-              <li key={r.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 text-sm">
-                <span className="font-mono text-xs text-faint">{fmtDate(r.reportDate)}</span>
-                <span>{r.meteo ? (METEO_LABELS[r.meteo] ?? r.meteo) : '—'}</span>
-                <span className="text-muted">👷 {r.effectifs}</span>
-                <span className="min-w-0 flex-1 truncate text-muted">{r.travauxRealises}</span>
+              <li
+                key={r.id}
+                className="flex flex-wrap gap-x-4 gap-y-1 py-3 text-sm"
+              >
+                <span className="font-mono text-xs text-muted">
+                  {fmtDate(r.reportDate)}
+                </span>
+                <span>{r.effectifs} personne(s)</span>
+                <p className="min-w-0 flex-1 text-muted">{r.travauxRealises}</p>
                 {r.incidentsSecurite > 0 && (
-                  <span className="rounded-full bg-clay-soft px-2 py-0.5 text-xs font-semibold text-clay">
-                    ⚠ {r.incidentsSecurite} incident(s)
+                  <span className="font-semibold text-clay">
+                    {r.incidentsSecurite} incident(s)
                   </span>
                 )}
               </li>
             ))}
           </ul>
         )}
-      </div>
+      </section>
     </div>
   );
 }
@@ -197,7 +422,11 @@ export async function RapportsTab({ project }: { project: BtpProjectDetail }) {
           </label>
           <label className={labelClass}>
             Météo
-            <select name="meteo" className={`${inputClass} mt-1`} defaultValue="soleil">
+            <select
+              name="meteo"
+              className={`${inputClass} mt-1`}
+              defaultValue="soleil"
+            >
               {Object.entries(METEO_LABELS).map(([value, label]) => (
                 <option key={value} value={value}>
                   {label}
@@ -238,7 +467,11 @@ export async function RapportsTab({ project }: { project: BtpProjectDetail }) {
           </label>
           <label className={`${labelClass} sm:col-span-2`}>
             Blocages / remarques
-            <input name="blocages" placeholder="Manque ciment…" className={`${inputClass} mt-1`} />
+            <input
+              name="blocages"
+              placeholder="Manque ciment…"
+              className={`${inputClass} mt-1`}
+            />
           </label>
           <label className={labelClass}>
             Incidents sécurité
@@ -257,7 +490,11 @@ export async function RapportsTab({ project }: { project: BtpProjectDetail }) {
           </label>
           <label className={labelClass}>
             Avancement (note)
-            <input name="avancement" placeholder="Bloc A à 60%" className={`${inputClass} mt-1`} />
+            <input
+              name="avancement"
+              placeholder="Bloc A à 60%"
+              className={`${inputClass} mt-1`}
+            />
           </label>
         </div>
         <button type="submit" className={`${btnPrimary} mt-4`}>
@@ -289,24 +526,38 @@ export async function RapportsTab({ project }: { project: BtpProjectDetail }) {
               <tbody className="divide-y divide-line">
                 {rapports.map((r) => (
                   <tr key={r.id} className="align-top">
-                    <td className="py-2 pr-3 font-mono text-xs">{fmtDate(r.reportDate)}</td>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {fmtDate(r.reportDate)}
+                    </td>
                     <td className="py-2 pr-3">
                       {r.meteo ? (METEO_LABELS[r.meteo] ?? r.meteo) : '—'}
                     </td>
                     <td className="py-2 pr-3 font-mono">{r.effectifs}</td>
-                    <td className="max-w-[280px] py-2 pr-3 text-muted">{r.travauxRealises}</td>
-                    <td className="max-w-[180px] py-2 pr-3 text-muted">{r.blocages ?? '—'}</td>
+                    <td className="max-w-[280px] py-2 pr-3 text-muted">
+                      {r.travauxRealises}
+                    </td>
+                    <td className="max-w-[180px] py-2 pr-3 text-muted">
+                      {r.blocages ?? '—'}
+                    </td>
                     <td className="py-2 pr-3">
                       {r.incidentsSecurite > 0 ? (
-                        <span className="font-semibold text-clay">⚠ {r.incidentsSecurite}</span>
+                        <span className="font-semibold text-clay">
+                          ⚠ {r.incidentsSecurite}
+                        </span>
                       ) : (
                         '0'
                       )}
                     </td>
-                    <td className="py-2 pr-3 text-xs text-faint">{r.createdBy}</td>
+                    <td className="py-2 pr-3 text-xs text-faint">
+                      {r.createdBy}
+                    </td>
                     <td className="py-2 text-right">
                       <form action={deleteRapportChantier}>
-                        <input type="hidden" name="projectId" value={project.id} />
+                        <input
+                          type="hidden"
+                          name="projectId"
+                          value={project.id}
+                        />
                         <input type="hidden" name="rapportId" value={r.id} />
                         <DeleteButton />
                       </form>
@@ -328,7 +579,7 @@ export async function PointageTab({ project }: { project: BtpProjectDetail }) {
     crew: TerrainCrewMember[];
     pointages: TerrainPointage[];
   }>(`/btp/projects/${project.id}/terrain/pointage`);
-  const totalCout = pointages.reduce((sum, p) => sum + p.coutMad, 0);
+  const totalCout = pointages.reduce((sum, p) => sum + (p.coutMad ?? 0), 0);
   return (
     <div className="space-y-6">
       <form action={createPointage} className={cardClass}>
@@ -337,23 +588,29 @@ export async function PointageTab({ project }: { project: BtpProjectDetail }) {
           Pointer une journée · تنقيط يوم عمل
         </h3>
         <p className="mb-4 text-xs text-muted">
-          L&apos;équipe vient du module Personnel (affectations à ce chantier). Re-pointer le même
-          jour remplace la saisie — pas de doublon.
+          L&apos;équipe vient du module Personnel (affectations à ce chantier).
+          Re-pointer le même jour remplace la saisie — pas de doublon.
         </p>
         {crew.length === 0 ? (
           <p className="rounded-lg bg-sand px-4 py-3 text-sm text-muted">
-            Aucun ouvrier affecté à ce chantier. Affectez l&apos;équipe dans « Personnel »
-            d&apos;abord.
+            Aucun ouvrier affecté à ce chantier. Affectez l&apos;équipe dans «
+            Personnel » d&apos;abord.
           </p>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <label className={`${labelClass} sm:col-span-2`}>
               Ouvrier *
-              <select name="assignmentId" required className={`${inputClass} mt-1`}>
+              <select
+                name="assignmentId"
+                required
+                className={`${inputClass} mt-1`}
+              >
                 {crew.map((m) => (
                   <option key={m.assignmentId} value={m.assignmentId}>
                     {m.fullName} — {m.metier}
-                    {m.rateAmountMad ? ` (${m.rateAmountMad} DH/${m.rateType ?? 'jour'})` : ''}
+                    {m.rateAmountMad
+                      ? ` (${m.rateAmountMad} DH/${m.rateType ?? 'jour'})`
+                      : ''}
                   </option>
                 ))}
               </select>
@@ -370,7 +627,11 @@ export async function PointageTab({ project }: { project: BtpProjectDetail }) {
             </label>
             <label className={labelClass}>
               Journée
-              <select name="daysWorked" defaultValue="1" className={`${inputClass} mt-1`}>
+              <select
+                name="daysWorked"
+                defaultValue="1"
+                className={`${inputClass} mt-1`}
+              >
                 <option value="1">Journée complète</option>
                 <option value="0.5">Demi-journée</option>
                 <option value="1.5">Journée + heures sup</option>
@@ -379,7 +640,11 @@ export async function PointageTab({ project }: { project: BtpProjectDetail }) {
             </label>
             <label className={`${labelClass} sm:col-span-3`}>
               Note
-              <input name="notes" placeholder="Poste, tâche…" className={`${inputClass} mt-1`} />
+              <input
+                name="notes"
+                placeholder="Poste, tâche…"
+                className={`${inputClass} mt-1`}
+              />
             </label>
             <div className="flex items-end">
               <button type="submit" className={btnPrimary}>
@@ -396,7 +661,8 @@ export async function PointageTab({ project }: { project: BtpProjectDetail }) {
             Pointages récents ({pointages.length})
           </h3>
           <span className="font-mono text-sm font-bold tabular-nums">
-            Coût: {fmtMad(totalCout)}
+            Coûts connus : {fmtMad(totalCout)} ·{' '}
+            {pointages.filter((p) => p.coutMad === null).length} non valorisé(s)
           </span>
         </div>
         {pointages.length === 0 ? (
@@ -417,12 +683,14 @@ export async function PointageTab({ project }: { project: BtpProjectDetail }) {
               <tbody className="divide-y divide-line">
                 {pointages.map((p) => (
                   <tr key={p.id}>
-                    <td className="py-2 pr-3 font-mono text-xs">{fmtDate(p.workDate)}</td>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {fmtDate(p.workDate)}
+                    </td>
                     <td className="py-2 pr-3 font-medium">{p.employeeName}</td>
                     <td className="py-2 pr-3 text-muted">{p.metier}</td>
                     <td className="py-2 pr-3 font-mono">{p.daysWorked}</td>
                     <td className="py-2 pr-3 text-right font-mono tabular-nums">
-                      {fmtMad(p.coutMad)}
+                      {p.coutMad === null ? 'À valoriser' : fmtMad(p.coutMad)}
                     </td>
                     <td className="py-2 text-muted">{p.notes ?? '—'}</td>
                   </tr>
@@ -438,8 +706,13 @@ export async function PointageTab({ project }: { project: BtpProjectDetail }) {
 
 // ─── Matériel & engins ───────────────────────────────────────────────────────
 export async function MaterielTab({ project }: { project: BtpProjectDetail }) {
-  const lignes = await apiGet<TerrainMateriel[]>(`/btp/projects/${project.id}/terrain/materiel`);
-  const total = lignes.reduce((s, l) => s + l.coutCarburantMad + l.coutLocationMad, 0);
+  const lignes = await apiGet<TerrainMateriel[]>(
+    `/btp/projects/${project.id}/terrain/materiel`,
+  );
+  const total = lignes.reduce(
+    (s, l) => s + (l.coutCarburantMad ?? 0) + (l.coutLocationMad ?? 0),
+    0,
+  );
   return (
     <div className="space-y-6">
       <form action={createMaterielChantier} className={cardClass}>
@@ -469,7 +742,11 @@ export async function MaterielTab({ project }: { project: BtpProjectDetail }) {
           </label>
           <label className={labelClass}>
             Régime
-            <select name="regime" defaultValue="propre" className={`${inputClass} mt-1`}>
+            <select
+              name="regime"
+              defaultValue="propre"
+              className={`${inputClass} mt-1`}
+            >
               <option value="propre">Notre matériel</option>
               <option value="location">Location</option>
             </select>
@@ -535,7 +812,9 @@ export async function MaterielTab({ project }: { project: BtpProjectDetail }) {
           <h3 className="text-xs font-semibold uppercase tracking-widest text-faint">
             Journal matériel ({lignes.length})
           </h3>
-          <span className="font-mono text-sm font-bold tabular-nums">Coût: {fmtMad(total)}</span>
+          <span className="font-mono text-sm font-bold tabular-nums">
+            Coûts connus : {fmtMad(total)}
+          </span>
         </div>
         {lignes.length === 0 ? (
           <p className="text-sm text-muted">Aucune ligne matériel.</p>
@@ -557,7 +836,9 @@ export async function MaterielTab({ project }: { project: BtpProjectDetail }) {
               <tbody className="divide-y divide-line">
                 {lignes.map((l) => (
                   <tr key={l.id}>
-                    <td className="py-2 pr-3 font-mono text-xs">{fmtDate(l.date)}</td>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {fmtDate(l.date)}
+                    </td>
                     <td className="py-2 pr-3 font-medium">{l.engin}</td>
                     <td className="py-2 pr-3">
                       <span
@@ -566,17 +847,27 @@ export async function MaterielTab({ project }: { project: BtpProjectDetail }) {
                         {l.regime === 'location' ? 'Location' : 'Propre'}
                       </span>
                     </td>
-                    <td className="py-2 pr-3 font-mono">{l.heuresUtilisation ?? '—'}</td>
+                    <td className="py-2 pr-3 font-mono">
+                      {l.heuresUtilisation ?? '—'}
+                    </td>
                     <td className="py-2 pr-3 font-mono">
                       {l.carburantL != null ? `${l.carburantL} L` : '—'}
                     </td>
                     <td className="py-2 pr-3 text-right font-mono tabular-nums">
-                      {fmtMad(l.coutCarburantMad + l.coutLocationMad)}
+                      {l.coutCarburantMad === null || l.coutLocationMad === null
+                        ? `Partiel : ${fmtMad((l.coutCarburantMad ?? 0) + (l.coutLocationMad ?? 0))} · à valoriser`
+                        : fmtMad(l.coutCarburantMad + l.coutLocationMad)}
                     </td>
-                    <td className="py-2 pr-3 text-xs text-faint">{l.saisiPar}</td>
+                    <td className="py-2 pr-3 text-xs text-faint">
+                      {l.saisiPar}
+                    </td>
                     <td className="py-2 text-right">
                       <form action={deleteMaterielChantier}>
-                        <input type="hidden" name="projectId" value={project.id} />
+                        <input
+                          type="hidden"
+                          name="projectId"
+                          value={project.id}
+                        />
                         <input type="hidden" name="ligneId" value={l.id} />
                         <DeleteButton />
                       </form>
@@ -593,11 +884,15 @@ export async function MaterielTab({ project }: { project: BtpProjectDetail }) {
 }
 
 // ─── Consommations matériaux ─────────────────────────────────────────────────
-export async function ConsommationsTab({ project }: { project: BtpProjectDetail }) {
+export async function ConsommationsTab({
+  project,
+}: {
+  project: BtpProjectDetail;
+}) {
   const lignes = await apiGet<TerrainConsommation[]>(
     `/btp/projects/${project.id}/terrain/consommations`,
   );
-  const total = lignes.reduce((s, l) => s + l.coutMad, 0);
+  const total = lignes.reduce((s, l) => s + (l.coutMad ?? 0), 0);
   return (
     <div className="space-y-6">
       <form action={createConsommation} className={cardClass}>
@@ -676,7 +971,10 @@ export async function ConsommationsTab({ project }: { project: BtpProjectDetail 
           </label>
           <label className={labelClass}>
             Bon de livraison
-            <input name="bonLivraison" className={`${inputClass} mt-1 font-mono`} />
+            <input
+              name="bonLivraison"
+              className={`${inputClass} mt-1 font-mono`}
+            />
           </label>
           <label className={`${labelClass} sm:col-span-2`}>
             Note
@@ -695,7 +993,9 @@ export async function ConsommationsTab({ project }: { project: BtpProjectDetail 
           <h3 className="text-xs font-semibold uppercase tracking-widest text-faint">
             Journal consommations ({lignes.length})
           </h3>
-          <span className="font-mono text-sm font-bold tabular-nums">Coût: {fmtMad(total)}</span>
+          <span className="font-mono text-sm font-bold tabular-nums">
+            Coûts connus : {fmtMad(total)}
+          </span>
         </div>
         {lignes.length === 0 ? (
           <p className="text-sm text-muted">Aucune consommation.</p>
@@ -717,15 +1017,21 @@ export async function ConsommationsTab({ project }: { project: BtpProjectDetail 
               <tbody className="divide-y divide-line">
                 {lignes.map((l) => (
                   <tr key={l.id}>
-                    <td className="py-2 pr-3 font-mono text-xs">{fmtDate(l.date)}</td>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {fmtDate(l.date)}
+                    </td>
                     <td className="py-2 pr-3 font-medium">{l.article}</td>
-                    <td className="py-2 pr-3 text-right font-mono">{l.quantite}</td>
+                    <td className="py-2 pr-3 text-right font-mono">
+                      {l.quantite}
+                    </td>
                     <td className="py-2 pr-3">{l.unite}</td>
                     <td className="py-2 pr-3 text-right font-mono">
-                      {l.prixUnitaireMad != null ? fmtMad(l.prixUnitaireMad) : '—'}
+                      {l.prixUnitaireMad != null
+                        ? fmtMad(l.prixUnitaireMad)
+                        : '—'}
                     </td>
                     <td className="py-2 pr-3 text-right font-mono tabular-nums">
-                      {fmtMad(l.coutMad)}
+                      {l.coutMad === null ? 'À valoriser' : fmtMad(l.coutMad)}
                     </td>
                     <td className="py-2 pr-3 text-xs text-muted">
                       {l.fournisseur ?? '—'}
@@ -733,7 +1039,11 @@ export async function ConsommationsTab({ project }: { project: BtpProjectDetail 
                     </td>
                     <td className="py-2 text-right">
                       <form action={deleteConsommation}>
-                        <input type="hidden" name="projectId" value={project.id} />
+                        <input
+                          type="hidden"
+                          name="projectId"
+                          value={project.id}
+                        />
                         <input type="hidden" name="ligneId" value={l.id} />
                         <DeleteButton />
                       </form>
@@ -751,7 +1061,9 @@ export async function ConsommationsTab({ project }: { project: BtpProjectDetail 
 
 // ─── Dépenses ────────────────────────────────────────────────────────────────
 export async function DepensesTab({ project }: { project: BtpProjectDetail }) {
-  const depenses = await apiGet<TerrainDepense[]>(`/btp/projects/${project.id}/terrain/depenses`);
+  const depenses = await apiGet<TerrainDepense[]>(
+    `/btp/projects/${project.id}/terrain/depenses`,
+  );
   const total = depenses.reduce((s, d) => s + d.amountMad, 0);
   return (
     <div className="space-y-6">
@@ -761,7 +1073,8 @@ export async function DepensesTab({ project }: { project: BtpProjectDetail }) {
           Nouvelle dépense · مصروف جديد
         </h3>
         <p className="mb-4 text-xs text-muted">
-          La plus petite dépense compte: photographiez le reçu, il est archivé avec la ligne.
+          La plus petite dépense compte: photographiez le reçu, il est archivé
+          avec la ligne.
         </p>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <label className={labelClass}>
@@ -809,7 +1122,11 @@ export async function DepensesTab({ project }: { project: BtpProjectDetail }) {
           </label>
           <label className={labelClass}>
             Paiement
-            <select name="method" defaultValue="especes" className={`${inputClass} mt-1`}>
+            <select
+              name="method"
+              defaultValue="especes"
+              className={`${inputClass} mt-1`}
+            >
               {Object.entries(DEPENSE_METHODE_LABELS).map(([value, label]) => (
                 <option key={value} value={value}>
                   {label}
@@ -819,7 +1136,10 @@ export async function DepensesTab({ project }: { project: BtpProjectDetail }) {
           </label>
           <label className={labelClass}>
             Référence / n° reçu
-            <input name="reference" className={`${inputClass} mt-1 font-mono`} />
+            <input
+              name="reference"
+              className={`${inputClass} mt-1 font-mono`}
+            />
           </label>
           <label className={labelClass}>
             Justificatif (photo)
@@ -843,13 +1163,36 @@ export async function DepensesTab({ project }: { project: BtpProjectDetail }) {
       </form>
 
       <div className={cardClass}>
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-xs font-semibold uppercase tracking-widest text-faint">
-            Dépenses du chantier ({depenses.length})
-          </h3>
-          <span className="font-mono text-base font-bold tabular-nums text-ink">
-            Total: {fmtMad(total)}
-          </span>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-widest text-faint">
+              Dépenses du chantier ({depenses.length})
+            </h3>
+            <span className="font-mono text-base font-bold tabular-nums text-ink">
+              Total: {fmtMad(total)}
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href={`/api/btp-export/${project.id}/depenses`}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-muted transition hover:border-emerald hover:text-emerald"
+              title="Télécharger le journal au format Excel (.xlsx)"
+            >
+              <span>📊</span>
+              <span>Exporter Excel</span>
+            </a>
+            <a
+              href={`/projects/${project.id}/depenses/print`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-muted transition hover:border-cyan hover:text-cyan"
+              title="Imprimer ou sauvegarder en PDF"
+            >
+              <span>🖨️</span>
+              <span>Imprimer / PDF</span>
+            </a>
+          </div>
         </div>
         {depenses.length === 0 ? (
           <p className="text-sm text-muted">Aucune dépense saisie.</p>
@@ -871,7 +1214,9 @@ export async function DepensesTab({ project }: { project: BtpProjectDetail }) {
               <tbody className="divide-y divide-line">
                 {depenses.map((d) => (
                   <tr key={d.id}>
-                    <td className="py-2 pr-3 font-mono text-xs">{fmtDate(d.spentAt)}</td>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {fmtDate(d.spentAt)}
+                    </td>
                     <td className="py-2 pr-3">
                       <span className="rounded-full bg-sand px-2 py-0.5 text-xs font-semibold text-muted">
                         {DEPENSE_CATEGORIE_LABELS[d.category] ?? d.category}
@@ -882,7 +1227,9 @@ export async function DepensesTab({ project }: { project: BtpProjectDetail }) {
                       {fmtMad(d.amountMad)}
                     </td>
                     <td className="py-2 pr-3 text-muted">
-                      {d.method ? (DEPENSE_METHODE_LABELS[d.method] ?? d.method) : '—'}
+                      {d.method
+                        ? (DEPENSE_METHODE_LABELS[d.method] ?? d.method)
+                        : '—'}
                     </td>
                     <td className="py-2 pr-3">
                       {d.justificatifAssetId ? (
@@ -898,10 +1245,16 @@ export async function DepensesTab({ project }: { project: BtpProjectDetail }) {
                         '—'
                       )}
                     </td>
-                    <td className="py-2 pr-3 text-xs text-faint">{d.saisiPar ?? '—'}</td>
+                    <td className="py-2 pr-3 text-xs text-faint">
+                      {d.saisiPar ?? '—'}
+                    </td>
                     <td className="py-2 text-right">
                       <form action={deleteDepenseChantier}>
-                        <input type="hidden" name="projectId" value={project.id} />
+                        <input
+                          type="hidden"
+                          name="projectId"
+                          value={project.id}
+                        />
                         <input type="hidden" name="depenseId" value={d.id} />
                         <DeleteButton />
                       </form>
@@ -913,16 +1266,27 @@ export async function DepensesTab({ project }: { project: BtpProjectDetail }) {
           </div>
         )}
       </div>
+      <ExpenseReconciliationPanel projectId={project.id} expenses={depenses} />
     </div>
   );
 }
 
 // ─── Attachements terrain (quantités réalisées → métrés) ───────────────────
-export async function AttachementsTab({ project }: { project: BtpProjectDetail }) {
-  const [attachements, bordereau] = await Promise.all([
-    apiGet<TerrainAttachement[]>(`/btp/projects/${project.id}/terrain/attachements`),
-    apiGet<Bordereau>(`/btp/projects/${project.id}/bordereau`).catch(() => null),
+export async function AttachementsTab({
+  project,
+}: {
+  project: BtpProjectDetail;
+}) {
+  const [attachements, bordereau, periodes] = await Promise.all([
+    apiGet<TerrainAttachement[]>(
+      `/btp/projects/${project.id}/terrain/attachements`,
+    ),
+    apiGet<Bordereau>(`/btp/projects/${project.id}/bordereau`).catch(
+      () => null,
+    ),
+    apiGet<Periode[]>(`/btp/projects/${project.id}/periodes`),
   ]);
+  const openPeriods = periodes.filter((p) => p.statut === 'en_cours');
   const lignes = bordereau?.lignes ?? [];
   return (
     <div className="space-y-6">
@@ -932,12 +1296,13 @@ export async function AttachementsTab({ project }: { project: BtpProjectDetail }
           Quantités réalisées · الكميات المنجزة
         </h3>
         <p className="mb-4 text-xs text-muted">
-          Le chef de chantier déclare les quantités réellement exécutées par prix du bordereau; le
-          bureau les intègre ensuite au métré officiel.
+          Le chef de chantier déclare les quantités réellement exécutées par
+          prix du bordereau; le bureau les intègre ensuite au métré officiel.
         </p>
         {lignes.length === 0 ? (
           <p className="rounded-lg bg-sand px-4 py-3 text-sm text-muted">
-            Le bordereau des prix est vide — saisissez-le d&apos;abord (section Administratif).
+            Le bordereau des prix est vide — saisissez-le d&apos;abord (section
+            Administratif).
           </p>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -1017,42 +1382,106 @@ export async function AttachementsTab({ project }: { project: BtpProjectDetail }
               <tbody className="divide-y divide-line">
                 {attachements.map((a) => (
                   <tr key={a.id}>
-                    <td className="py-2 pr-3 font-mono text-xs">{fmtDate(a.date)}</td>
-                    <td className="py-2 pr-3 font-mono">{a.numeroPrix ?? '—'}</td>
-                    <td className="max-w-[280px] py-2 pr-3 text-muted">{a.designation}</td>
-                    <td className="py-2 pr-3 text-right font-mono tabular-nums">{a.quantite}</td>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {fmtDate(a.date)}
+                    </td>
+                    <td className="py-2 pr-3 font-mono">
+                      {a.numeroPrix ?? '—'}
+                    </td>
+                    <td className="max-w-[280px] py-2 pr-3 text-muted">
+                      {a.designation}
+                    </td>
+                    <td className="py-2 pr-3 text-right font-mono tabular-nums">
+                      {a.quantite}
+                    </td>
                     <td className="py-2 pr-3">{a.unite}</td>
                     <td className="py-2 pr-3">
-                      {a.statut === 'integre' ? (
+                      {a.metreId ? (
                         <span className="rounded-full bg-emerald-soft px-2 py-0.5 text-xs font-semibold text-emerald">
                           Intégré au métré
                         </span>
                       ) : (
                         <span className="rounded-full bg-ochre-soft px-2 py-0.5 text-xs font-semibold text-ochre">
-                          À intégrer
+                          {a.statut === 'integre' ? 'Ancien marquage · lien à vérifier' : 'À intégrer'}
                         </span>
                       )}
                     </td>
-                    <td className="py-2 pr-3 text-xs text-faint">{a.saisiPar}</td>
+                    <td className="py-2 pr-3 text-xs text-faint">
+                      {a.saisiPar}
+                    </td>
                     <td className="py-2 text-right">
                       <div className="flex items-center justify-end gap-3">
-                        {a.statut !== 'integre' && (
-                          <form action={integrerAttachement}>
-                            <input type="hidden" name="projectId" value={project.id} />
-                            <input type="hidden" name="attachementId" value={a.id} />
+                        {!a.metreId && a.statut !== 'integre' && (
+                          <form
+                            action={integrerAttachement}
+                            className="flex flex-wrap items-center gap-2"
+                          >
+                            <input
+                              type="hidden"
+                              name="projectId"
+                              value={project.id}
+                            />
+                            <input
+                              type="hidden"
+                              name="attachementId"
+                              value={a.id}
+                            />
+                            <label className="text-left text-xs text-muted">
+                              Période de métré
+                              <select
+                                name="periodeId"
+                                required
+                                defaultValue=""
+                                className={`${inputClass} min-h-11`}
+                                aria-label={`Période pour ${a.designation}`}
+                              >
+                                <option value="">Choisir une période</option>
+                                {openPeriods.map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    N°{p.numero} · {p.libelle ?? 'En cours'}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
                             <button
                               type="submit"
-                              className="text-xs font-semibold text-emerald hover:underline"
+                              disabled={openPeriods.length === 0}
+                              className="min-h-11 rounded-lg border border-line px-3 text-xs font-semibold text-cyan focus-visible:outline-2 focus-visible:outline-cyan disabled:opacity-50"
                             >
-                              Marquer intégré
+                              Intégrer au métré
                             </button>
+                            {openPeriods.length === 0 && (
+                              <Link
+                                href={`/projects/${project.id}?tab=metres`}
+                                className="text-xs text-cyan underline"
+                              >
+                                Créer une période en cours
+                              </Link>
+                            )}
                           </form>
                         )}
-                        <form action={deleteAttachementTerrain}>
-                          <input type="hidden" name="projectId" value={project.id} />
-                          <input type="hidden" name="attachementId" value={a.id} />
-                          <DeleteButton />
-                        </form>
+                        {a.statut === 'integre' ? (
+                          <Link
+                            href={`/projects/${project.id}?tab=metres`}
+                            className="inline-flex min-h-11 items-center text-xs font-semibold text-cyan underline"
+                          >
+                            Voir les métrés
+                          </Link>
+                        ) : (
+                          <form action={deleteAttachementTerrain}>
+                            <input
+                              type="hidden"
+                              name="projectId"
+                              value={project.id}
+                            />
+                            <input
+                              type="hidden"
+                              name="attachementId"
+                              value={a.id}
+                            />
+                            <DeleteButton />
+                          </form>
+                        )}
                       </div>
                     </td>
                   </tr>
