@@ -1,17 +1,15 @@
 import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { apiGet, apiPatch, AtlasApiError } from '@/lib/api';
+import { apiGet, apiPost, AtlasApiError } from '@/lib/api';
 import {
   fmtDate,
   fmtMad,
   fmtQtyUnit,
   QUOTE_STATUS_BADGES,
-  QUOTE_STATUS_OPTIONS,
   tvaMad,
   type ClientRecord,
   type QuoteRecord,
-  type QuoteStatus,
 } from '@/lib/sales';
 import { isRedirectError } from '@/lib/next-redirect';
 
@@ -27,8 +25,8 @@ function failToQuote(id: string, action: string, error: unknown): never {
 }
 
 const ACTION_ERROR_MESSAGES: Record<string, string> = {
-  'setStatus:invalid': 'Statut refusé : valeur inattendue.',
-  'setStatus:failed': 'Échec du changement de statut. Réessayez.',
+  'issue:invalid': 'Émission refusée : vérifiez les données du devis.',
+  'issue:failed': 'Échec de l’émission du devis. Réessayez.',
 };
 
 function actionErrorMessage(
@@ -56,16 +54,12 @@ export default async function QuoteDetailPage({
   const client = await apiGet<ClientRecord>(`/sales/clients/${quote.clientId}`);
   const badge = QUOTE_STATUS_BADGES[quote.status];
 
-  async function setStatus(formData: FormData) {
+  async function issue() {
     'use server';
-    const status = String(formData.get('status') ?? '') as QuoteStatus;
-    if (!QUOTE_STATUS_OPTIONS.some((option) => option.value === status)) {
-      redirect(`/sales/quotes/${id}?error=setStatus&code=invalid`);
-    }
     try {
-      await apiPatch(`/sales/quotes/${id}/status`, { status });
+      await apiPost(`/sales/quotes/${id}/issue`, {});
     } catch (error) {
-      failToQuote(id, 'setStatus', error);
+      failToQuote(id, 'issue', error);
     }
     revalidatePath(`/sales/quotes/${id}`);
     revalidatePath('/sales/quotes');
@@ -78,7 +72,9 @@ export default async function QuoteDetailPage({
       </Link>
 
       <div className="mt-3 mb-2 flex flex-wrap items-center gap-4">
-        <h1 className="text-2xl font-black tracking-tight">{quote.reference}</h1>
+        <h1 className="text-2xl font-black tracking-tight">
+          {quote.reference ?? 'Brouillon de devis'}
+        </h1>
         <span
           className={`rounded-full px-3 py-1 text-xs font-semibold ${badge.classes}`}
         >
@@ -121,25 +117,13 @@ export default async function QuoteDetailPage({
         >
           Imprimer (simple)
         </Link>
-        <form action={setStatus} className="ml-auto flex flex-wrap items-end gap-2">
-          <label className="text-sm">
-            <span className="mb-1 block text-xs text-muted">Statut</span>
-            <select
-              name="status"
-              defaultValue={quote.status}
-              className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
-            >
-              {QUOTE_STATUS_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button className="rounded-md border border-line-2 px-3 py-2 text-sm font-medium text-muted transition hover:bg-sand">
-            Mettre à jour
-          </button>
-        </form>
+        {quote.status === 'brouillon' && (
+          <form action={issue} className="ml-auto">
+            <button className="rounded-md border border-cyan px-4 py-2 text-sm font-semibold text-cyan transition hover:bg-cyan-soft">
+              Émettre le devis
+            </button>
+          </form>
+        )}
       </div>
 
       <section className="mb-6 overflow-hidden rounded-xl border border-line bg-paper-2 shadow-sm">

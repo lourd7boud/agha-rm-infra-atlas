@@ -1,15 +1,13 @@
 import Link from 'next/link';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { apiGet, apiPatch, AtlasApiError } from '@/lib/api';
+import { apiGet, apiPost, AtlasApiError } from '@/lib/api';
 import {
   DELIVERY_STATUS_BADGES,
-  DELIVERY_STATUS_OPTIONS,
   fmtDate,
   fmtQtyUnit,
   type ClientRecord,
   type DeliveryNoteRecord,
-  type DeliveryNoteStatus,
 } from '@/lib/sales';
 import { isRedirectError } from '@/lib/next-redirect';
 
@@ -25,8 +23,8 @@ function failToNote(id: string, action: string, error: unknown): never {
 }
 
 const ACTION_ERROR_MESSAGES: Record<string, string> = {
-  'setStatus:invalid': 'Statut refusé : valeur inattendue.',
-  'setStatus:failed': 'Échec du changement de statut. Réessayez.',
+  'issue:invalid': 'Émission refusée : vérifiez les données du bon.',
+  'issue:failed': 'Échec de l’émission du bon. Réessayez.',
 };
 
 function actionErrorMessage(
@@ -54,16 +52,12 @@ export default async function DeliveryNoteDetailPage({
   const client = await apiGet<ClientRecord>(`/sales/clients/${note.clientId}`);
   const badge = DELIVERY_STATUS_BADGES[note.status];
 
-  async function setStatus(formData: FormData) {
+  async function issue() {
     'use server';
-    const status = String(formData.get('status') ?? '') as DeliveryNoteStatus;
-    if (!DELIVERY_STATUS_OPTIONS.some((option) => option.value === status)) {
-      redirect(`/sales/delivery-notes/${id}?error=setStatus&code=invalid`);
-    }
     try {
-      await apiPatch(`/sales/delivery-notes/${id}/status`, { status });
+      await apiPost(`/sales/delivery-notes/${id}/issue`, {});
     } catch (error) {
-      failToNote(id, 'setStatus', error);
+      failToNote(id, 'issue', error);
     }
     revalidatePath(`/sales/delivery-notes/${id}`);
     revalidatePath('/sales/delivery-notes');
@@ -79,7 +73,9 @@ export default async function DeliveryNoteDetailPage({
       </Link>
 
       <div className="mt-3 mb-2 flex flex-wrap items-center gap-4">
-        <h1 className="text-2xl font-black tracking-tight">{note.reference}</h1>
+        <h1 className="text-2xl font-black tracking-tight">
+          {note.reference ?? 'Brouillon de bon de livraison'}
+        </h1>
         <span
           className={`rounded-full px-3 py-1 text-xs font-semibold ${badge.classes}`}
         >
@@ -105,28 +101,13 @@ export default async function DeliveryNoteDetailPage({
         </div>
       )}
 
-      <form
-        action={setStatus}
-        className="mb-8 flex flex-wrap items-end gap-2"
-      >
-        <label className="text-sm">
-          <span className="mb-1 block text-xs text-muted">Statut</span>
-          <select
-            name="status"
-            defaultValue={note.status}
-            className="rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
-          >
-            {DELIVERY_STATUS_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button className="rounded-md border border-line-2 px-3 py-2 text-sm font-medium text-muted transition hover:bg-sand">
-          Mettre à jour
-        </button>
-      </form>
+      {note.status === 'brouillon' && (
+        <form action={issue} className="mb-8">
+          <button className="rounded-md border border-cyan px-4 py-2 text-sm font-semibold text-cyan transition hover:bg-cyan-soft">
+            Émettre le bon de livraison
+          </button>
+        </form>
+      )}
 
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <div className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">

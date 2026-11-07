@@ -270,7 +270,7 @@ export default async function QuotesPage({
                       href={`/sales/quotes/${quote.id}`}
                       className="hover:text-cyan"
                     >
-                      {quote.reference}
+                      {quote.reference ?? 'Brouillon — à l’émission'}
                     </Link>
                   </td>
                   <td className="px-4 py-3 text-muted">
@@ -342,15 +342,12 @@ export default async function QuotesPage({
                 </select>
               </label>
               <label className="text-sm">
-                <span className="mb-1 block text-xs text-muted">Numéro</span>
+                <span className="mb-1 block text-xs text-muted">Référence</span>
                 <div
                   className="flex h-[38px] w-40 items-center gap-1 rounded-md border border-dashed border-line-2 bg-rail-2/40 px-3 text-sm text-faint"
-                  title="Numéro séquentiel attribué automatiquement à l'enregistrement"
+                  title="Référence séquentielle attribuée lors de l’émission"
                 >
-                  <span className="font-mono">DEV-AAAA-NNNN</span>
-                  <span className="ml-auto text-[10px] font-semibold uppercase tracking-wider text-cyan/80">
-                    auto
-                  </span>
+                  <span>Référence attribuée à l’émission</span>
                 </div>
               </label>
               <label className="text-sm">

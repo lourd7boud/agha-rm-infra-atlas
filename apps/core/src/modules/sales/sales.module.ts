@@ -381,6 +381,14 @@ export class SalesController {
   }
 
   @Roles('direction', 'finance', 'marches', 'admin-si')
+  @Get('invoices/:id/aggregate')
+  async getInvoiceAggregate(@Param('id') id: string) {
+    const aggregate = await this.repository.getInvoiceAggregate(id);
+    if (!aggregate) throw new NotFoundException('Facture introuvable');
+    return aggregate;
+  }
+
+  @Roles('direction', 'finance', 'marches', 'admin-si')
   @Get('invoices/:id')
   async getInvoice(@Param('id') id: string) {
     const invoice = await this.repository.getInvoice(id);

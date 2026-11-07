@@ -48,6 +48,21 @@ function integer(formData: FormData, key: string): number {
   return Number(value(formData, key));
 }
 
+function madToCents(raw: string): number {
+  const normalized = raw.replace(',', '.');
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(normalized);
+  if (!match) return Number.NaN;
+  const whole = Number(match[1]);
+  const fraction = Number((match[2] ?? '').padEnd(2, '0'));
+  const cents = whole * 100 + fraction;
+  return Number.isSafeInteger(cents) ? cents : Number.NaN;
+}
+
+function centsFromForm(formData: FormData, centsKey: string, madKey: string): number {
+  const explicitCents = value(formData, centsKey);
+  return explicitCents ? Number(explicitCents) : madToCents(value(formData, madKey));
+}
+
 function knownFailure(
   operation: SalesOperation,
   error: unknown,
@@ -138,7 +153,7 @@ export async function recordInvoicePayment(
     'recordPayment',
     () =>
       apiPost(`/sales/invoices/${id}/payments`, {
-        amountCents: integer(formData, 'amountCents'),
+        amountCents: centsFromForm(formData, 'amountCents', 'amountMad'),
         method: value(formData, 'method'),
         treasuryAccount: value(formData, 'treasuryAccount'),
         valueDate: value(formData, 'valueDate'),
@@ -176,8 +191,8 @@ export async function createInvoiceCreditNote(
     () =>
       apiPost(`/sales/invoices/${invoiceId}/credit-notes`, {
         creditDate: value(formData, 'creditDate'),
-        totalHtCents: integer(formData, 'totalHtCents'),
-        tvaCents: integer(formData, 'tvaCents'),
+        totalHtCents: centsFromForm(formData, 'totalHtCents', 'totalHtMad'),
+        tvaCents: centsFromForm(formData, 'tvaCents', 'tvaMad'),
         reason: value(formData, 'reason'),
       }),
     invoicePaths(invoiceId),

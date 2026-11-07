@@ -59,6 +59,9 @@ describe('SalesController compliant issue workflow', () => {
     expect(issuedQuote.reference).toBe('DEV-2026-000001');
     expect(issuedDelivery.reference).toBe('BL-2026-000001');
     expect(issuedInvoice.reference).toBe('FAC-2026-000001');
+    const aggregate = await controller.getInvoiceAggregate(invoice.id);
+    expect(aggregate.invoice.reference).toBe('FAC-2026-000001');
+    expect(aggregate.settlement.outstandingCents).toBe(120_000);
   });
 
   test('rejects invoice issue when a professional client has no ICE', async () => {

@@ -258,7 +258,7 @@ export default async function InvoicesPage({
               return (
                 <tr key={invoice.id}>
                   <td className="px-4 py-3 font-mono text-xs font-bold">
-                    {invoice.reference}
+                    {invoice.reference ?? 'Brouillon — à l’émission'}
                   </td>
                   <td className="px-4 py-3">
                     {clientName.get(invoice.clientId) ?? '—'}
@@ -335,15 +335,12 @@ export default async function InvoicesPage({
                 </select>
               </label>
               <label className="text-sm">
-                <span className="mb-1 block text-xs text-muted">Numéro</span>
+                <span className="mb-1 block text-xs text-muted">Référence</span>
                 <div
                   className="flex h-[38px] w-44 items-center gap-1 rounded-md border border-dashed border-line-2 bg-rail-2/40 px-3 text-sm text-faint"
-                  title="Numéro légal séquentiel attribué automatiquement à l'enregistrement (art. 145 CGI)"
+                  title="Référence légale séquentielle attribuée lors de l’émission"
                 >
-                  <span className="font-mono">FAC-AAAA-NNNN</span>
-                  <span className="ml-auto text-[10px] font-semibold uppercase tracking-wider text-cyan/80">
-                    auto
-                  </span>
+                  <span>Référence attribuée à l’émission</span>
                 </div>
               </label>
               <label className="text-sm">
