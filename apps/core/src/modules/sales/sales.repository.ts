@@ -12,10 +12,17 @@ import {
   formatDocReference,
   lineTotal,
 } from './sales.domain';
+import {
+  allocateCreditNote,
+  deriveSettlement,
+  summarizePaymentMovements,
+} from './sales-invoice.domain';
+import { parseMoneyCents } from './sales-money.domain';
 import type {
   ClientRecord,
   ClientSummary,
   CreateDeliveryNote,
+  CreateCreditNote,
   CreateInvoice,
   CreateQuote,
   DeliveryLineRecord,
@@ -24,7 +31,9 @@ import type {
   DeliveryNoteRecord,
   DocLineRecord,
   InvoiceFilter,
+  InvoiceAggregate,
   InvoiceListItem,
+  InvoicePaymentRecord,
   InvoiceRecord,
   InvoiceSummary,
   PageParams,
@@ -33,7 +42,13 @@ import type {
   QuoteListItem,
   QuoteRecord,
   QuoteSummary,
+  RecordInvoicePayment,
+  ReverseInvoicePayment,
+  SalesAccountingEventRecord,
   SalesRepository,
+  LegalSellerSnapshot,
+  CreditNoteRecord,
+  UpdateInvoiceDraft,
   UpsertClient,
 } from './sales.types';
 import type {
@@ -75,9 +90,34 @@ export class InMemorySalesRepository implements SalesRepository {
   private quotes: readonly QuoteRecord[] = [];
   private deliveryNotes: readonly DeliveryNoteRecord[] = [];
   private invoices: readonly InvoiceRecord[] = [];
+  private payments: readonly InvoicePaymentRecord[] = [];
+  private creditNotes: readonly CreditNoteRecord[] = [];
+  private accountingEvents: readonly SalesAccountingEventRecord[] = [];
   /** Per-(docType, exercice) counters — the in-memory twin of the Drizzle
    *  sales.doc_sequence table, so both paths mint identical FAC-YYYY-NNNN refs. */
   private readonly sequences = new Map<string, number>();
+
+  private appendAccountingEvent(
+    eventType: string,
+    sourceId: string,
+    sourceVersion: number,
+    occurredAt: Date,
+  ): void {
+    const eventKey = `${eventType}:${sourceId}:${sourceVersion}`;
+    if (this.accountingEvents.some((event) => event.eventKey === eventKey)) return;
+    this.accountingEvents = [
+      ...this.accountingEvents,
+      {
+        id: randomUUID(),
+        eventKey,
+        eventType,
+        sourceId,
+        sourceVersion,
+        occurredAt,
+        status: 'pending',
+      },
+    ];
+  }
 
   /** Next gap-free sequential reference for a document, keyed on its fiscal year. */
   private nextReference(docType: DocType, date: Date): string {
@@ -153,7 +193,7 @@ export class InMemorySalesRepository implements SalesRepository {
       id: randomUUID(),
       clientId: input.clientId,
       projectId: input.projectId,
-      reference: input.reference ?? this.nextReference('devis', input.quoteDate),
+      reference: null,
       objet: input.objet,
       status: 'brouillon',
       quoteDate: input.quoteDate,
@@ -162,6 +202,7 @@ export class InMemorySalesRepository implements SalesRepository {
       tvaPct: input.tvaPct,
       totalTtcMad: totals.totalTtcMad,
       notes: input.notes,
+      version: 1,
       createdAt: new Date(),
       lines,
     };
@@ -202,6 +243,29 @@ export class InMemorySalesRepository implements SalesRepository {
     return this.quotes.find((q) => q.id === id) ?? null;
   }
 
+  async issueQuote(
+    id: string,
+    actor: string,
+    issuedAt: Date,
+  ): Promise<QuoteRecord> {
+    const existing = this.quotes.find((quote) => quote.id === id);
+    if (!existing) throw new Error('Devis introuvable.');
+    if (existing.reference) return existing;
+    if (existing.status !== 'brouillon') {
+      throw new Error('Seul un devis brouillon peut être émis.');
+    }
+    const updated: QuoteRecord = {
+      ...existing,
+      reference: this.nextReference('devis', existing.quoteDate),
+      status: 'envoye',
+      issuedAt,
+      issuedBy: actor,
+      version: existing.version + 1,
+    };
+    this.quotes = this.quotes.map((quote) => (quote.id === id ? updated : quote));
+    return updated;
+  }
+
   async setQuoteStatus(
     id: string,
     status: QuoteStatus,
@@ -221,11 +285,11 @@ export class InMemorySalesRepository implements SalesRepository {
       clientId: input.clientId,
       projectId: input.projectId,
       quoteId: input.quoteId,
-      reference:
-        input.reference ?? this.nextReference('bl', input.deliveryDate),
+      reference: null,
       deliveryDate: input.deliveryDate,
       status: 'brouillon',
       notes: input.notes,
+      version: 1,
       createdAt: new Date(),
       lines: toDeliveryLineRecords(input.lines),
     };
@@ -259,6 +323,31 @@ export class InMemorySalesRepository implements SalesRepository {
     return this.deliveryNotes.find((d) => d.id === id) ?? null;
   }
 
+  async issueDeliveryNote(
+    id: string,
+    actor: string,
+    issuedAt: Date,
+  ): Promise<DeliveryNoteRecord> {
+    const existing = this.deliveryNotes.find((note) => note.id === id);
+    if (!existing) throw new Error('Bon de livraison introuvable.');
+    if (existing.reference) return existing;
+    if (existing.status !== 'brouillon') {
+      throw new Error('Seul un bon de livraison brouillon peut être émis.');
+    }
+    const updated: DeliveryNoteRecord = {
+      ...existing,
+      reference: this.nextReference('bl', existing.deliveryDate),
+      status: 'livre',
+      issuedAt,
+      issuedBy: actor,
+      version: existing.version + 1,
+    };
+    this.deliveryNotes = this.deliveryNotes.map((note) =>
+      note.id === id ? updated : note,
+    );
+    return updated;
+  }
+
   async setDeliveryNoteStatus(
     id: string,
     status: DeliveryNoteStatus,
@@ -280,20 +369,270 @@ export class InMemorySalesRepository implements SalesRepository {
       clientId: input.clientId,
       projectId: input.projectId,
       quoteId: input.quoteId,
-      reference:
-        input.reference ?? this.nextReference('facture', input.invoiceDate),
+      reference: null,
       invoiceDate: input.invoiceDate,
       dueDate: input.dueDate,
       status: 'brouillon',
       totalHtMad: totals.totalHtMad,
       tvaPct: input.tvaPct,
+      tvaMad: totals.tvaMad,
       totalTtcMad: totals.totalTtcMad,
       notes: input.notes,
+      version: 1,
+      legacyPaid: false,
       createdAt: new Date(),
       lines,
     };
     this.invoices = [...this.invoices, record];
     return record;
+  }
+
+  async issueInvoice(
+    id: string,
+    actor: string,
+    issuedAt: Date,
+    legalSnapshot: LegalSellerSnapshot,
+  ): Promise<InvoiceRecord> {
+    const existing = this.invoices.find((invoice) => invoice.id === id);
+    if (!existing) throw new Error('Facture introuvable.');
+    if (existing.reference) return existing;
+    if (existing.status !== 'brouillon') {
+      throw new Error('Seule une facture brouillon peut être émise.');
+    }
+    const updated: InvoiceRecord = {
+      ...existing,
+      reference: this.nextReference('facture', existing.invoiceDate),
+      status: 'emise',
+      issuedAt,
+      issuedBy: actor,
+      legalSnapshot: { ...legalSnapshot },
+      version: existing.version + 1,
+    };
+    this.invoices = this.invoices.map((invoice) =>
+      invoice.id === id ? updated : invoice,
+    );
+    this.appendAccountingEvent('invoice_issued', id, updated.version, issuedAt);
+    return updated;
+  }
+
+  async updateDraftInvoice(
+    id: string,
+    input: UpdateInvoiceDraft,
+  ): Promise<InvoiceRecord> {
+    const existing = this.invoices.find((invoice) => invoice.id === id);
+    if (!existing) throw new Error('Facture introuvable.');
+    if (existing.status !== 'brouillon') {
+      throw new Error('Une facture émise ne peut plus être modifiée.');
+    }
+    if (existing.version !== input.version) {
+      throw new Error('La facture a été modifiée par un autre utilisateur.');
+    }
+    const updated: InvoiceRecord = {
+      ...existing,
+      dueDate: input.dueDate ?? existing.dueDate,
+      paymentTerms: input.paymentTerms ?? existing.paymentTerms,
+      notes: input.notes ?? existing.notes,
+      version: existing.version + 1,
+    };
+    this.invoices = this.invoices.map((invoice) =>
+      invoice.id === id ? updated : invoice,
+    );
+    return updated;
+  }
+
+  async deleteDraftInvoice(id: string): Promise<void> {
+    const existing = this.invoices.find((invoice) => invoice.id === id);
+    if (!existing) return;
+    if (existing.status !== 'brouillon') {
+      throw new Error('Une facture émise ne peut plus être supprimée.');
+    }
+    this.invoices = this.invoices.filter((invoice) => invoice.id !== id);
+  }
+
+  async getInvoiceAggregate(id: string): Promise<InvoiceAggregate | null> {
+    const invoice = this.invoices.find((candidate) => candidate.id === id);
+    if (!invoice) return null;
+    const payments = this.payments.filter((payment) => payment.invoiceId === id);
+    const creditNotes = this.creditNotes.filter(
+      (creditNote) => creditNote.invoiceId === id,
+    );
+    const issuedCredits = creditNotes.filter(
+      (creditNote) => creditNote.status !== 'brouillon',
+    );
+    const summarized = summarizePaymentMovements(
+      payments.map((payment) => ({
+        type: payment.movementType,
+        amountCents: payment.amountCents,
+      })),
+    );
+    const totalCents = parseMoneyCents(invoice.totalTtcMad);
+    const legacyPaidOpening = invoice.legacyPaid && payments.length === 0;
+    const settlement = deriveSettlement({
+      totalCents,
+      receivedCents: legacyPaidOpening ? totalCents : summarized.receivedCents,
+      refundedCents: summarized.refundedCents,
+      creditedCents: issuedCredits.reduce(
+        (total, creditNote) => total + creditNote.totalTtcCents,
+        0,
+      ),
+    });
+    const latestEvent = [...this.accountingEvents]
+      .filter((event) => event.sourceId === id)
+      .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime())[0];
+    return {
+      invoice,
+      payments,
+      creditNotes,
+      settlement,
+      accountingProjection: latestEvent?.status ?? 'pending',
+      legacyPaidOpening,
+    };
+  }
+
+  async recordPayment(input: RecordInvoicePayment): Promise<InvoiceAggregate> {
+    const invoice = this.invoices.find((candidate) => candidate.id === input.invoiceId);
+    if (!invoice || invoice.status === 'brouillon') {
+      throw new Error('La facture doit être émise avant tout règlement.');
+    }
+    const duplicate = this.payments.find(
+      (payment) =>
+        payment.invoiceId === input.invoiceId &&
+        payment.idempotencyKey === input.idempotencyKey,
+    );
+    if (duplicate) return (await this.getInvoiceAggregate(input.invoiceId))!;
+    const aggregate = (await this.getInvoiceAggregate(input.invoiceId))!;
+    if (
+      !Number.isSafeInteger(input.amountCents) ||
+      input.amountCents <= 0 ||
+      input.amountCents > aggregate.settlement.outstandingCents
+    ) {
+      throw new Error('Le règlement dépasse le solde restant ou est invalide.');
+    }
+    const payment: InvoicePaymentRecord = {
+      id: randomUUID(),
+      invoiceId: input.invoiceId,
+      movementType: 'encaissement',
+      amountCents: input.amountCents,
+      method: input.method,
+      treasuryAccount: input.treasuryAccount,
+      valueDate: input.valueDate,
+      reference: input.reference,
+      idempotencyKey: input.idempotencyKey,
+      createdBy: input.actor,
+      createdAt: new Date(),
+    };
+    this.payments = [...this.payments, payment];
+    this.appendAccountingEvent(
+      'payment_recorded',
+      input.invoiceId,
+      this.payments.filter((item) => item.invoiceId === input.invoiceId).length,
+      payment.createdAt,
+    );
+    return (await this.getInvoiceAggregate(input.invoiceId))!;
+  }
+
+  async reversePayment(input: ReverseInvoicePayment): Promise<InvoiceAggregate> {
+    const original = this.payments.find(
+      (payment) =>
+        payment.id === input.paymentId && payment.invoiceId === input.invoiceId,
+    );
+    if (!original || original.movementType !== 'encaissement') {
+      throw new Error('Règlement original introuvable.');
+    }
+    const existingReversal = this.payments.find(
+      (payment) => payment.originalMovementId === original.id,
+    );
+    if (!existingReversal) {
+      const reversal: InvoicePaymentRecord = {
+        id: randomUUID(),
+        invoiceId: input.invoiceId,
+        movementType: 'remboursement',
+        amountCents: original.amountCents,
+        method: original.method,
+        treasuryAccount: original.treasuryAccount,
+        valueDate: input.valueDate,
+        originalMovementId: original.id,
+        idempotencyKey: input.idempotencyKey,
+        createdBy: input.actor,
+        createdAt: new Date(),
+      };
+      this.payments = [...this.payments, reversal];
+      this.appendAccountingEvent(
+        'payment_reversed',
+        input.invoiceId,
+        this.payments.filter((item) => item.invoiceId === input.invoiceId).length,
+        reversal.createdAt,
+      );
+    }
+    return (await this.getInvoiceAggregate(input.invoiceId))!;
+  }
+
+  async createCreditNote(input: CreateCreditNote): Promise<CreditNoteRecord> {
+    const invoice = this.invoices.find((candidate) => candidate.id === input.invoiceId);
+    if (!invoice || invoice.status === 'brouillon') {
+      throw new Error('La facture doit être émise avant de créer un avoir.');
+    }
+    if (
+      !Number.isSafeInteger(input.totalHtCents) ||
+      !Number.isSafeInteger(input.tvaCents) ||
+      input.totalHtCents < 0 ||
+      input.tvaCents < 0 ||
+      input.totalHtCents + input.tvaCents <= 0
+    ) {
+      throw new Error('Le montant de l’avoir est invalide.');
+    }
+    const creditNote: CreditNoteRecord = {
+      id: randomUUID(),
+      invoiceId: input.invoiceId,
+      reference: null,
+      status: 'brouillon',
+      creditDate: input.creditDate,
+      totalHtCents: input.totalHtCents,
+      tvaCents: input.tvaCents,
+      totalTtcCents: input.totalHtCents + input.tvaCents,
+      againstOutstandingCents: 0,
+      againstCollectedCents: 0,
+      reason: input.reason,
+      version: 1,
+      createdBy: input.createdBy,
+      createdAt: new Date(),
+    };
+    this.creditNotes = [...this.creditNotes, creditNote];
+    return creditNote;
+  }
+
+  async issueCreditNote(
+    id: string,
+    actor: string,
+    issuedAt: Date,
+  ): Promise<CreditNoteRecord> {
+    const existing = this.creditNotes.find((creditNote) => creditNote.id === id);
+    if (!existing) throw new Error('Avoir introuvable.');
+    if (existing.reference) return existing;
+    const aggregate = (await this.getInvoiceAggregate(existing.invoiceId))!;
+    const allocation = allocateCreditNote({
+      invoiceTotalCents: parseMoneyCents(aggregate.invoice.totalTtcMad),
+      previouslyCreditedCents: aggregate.creditNotes
+        .filter((creditNote) => creditNote.status !== 'brouillon')
+        .reduce((total, creditNote) => total + creditNote.totalTtcCents, 0),
+      netReceivedCents: aggregate.settlement.netReceivedCents,
+      requestedCreditCents: existing.totalTtcCents,
+    });
+    const updated: CreditNoteRecord = {
+      ...existing,
+      reference: this.nextReference('avoir', existing.creditDate),
+      status: 'emise',
+      issuedAt,
+      issuedBy: actor,
+      againstOutstandingCents: allocation.againstOutstandingCents,
+      againstCollectedCents: allocation.againstCollectedCents,
+      version: existing.version + 1,
+    };
+    this.creditNotes = this.creditNotes.map((creditNote) =>
+      creditNote.id === id ? updated : creditNote,
+    );
+    this.appendAccountingEvent('credit_note_issued', id, updated.version, issuedAt);
+    return updated;
   }
 
   async listInvoices(

@@ -7,7 +7,6 @@ const QUOTE_DATE = new Date('2026-06-21T00:00:00Z');
 function quoteInput(partial: Partial<CreateQuote> = {}): CreateQuote {
   return {
     clientId: partial.clientId ?? 'client-1',
-    reference: partial.reference ?? 'DV-2026-001',
     quoteDate: partial.quoteDate ?? QUOTE_DATE,
     tvaPct: partial.tvaPct ?? 20,
     lines: partial.lines ?? [
@@ -20,7 +19,6 @@ function quoteInput(partial: Partial<CreateQuote> = {}): CreateQuote {
 function invoiceInput(partial: Partial<CreateInvoice> = {}): CreateInvoice {
   return {
     clientId: partial.clientId ?? 'client-1',
-    reference: partial.reference ?? 'FA-2026-001',
     invoiceDate: partial.invoiceDate ?? QUOTE_DATE,
     tvaPct: partial.tvaPct ?? 20,
     lines: partial.lines ?? [
@@ -132,10 +130,8 @@ describe('InMemorySalesRepository — quotes', () => {
 
   test('listQuotes filters by clientId and status', async () => {
     // Arrange
-    await repo.createQuote(quoteInput({ clientId: 'A', reference: 'Q-A1' }));
-    const qB = await repo.createQuote(
-      quoteInput({ clientId: 'B', reference: 'Q-B1' }),
-    );
+    await repo.createQuote(quoteInput({ clientId: 'A' }));
+    const qB = await repo.createQuote(quoteInput({ clientId: 'B' }));
     await repo.setQuoteStatus(qB.id, 'envoye');
 
     // Act
@@ -151,9 +147,9 @@ describe('InMemorySalesRepository — quotes', () => {
 
   test('listQuotes projects out lines and paginates; quotesSummary totals the set', async () => {
     // Arrange — three quotes (each TTC 36000 at 20% TVA over a 30000 HT line).
-    await repo.createQuote(quoteInput({ reference: 'Q-1' }));
-    await repo.createQuote(quoteInput({ reference: 'Q-2' }));
-    await repo.createQuote(quoteInput({ reference: 'Q-3' }));
+    await repo.createQuote(quoteInput());
+    await repo.createQuote(quoteInput());
+    await repo.createQuote(quoteInput());
 
     // Act — a page window of 2, then the DB-side summary over all three.
     const firstPage = await repo.listQuotes({}, { limit: 2, offset: 0 });
@@ -180,7 +176,6 @@ describe('InMemorySalesRepository — delivery notes', () => {
     // Arrange + Act
     const note = await repo.createDeliveryNote({
       clientId: 'client-1',
-      reference: 'BL-2026-001',
       deliveryDate: QUOTE_DATE,
       lines: [{ designation: 'Sacs ciment', quantity: 200, unit: 'sac' }],
     });
@@ -195,7 +190,6 @@ describe('InMemorySalesRepository — delivery notes', () => {
     // Arrange
     const created = await repo.createDeliveryNote({
       clientId: 'client-1',
-      reference: 'BL-2026-002',
       deliveryDate: QUOTE_DATE,
       lines: [{ designation: 'Gravier', quantity: 5, unit: 't' }],
     });
@@ -219,7 +213,6 @@ describe('InMemorySalesRepository — delivery notes', () => {
     // Arrange — three notes; the first carries two lines, the rest one each.
     await repo.createDeliveryNote({
       clientId: 'client-1',
-      reference: 'BL-1',
       deliveryDate: QUOTE_DATE,
       lines: [
         { designation: 'Sacs ciment', quantity: 200, unit: 'sac' },
@@ -228,13 +221,11 @@ describe('InMemorySalesRepository — delivery notes', () => {
     });
     await repo.createDeliveryNote({
       clientId: 'client-1',
-      reference: 'BL-2',
       deliveryDate: QUOTE_DATE,
       lines: [{ designation: 'Sable', quantity: 3, unit: 't' }],
     });
     await repo.createDeliveryNote({
       clientId: 'client-1',
-      reference: 'BL-3',
       deliveryDate: QUOTE_DATE,
       lines: [{ designation: 'Acier', quantity: 1, unit: 't' }],
     });
@@ -250,8 +241,7 @@ describe('InMemorySalesRepository — delivery notes', () => {
     expect(firstPage.items[0]).not.toHaveProperty('lines');
     // The BL-1 note (two lines) surfaces with lineCount 2 regardless of paging.
     const all = [...firstPage.items, ...secondPage.items];
-    const bl1 = all.find((note) => note.reference === 'BL-1');
-    expect(bl1?.lineCount).toBe(2);
+    expect(all.some((note) => note.lineCount === 2)).toBe(true);
   });
 });
 
@@ -291,8 +281,8 @@ describe('InMemorySalesRepository — invoices', () => {
 
   test('listInvoices filters by status', async () => {
     // Arrange
-    await repo.createInvoice(invoiceInput({ reference: 'FA-1' }));
-    const paid = await repo.createInvoice(invoiceInput({ reference: 'FA-2' }));
+    await repo.createInvoice(invoiceInput());
+    const paid = await repo.createInvoice(invoiceInput());
     await repo.setInvoiceStatus(paid.id, 'payee');
 
     // Act
@@ -309,9 +299,9 @@ describe('InMemorySalesRepository — invoices', () => {
 
   test('listInvoices paginates and invoicesSummary totals the whole set', async () => {
     // Arrange — three invoices; one paid so it drops out of "outstanding".
-    await repo.createInvoice(invoiceInput({ reference: 'FA-A' }));
-    await repo.createInvoice(invoiceInput({ reference: 'FA-B' }));
-    const paid = await repo.createInvoice(invoiceInput({ reference: 'FA-C' }));
+    await repo.createInvoice(invoiceInput());
+    await repo.createInvoice(invoiceInput());
+    const paid = await repo.createInvoice(invoiceInput());
     await repo.setInvoiceStatus(paid.id, 'payee');
 
     // Act — page window of 2, then the DB-side summary over all three.
@@ -334,55 +324,252 @@ describe('InMemorySalesRepository — legal sequential numbering (art. 145)', ()
     repo = new InMemorySalesRepository();
   });
 
-  const noRef = { reference: undefined };
+  const legalSnapshot = {
+    legalName: 'AGHA RM INFRA SARL',
+    address: 'Errachidia',
+    ice: '001234567890123',
+    taxId: '12345678',
+    tradeRegister: 'RC-1234',
+  };
 
-  test('createInvoice without a reference mints FAC-{year}-NNNN sequentially', async () => {
-    // Act — two invoices, neither carrying a reference.
-    const first = await repo.createInvoice(invoiceInput(noRef));
-    const second = await repo.createInvoice(invoiceInput(noRef));
+  test('issuing drafts mints FAC-{year}-NNNNNN sequentially', async () => {
+    const firstDraft = await repo.createInvoice(invoiceInput());
+    const secondDraft = await repo.createInvoice(invoiceInput());
+    const first = await repo.issueInvoice(
+      firstDraft.id,
+      'direction-1',
+      QUOTE_DATE,
+      legalSnapshot,
+    );
+    const second = await repo.issueInvoice(
+      secondDraft.id,
+      'direction-1',
+      QUOTE_DATE,
+      legalSnapshot,
+    );
 
-    // Assert — gap-free, 1-based, zero-padded to 4 digits.
-    expect(first.reference).toBe('FAC-2026-0001');
-    expect(second.reference).toBe('FAC-2026-0002');
+    expect(first.reference).toBe('FAC-2026-000001');
+    expect(second.reference).toBe('FAC-2026-000002');
   });
 
   test('the counter resets per exercice (fiscal year)', async () => {
     // Arrange + Act — one invoice in 2026, one in 2025.
-    const y2026 = await repo.createInvoice(
-      invoiceInput({ ...noRef, invoiceDate: new Date('2026-03-01T00:00:00Z') }),
+    const y2026Draft = await repo.createInvoice(
+      invoiceInput({ invoiceDate: new Date('2026-03-01T00:00:00Z') }),
     );
-    const y2025 = await repo.createInvoice(
-      invoiceInput({ ...noRef, invoiceDate: new Date('2025-11-01T00:00:00Z') }),
+    const y2025Draft = await repo.createInvoice(
+      invoiceInput({ invoiceDate: new Date('2025-11-01T00:00:00Z') }),
+    );
+    const y2026 = await repo.issueInvoice(
+      y2026Draft.id,
+      'direction-1',
+      new Date('2026-03-01T00:00:00Z'),
+      legalSnapshot,
+    );
+    const y2025 = await repo.issueInvoice(
+      y2025Draft.id,
+      'direction-1',
+      new Date('2025-11-01T00:00:00Z'),
+      legalSnapshot,
     );
 
     // Assert — each year starts at 0001.
-    expect(y2026.reference).toBe('FAC-2026-0001');
-    expect(y2025.reference).toBe('FAC-2025-0001');
+    expect(y2026.reference).toBe('FAC-2026-000001');
+    expect(y2025.reference).toBe('FAC-2025-000001');
   });
 
   test('each document kind owns an independent sequence', async () => {
     // Act — first document of each kind in the same year.
-    const invoice = await repo.createInvoice(invoiceInput(noRef));
-    const quote = await repo.createQuote(quoteInput(noRef));
-    const bl = await repo.createDeliveryNote({
+    const invoiceDraft = await repo.createInvoice(invoiceInput());
+    const quoteDraft = await repo.createQuote(quoteInput());
+    const blDraft = await repo.createDeliveryNote({
       clientId: 'client-1',
       deliveryDate: QUOTE_DATE,
       lines: [{ designation: 'Sable', quantity: 3, unit: 't' }],
     });
 
-    // Assert — no cross-talk between FAC / DEV / BL counters.
-    expect(invoice.reference).toBe('FAC-2026-0001');
-    expect(quote.reference).toBe('DEV-2026-0001');
-    expect(bl.reference).toBe('BL-2026-0001');
+    const invoice = await repo.issueInvoice(
+      invoiceDraft.id,
+      'direction-1',
+      QUOTE_DATE,
+      legalSnapshot,
+    );
+    const quote = await repo.issueQuote(quoteDraft.id, 'direction-1', QUOTE_DATE);
+    const bl = await repo.issueDeliveryNote(blDraft.id, 'direction-1', QUOTE_DATE);
+
+    expect(invoice.reference).toBe('FAC-2026-000001');
+    expect(quote.reference).toBe('DEV-2026-000001');
+    expect(bl.reference).toBe('BL-2026-000001');
   });
 
-  test('an explicit reference is preserved verbatim (import/back-compat path)', async () => {
-    // Act — a caller that still supplies a reference keeps it.
-    const invoice = await repo.createInvoice(
-      invoiceInput({ reference: 'LEGACY-2024-999' }),
+  test('draft creation never allocates an official reference', async () => {
+    const invoice = await repo.createInvoice(invoiceInput());
+    expect(invoice.reference).toBeNull();
+  });
+});
+
+describe('InMemorySalesRepository — issue-time lifecycle', () => {
+  let repo: InMemorySalesRepository;
+
+  beforeEach(() => {
+    repo = new InMemorySalesRepository();
+  });
+
+  test('drafts consume no official reference and issue idempotently by kind', async () => {
+    const quote = await repo.createQuote(quoteInput());
+    const delivery = await repo.createDeliveryNote({
+      clientId: 'client-1',
+      deliveryDate: QUOTE_DATE,
+      lines: [{ designation: 'Sable', quantity: 3, unit: 't' }],
+    });
+    const invoice = await repo.createInvoice(invoiceInput());
+
+    expect([quote.reference, delivery.reference, invoice.reference]).toEqual([
+      null,
+      null,
+      null,
+    ]);
+
+    const issuedQuote = await repo.issueQuote(quote.id, 'direction-1', QUOTE_DATE);
+    const issuedQuoteAgain = await repo.issueQuote(
+      quote.id,
+      'direction-1',
+      QUOTE_DATE,
+    );
+    const issuedDelivery = await repo.issueDeliveryNote(
+      delivery.id,
+      'direction-1',
+      QUOTE_DATE,
+    );
+    const issuedInvoice = await repo.issueInvoice(
+      invoice.id,
+      'direction-1',
+      QUOTE_DATE,
+      {
+        legalName: 'AGHA RM INFRA SARL',
+        address: 'Errachidia',
+        ice: '001234567890123',
+        taxId: '12345678',
+        tradeRegister: 'RC-1234',
+      },
     );
 
-    // Assert
-    expect(invoice.reference).toBe('LEGACY-2024-999');
+    expect(issuedQuote.reference).toBe('DEV-2026-000001');
+    expect(issuedQuoteAgain.reference).toBe(issuedQuote.reference);
+    expect(issuedDelivery.reference).toBe('BL-2026-000001');
+    expect(issuedInvoice.reference).toBe('FAC-2026-000001');
+    expect(issuedInvoice.status).toBe('emise');
+  });
+
+  test('concurrent invoice issue cannot allocate duplicate references', async () => {
+    const first = await repo.createInvoice(invoiceInput());
+    const second = await repo.createInvoice(invoiceInput());
+    const legalSnapshot = {
+      legalName: 'AGHA RM INFRA SARL',
+      address: 'Errachidia',
+      ice: '001234567890123',
+      taxId: '12345678',
+      tradeRegister: 'RC-1234',
+    };
+
+    const issued = await Promise.all([
+      repo.issueInvoice(first.id, 'direction-1', QUOTE_DATE, legalSnapshot),
+      repo.issueInvoice(second.id, 'direction-1', QUOTE_DATE, legalSnapshot),
+    ]);
+
+    expect(new Set(issued.map((item) => item.reference)).size).toBe(2);
+    expect(issued.map((item) => item.reference).sort()).toEqual([
+      'FAC-2026-000001',
+      'FAC-2026-000002',
+    ]);
+  });
+
+  test('issued invoices reject edits and deletion', async () => {
+    const invoice = await repo.createInvoice(invoiceInput());
+    await repo.issueInvoice(invoice.id, 'direction-1', QUOTE_DATE, {
+      legalName: 'AGHA RM INFRA SARL',
+      address: 'Errachidia',
+      ice: '001234567890123',
+      taxId: '12345678',
+      tradeRegister: 'RC-1234',
+    });
+
+    await expect(
+      repo.updateDraftInvoice(invoice.id, { notes: 'Mutation interdite', version: 1 }),
+    ).rejects.toThrow(/émise|brouillon/i);
+    await expect(repo.deleteDraftInvoice(invoice.id)).rejects.toThrow(
+      /émise|brouillon/i,
+    );
+  });
+
+  test('records and reverses payment movements without mutating history', async () => {
+    const draft = await repo.createInvoice(invoiceInput());
+    const invoice = await repo.issueInvoice(
+      draft.id,
+      'direction-1',
+      QUOTE_DATE,
+      {
+        legalName: 'AGHA RM INFRA SARL',
+        address: 'Errachidia',
+        ice: '001234567890123',
+        taxId: '12345678',
+        tradeRegister: 'RC-1234',
+      },
+    );
+    const paid = await repo.recordPayment({
+      invoiceId: invoice.id,
+      amountCents: 100_000,
+      method: 'virement',
+      treasuryAccount: '5141',
+      valueDate: QUOTE_DATE,
+      idempotencyKey: 'payment-1',
+      actor: 'comptable-1',
+    });
+
+    expect(paid.payments).toHaveLength(1);
+    expect(paid.settlement.outstandingCents).toBe(380_000);
+
+    const reversed = await repo.reversePayment({
+      invoiceId: invoice.id,
+      paymentId: paid.payments[0]!.id,
+      valueDate: QUOTE_DATE,
+      idempotencyKey: 'reversal-1',
+      actor: 'comptable-1',
+    });
+    expect(reversed.payments).toHaveLength(2);
+    expect(reversed.settlement.state).toBe('non_reglee');
+  });
+
+  test('issues a credit note with its own AV sequence', async () => {
+    const draft = await repo.createInvoice(invoiceInput());
+    const invoice = await repo.issueInvoice(
+      draft.id,
+      'direction-1',
+      QUOTE_DATE,
+      {
+        legalName: 'AGHA RM INFRA SARL',
+        address: 'Errachidia',
+        ice: '001234567890123',
+        taxId: '12345678',
+        tradeRegister: 'RC-1234',
+      },
+    );
+    const creditDraft = await repo.createCreditNote({
+      invoiceId: invoice.id,
+      creditDate: QUOTE_DATE,
+      totalHtCents: 100_000,
+      tvaCents: 20_000,
+      reason: 'Correction commerciale',
+      createdBy: 'direction-1',
+    });
+    const credit = await repo.issueCreditNote(
+      creditDraft.id,
+      'direction-1',
+      QUOTE_DATE,
+    );
+
+    expect(credit.reference).toBe('AV-2026-000001');
+    expect(credit.againstOutstandingCents).toBe(120_000);
+    expect(credit.againstCollectedCents).toBe(0);
   });
 });

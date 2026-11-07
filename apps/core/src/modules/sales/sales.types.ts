@@ -11,6 +11,21 @@ import type {
   InvoiceStatus,
   QuoteStatus,
 } from './sales.domain';
+import type {
+  InvoiceLifecycle,
+  SettlementSummary,
+} from './sales-invoice.domain';
+
+export interface LegalSellerSnapshot {
+  legalName: string;
+  address: string;
+  ice: string;
+  taxId: string;
+  tradeRegister: string;
+  professionalTaxId?: string;
+}
+
+export type AccountingProjectionStatus = 'pending' | 'projected' | 'blocked';
 
 // ── Clients ────────────────────────────────────────────────────────────────
 
@@ -62,10 +77,6 @@ export interface DocLineRecord extends CreateDocLine {
 export interface CreateQuote {
   clientId: string;
   projectId?: string;
-  /** Optional: when omitted the repository assigns a gap-free sequential number
-   *  (DEV-{exercice}-NNNN) inside the insert transaction. The controller never
-   *  forwards a client-supplied reference, so production numbers are server-side. */
-  reference?: string;
   objet?: string;
   quoteDate: Date;
   validUntil?: Date;
@@ -87,6 +98,10 @@ export interface QuoteRecord {
   tvaPct: number;
   totalTtcMad: number;
   notes?: string;
+  issuedAt?: Date;
+  issuedBy?: string;
+  legalSnapshot?: LegalSellerSnapshot;
+  version: number;
   createdAt: Date;
   lines: DocLineRecord[];
 }
@@ -114,8 +129,6 @@ export interface CreateDeliveryNote {
   clientId: string;
   projectId?: string;
   quoteId?: string;
-  /** Optional: repository assigns BL-{exercice}-NNNN when omitted. */
-  reference?: string;
   deliveryDate: Date;
   notes?: string;
   lines: CreateDeliveryLine[];
@@ -130,6 +143,10 @@ export interface DeliveryNoteRecord {
   deliveryDate: Date;
   status: DeliveryNoteStatus;
   notes?: string;
+  issuedAt?: Date;
+  issuedBy?: string;
+  legalSnapshot?: LegalSellerSnapshot;
+  version: number;
   createdAt: Date;
   lines: DeliveryLineRecord[];
 }
@@ -145,9 +162,6 @@ export interface CreateInvoice {
   clientId: string;
   projectId?: string;
   quoteId?: string;
-  /** Optional: repository assigns the legal sequential FAC-{exercice}-NNNN when
-   *  omitted (art. 145 CGI). The controller strips any client-supplied value. */
-  reference?: string;
   invoiceDate: Date;
   dueDate?: Date;
   tvaPct: number;
@@ -163,19 +177,114 @@ export interface InvoiceRecord {
   reference: string | null;
   invoiceDate: Date;
   dueDate?: Date;
-  status: InvoiceStatus;
+  status: InvoiceLifecycle | 'envoyee' | 'payee';
   totalHtMad: number;
   tvaPct: number;
+  tvaMad: number;
   totalTtcMad: number;
   paidAt?: Date;
   notes?: string;
+  paymentTerms?: string;
+  issuedAt?: Date;
+  issuedBy?: string;
+  legalSnapshot?: LegalSellerSnapshot;
+  version: number;
+  legacyPaid: boolean;
   createdAt: Date;
   lines: DocLineRecord[];
 }
 
 export interface InvoiceFilter {
   clientId?: string;
-  status?: InvoiceStatus;
+  status?: InvoiceRecord['status'];
+}
+
+export interface UpdateInvoiceDraft {
+  dueDate?: Date;
+  paymentTerms?: string;
+  notes?: string;
+  version: number;
+}
+
+export interface InvoicePaymentRecord {
+  id: string;
+  invoiceId: string;
+  movementType: 'encaissement' | 'remboursement';
+  amountCents: number;
+  method: string;
+  treasuryAccount: string;
+  valueDate: Date;
+  originalMovementId?: string;
+  reference?: string;
+  idempotencyKey: string;
+  createdBy: string;
+  createdAt: Date;
+}
+
+export interface RecordInvoicePayment {
+  invoiceId: string;
+  amountCents: number;
+  method: string;
+  treasuryAccount: string;
+  valueDate: Date;
+  reference?: string;
+  idempotencyKey: string;
+  actor: string;
+}
+
+export interface ReverseInvoicePayment {
+  invoiceId: string;
+  paymentId: string;
+  valueDate: Date;
+  idempotencyKey: string;
+  actor: string;
+}
+
+export interface CreateCreditNote {
+  invoiceId: string;
+  creditDate: Date;
+  totalHtCents: number;
+  tvaCents: number;
+  reason: string;
+  createdBy: string;
+}
+
+export interface CreditNoteRecord {
+  id: string;
+  invoiceId: string;
+  reference: string | null;
+  status: InvoiceLifecycle;
+  creditDate: Date;
+  totalHtCents: number;
+  tvaCents: number;
+  totalTtcCents: number;
+  againstOutstandingCents: number;
+  againstCollectedCents: number;
+  reason: string;
+  issuedAt?: Date;
+  issuedBy?: string;
+  version: number;
+  createdBy: string;
+  createdAt: Date;
+}
+
+export interface SalesAccountingEventRecord {
+  id: string;
+  eventKey: string;
+  eventType: string;
+  sourceId: string;
+  sourceVersion: number;
+  occurredAt: Date;
+  status: AccountingProjectionStatus;
+}
+
+export interface InvoiceAggregate {
+  invoice: InvoiceRecord;
+  payments: InvoicePaymentRecord[];
+  creditNotes: CreditNoteRecord[];
+  settlement: SettlementSummary;
+  accountingProjection: AccountingProjectionStatus;
+  legacyPaidOpening: boolean;
 }
 
 // ── Pagination (datao-parity: DB-side LIMIT/OFFSET; totals via a summary) ─────
@@ -240,6 +349,7 @@ export interface SalesRepository {
 
   /** Creates a quote with its lines; totals folded via sales.domain. */
   createQuote(input: CreateQuote): Promise<QuoteRecord>;
+  issueQuote(id: string, actor: string, issuedAt: Date): Promise<QuoteRecord>;
   /** One DB page of quotes (projected, no lines) + the total matching count. */
   listQuotes(
     filter: QuoteFilter,
@@ -251,6 +361,11 @@ export interface SalesRepository {
   setQuoteStatus(id: string, status: QuoteStatus): Promise<QuoteRecord | null>;
 
   createDeliveryNote(input: CreateDeliveryNote): Promise<DeliveryNoteRecord>;
+  issueDeliveryNote(
+    id: string,
+    actor: string,
+    issuedAt: Date,
+  ): Promise<DeliveryNoteRecord>;
   /** One DB page of delivery notes (projected, lineCount only) + total count. */
   listDeliveryNotes(
     filter: DeliveryNoteFilter,
@@ -264,6 +379,26 @@ export interface SalesRepository {
 
   /** Creates an invoice with its lines; totals folded via sales.domain. */
   createInvoice(input: CreateInvoice): Promise<InvoiceRecord>;
+  issueInvoice(
+    id: string,
+    actor: string,
+    issuedAt: Date,
+    legalSnapshot: LegalSellerSnapshot,
+  ): Promise<InvoiceRecord>;
+  updateDraftInvoice(
+    id: string,
+    input: UpdateInvoiceDraft,
+  ): Promise<InvoiceRecord>;
+  deleteDraftInvoice(id: string): Promise<void>;
+  recordPayment(input: RecordInvoicePayment): Promise<InvoiceAggregate>;
+  reversePayment(input: ReverseInvoicePayment): Promise<InvoiceAggregate>;
+  createCreditNote(input: CreateCreditNote): Promise<CreditNoteRecord>;
+  issueCreditNote(
+    id: string,
+    actor: string,
+    issuedAt: Date,
+  ): Promise<CreditNoteRecord>;
+  getInvoiceAggregate(id: string): Promise<InvoiceAggregate | null>;
   /** One DB page of invoices (projected, no lines) + the total matching count. */
   listInvoices(
     filter: InvoiceFilter,

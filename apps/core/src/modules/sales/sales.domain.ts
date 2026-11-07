@@ -72,8 +72,8 @@ export const DOC_PREFIX: Record<DocType, string> = {
   avoir: 'AV',
 };
 
-/** Number of zero-padded digits in the per-exercice counter (e.g. 0001). */
-const SEQ_PAD = 4;
+/** Number of zero-padded digits in the per-exercice counter (e.g. 000001). */
+const SEQ_PAD = 6;
 
 /**
  * Fiscal year (exercice) a document belongs to — the calendar year of its date.

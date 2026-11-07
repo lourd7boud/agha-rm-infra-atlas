@@ -121,26 +121,26 @@ describe('docExercice', () => {
 });
 
 describe('formatDocReference', () => {
-  test('formats a facture as PREFIX-year-NNNN (4-digit padded)', () => {
+  test('formats a facture as PREFIX-year-NNNNNN (6-digit padded)', () => {
     // Arrange + Act
     const ref = formatDocReference('facture', 2026, 1);
 
     // Assert
-    expect(ref).toBe('FAC-2026-0001');
+    expect(ref).toBe('FAC-2026-000001');
   });
 
   test('each document kind carries its own prefix', () => {
     // Arrange + Act + Assert
-    expect(formatDocReference('devis', 2026, 7)).toBe('DEV-2026-0007');
-    expect(formatDocReference('bl', 2026, 12)).toBe('BL-2026-0012');
-    expect(formatDocReference('avoir', 2026, 3)).toBe('AV-2026-0003');
+    expect(formatDocReference('devis', 2026, 7)).toBe('DEV-2026-000007');
+    expect(formatDocReference('bl', 2026, 12)).toBe('BL-2026-000012');
+    expect(formatDocReference('avoir', 2026, 3)).toBe('AV-2026-000003');
   });
 
-  test('counters beyond 9999 keep every digit (no truncation)', () => {
+  test('counters are padded to six digits without truncation', () => {
     // Arrange + Act
     const ref = formatDocReference('facture', 2026, 12345);
 
     // Assert — padding is a minimum, never a cap.
-    expect(ref).toBe('FAC-2026-12345');
+    expect(ref).toBe('FAC-2026-012345');
   });
 });

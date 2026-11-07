@@ -6,6 +6,7 @@
  * parent + its lines together (situations/avenants pattern). Money/quantities
  * are stored as numeric strings (.toString()) and surfaced as numbers (Number()).
  */
+import { createHash } from 'node:crypto';
 import { and, asc, desc, eq, sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import {
@@ -13,6 +14,9 @@ import {
   deliveryLines,
   deliveryNotes,
   docSequences,
+  creditNotes,
+  invoicePayments,
+  salesAccountingEvents,
   invoiceLines,
   invoices,
   quoteLines,
@@ -24,6 +28,12 @@ import {
   formatDocReference,
   lineTotal,
 } from './sales.domain';
+import {
+  allocateCreditNote,
+  deriveSettlement,
+  summarizePaymentMovements,
+} from './sales-invoice.domain';
+import { formatMoneyCents, parseMoneyCents } from './sales-money.domain';
 import type {
   DeliveryNoteStatus,
   DocType,
@@ -35,6 +45,7 @@ import type {
   ClientStatus,
   ClientSummary,
   CreateDeliveryNote,
+  CreateCreditNote,
   CreateInvoice,
   CreateQuote,
   DeliveryLineRecord,
@@ -43,7 +54,9 @@ import type {
   DeliveryNoteRecord,
   DocLineRecord,
   InvoiceFilter,
+  InvoiceAggregate,
   InvoiceListItem,
+  InvoicePaymentRecord,
   InvoiceRecord,
   InvoiceSummary,
   PageParams,
@@ -52,6 +65,11 @@ import type {
   QuoteListItem,
   QuoteRecord,
   QuoteSummary,
+  RecordInvoicePayment,
+  ReverseInvoicePayment,
+  CreditNoteRecord,
+  LegalSellerSnapshot,
+  UpdateInvoiceDraft,
   SalesRepository,
   UpsertClient,
 } from './sales.types';
@@ -63,6 +81,12 @@ type DeliveryNoteRow = typeof deliveryNotes.$inferSelect;
 type DeliveryLineRow = typeof deliveryLines.$inferSelect;
 type InvoiceRow = typeof invoices.$inferSelect;
 type InvoiceLineRow = typeof invoiceLines.$inferSelect;
+type InvoicePaymentRow = typeof invoicePayments.$inferSelect;
+type CreditNoteRow = typeof creditNotes.$inferSelect;
+
+function contentHash(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
 
 /** The transaction handle drizzle passes to a `.transaction()` callback — the
  *  type the sequence-minting helper runs on so the counter bump commits (or
@@ -194,15 +218,12 @@ export class DrizzleSalesRepository implements SalesRepository {
     // must never leave a header with no lines. Mirrors InMemory's single
     // mutation; same transactional shape across the sales create paths.
     return this.db.transaction(async (tx) => {
-      const reference =
-        input.reference ??
-        (await this.nextReference(tx, 'devis', input.quoteDate));
       const [head] = await tx
         .insert(quotes)
         .values({
           clientId: input.clientId,
           projectId: input.projectId,
-          reference,
+          reference: null,
           objet: input.objet,
           quoteDate: input.quoteDate,
           validUntil: input.validUntil,
@@ -280,6 +301,44 @@ export class DrizzleSalesRepository implements SalesRepository {
     return row ? this.attachQuoteLines(row) : null;
   }
 
+  async issueQuote(
+    id: string,
+    actor: string,
+    issuedAt: Date,
+  ): Promise<QuoteRecord> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select id from ${quotes} where id = ${id} for update`);
+      const [existing] = await tx.select().from(quotes).where(eq(quotes.id, id)).limit(1);
+      if (!existing) throw new Error('Devis introuvable.');
+      const lineRows = await tx
+        .select()
+        .from(quoteLines)
+        .where(eq(quoteLines.quoteId, id))
+        .orderBy(asc(quoteLines.orderIndex));
+      if (existing.reference) return toQuote(existing, lineRows);
+      if (existing.status !== 'brouillon') {
+        throw new Error('Seul un devis brouillon peut être émis.');
+      }
+      const reference = await this.nextReference(tx, 'devis', existing.quoteDate);
+      const snapshot = { quoteId: id, lines: lineRows };
+      const [updated] = await tx
+        .update(quotes)
+        .set({
+          reference,
+          status: 'envoye',
+          issuedAt,
+          issuedBy: actor,
+          legalSnapshot: {},
+          contentHash: contentHash(snapshot),
+          version: existing.version + 1,
+        })
+        .where(eq(quotes.id, id))
+        .returning();
+      if (!updated) throw new Error('Émission du devis impossible.');
+      return toQuote(updated, lineRows);
+    });
+  }
+
   async setQuoteStatus(
     id: string,
     status: QuoteStatus,
@@ -297,16 +356,13 @@ export class DrizzleSalesRepository implements SalesRepository {
   ): Promise<DeliveryNoteRecord> {
     // Parent + lines commit (or roll back) atomically — same as createQuote.
     return this.db.transaction(async (tx) => {
-      const reference =
-        input.reference ??
-        (await this.nextReference(tx, 'bl', input.deliveryDate));
       const [head] = await tx
         .insert(deliveryNotes)
         .values({
           clientId: input.clientId,
           projectId: input.projectId,
           quoteId: input.quoteId,
-          reference,
+          reference: null,
           deliveryDate: input.deliveryDate,
           notes: input.notes,
         })
@@ -371,6 +427,49 @@ export class DrizzleSalesRepository implements SalesRepository {
     return row ? this.attachDeliveryLines(row) : null;
   }
 
+  async issueDeliveryNote(
+    id: string,
+    actor: string,
+    issuedAt: Date,
+  ): Promise<DeliveryNoteRecord> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from ${deliveryNotes} where id = ${id} for update`,
+      );
+      const [existing] = await tx
+        .select()
+        .from(deliveryNotes)
+        .where(eq(deliveryNotes.id, id))
+        .limit(1);
+      if (!existing) throw new Error('Bon de livraison introuvable.');
+      const lineRows = await tx
+        .select()
+        .from(deliveryLines)
+        .where(eq(deliveryLines.deliveryNoteId, id))
+        .orderBy(asc(deliveryLines.orderIndex));
+      if (existing.reference) return toDeliveryNote(existing, lineRows);
+      if (existing.status !== 'brouillon') {
+        throw new Error('Seul un bon de livraison brouillon peut être émis.');
+      }
+      const reference = await this.nextReference(tx, 'bl', existing.deliveryDate);
+      const [updated] = await tx
+        .update(deliveryNotes)
+        .set({
+          reference,
+          status: 'livre',
+          issuedAt,
+          issuedBy: actor,
+          legalSnapshot: {},
+          contentHash: contentHash({ deliveryNoteId: id, lines: lineRows }),
+          version: existing.version + 1,
+        })
+        .where(eq(deliveryNotes.id, id))
+        .returning();
+      if (!updated) throw new Error('Émission du bon de livraison impossible.');
+      return toDeliveryNote(updated, lineRows);
+    });
+  }
+
   async setDeliveryNoteStatus(
     id: string,
     status: DeliveryNoteStatus,
@@ -387,20 +486,18 @@ export class DrizzleSalesRepository implements SalesRepository {
     const totals = computeDocTotals(input.lines, input.tvaPct);
     // Parent + lines commit (or roll back) atomically — same as createQuote.
     return this.db.transaction(async (tx) => {
-      const reference =
-        input.reference ??
-        (await this.nextReference(tx, 'facture', input.invoiceDate));
       const [head] = await tx
         .insert(invoices)
         .values({
           clientId: input.clientId,
           projectId: input.projectId,
           quoteId: input.quoteId,
-          reference,
+          reference: null,
           invoiceDate: input.invoiceDate,
           dueDate: input.dueDate,
           totalHtMad: totals.totalHtMad.toString(),
           tvaPct: input.tvaPct.toString(),
+          tvaMad: totals.tvaMad.toString(),
           totalTtcMad: totals.totalTtcMad.toString(),
           notes: input.notes,
         })
@@ -421,6 +518,416 @@ export class DrizzleSalesRepository implements SalesRepository {
         )
         .returning();
       return toInvoice(head, lineRows);
+    });
+  }
+
+  async issueInvoice(
+    id: string,
+    actor: string,
+    issuedAt: Date,
+    legalSnapshot: LegalSellerSnapshot,
+  ): Promise<InvoiceRecord> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select id from ${invoices} where id = ${id} for update`);
+      const [existing] = await tx
+        .select()
+        .from(invoices)
+        .where(eq(invoices.id, id))
+        .limit(1);
+      if (!existing) throw new Error('Facture introuvable.');
+      const lineRows = await tx
+        .select()
+        .from(invoiceLines)
+        .where(eq(invoiceLines.invoiceId, id))
+        .orderBy(asc(invoiceLines.orderIndex));
+      if (existing.reference) return toInvoice(existing, lineRows);
+      if (existing.status !== 'brouillon') {
+        throw new Error('Seule une facture brouillon peut être émise.');
+      }
+      const reference = await this.nextReference(tx, 'facture', existing.invoiceDate);
+      const nextVersion = existing.version + 1;
+      const [updated] = await tx
+        .update(invoices)
+        .set({
+          reference,
+          status: 'emise',
+          issuedAt,
+          issuedBy: actor,
+          legalSnapshot: legalSnapshot as unknown as Record<string, unknown>,
+          contentHash: contentHash({ invoiceId: id, legalSnapshot, lines: lineRows }),
+          version: nextVersion,
+        })
+        .where(eq(invoices.id, id))
+        .returning();
+      if (!updated) throw new Error('Émission de la facture impossible.');
+      await tx
+        .insert(salesAccountingEvents)
+        .values({
+          eventKey: `invoice_issued:${id}:${nextVersion}`,
+          eventType: 'invoice_issued',
+          sourceType: 'invoice',
+          sourceId: id,
+          sourceVersion: nextVersion,
+          occurredAt: issuedAt,
+          payload: { invoiceId: id, reference },
+        })
+        .onConflictDoNothing();
+      return toInvoice(updated, lineRows);
+    });
+  }
+
+  async updateDraftInvoice(
+    id: string,
+    input: UpdateInvoiceDraft,
+  ): Promise<InvoiceRecord> {
+    const [updated] = await this.db
+      .update(invoices)
+      .set({
+        dueDate: input.dueDate,
+        paymentTerms: input.paymentTerms,
+        notes: input.notes,
+        version: input.version + 1,
+      })
+      .where(
+        and(
+          eq(invoices.id, id),
+          eq(invoices.status, 'brouillon'),
+          eq(invoices.version, input.version),
+        ),
+      )
+      .returning();
+    if (!updated) {
+      throw new Error('Facture absente, déjà émise ou version obsolète.');
+    }
+    return this.attachInvoiceLines(updated);
+  }
+
+  async deleteDraftInvoice(id: string): Promise<void> {
+    const deleted = await this.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ status: invoices.status })
+        .from(invoices)
+        .where(eq(invoices.id, id))
+        .limit(1);
+      if (!existing) return true;
+      if (existing.status !== 'brouillon') return false;
+      await tx.delete(invoiceLines).where(eq(invoiceLines.invoiceId, id));
+      await tx.delete(invoices).where(eq(invoices.id, id));
+      return true;
+    });
+    if (!deleted) throw new Error('Une facture émise ne peut plus être supprimée.');
+  }
+
+  private settlementFromRows(
+    invoice: InvoiceRow,
+    paymentRows: readonly InvoicePaymentRow[],
+    creditRows: readonly CreditNoteRow[],
+  ) {
+    const summarized = summarizePaymentMovements(
+      paymentRows.map((payment) => ({
+        type: payment.movementType as 'encaissement' | 'remboursement',
+        amountCents: parseMoneyCents(payment.amountMad),
+      })),
+    );
+    const totalCents = parseMoneyCents(invoice.totalTtcMad);
+    const legacyPaidOpening = invoice.legacyPaid && paymentRows.length === 0;
+    return {
+      legacyPaidOpening,
+      settlement: deriveSettlement({
+        totalCents,
+        receivedCents: legacyPaidOpening ? totalCents : summarized.receivedCents,
+        refundedCents: summarized.refundedCents,
+        creditedCents: creditRows
+          .filter((creditNote) => creditNote.status !== 'brouillon')
+          .reduce(
+            (total, creditNote) =>
+              total + parseMoneyCents(creditNote.totalTtcMad),
+            0,
+          ),
+      }),
+    };
+  }
+
+  async getInvoiceAggregate(id: string): Promise<InvoiceAggregate | null> {
+    const [invoice] = await this.db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.id, id))
+      .limit(1);
+    if (!invoice) return null;
+    const [lineRows, paymentRows, creditRows, [latestEvent]] = await Promise.all([
+      this.db
+        .select()
+        .from(invoiceLines)
+        .where(eq(invoiceLines.invoiceId, id))
+        .orderBy(asc(invoiceLines.orderIndex)),
+      this.db
+        .select()
+        .from(invoicePayments)
+        .where(eq(invoicePayments.invoiceId, id))
+        .orderBy(asc(invoicePayments.createdAt)),
+      this.db
+        .select()
+        .from(creditNotes)
+        .where(eq(creditNotes.invoiceId, id))
+        .orderBy(asc(creditNotes.createdAt)),
+      this.db
+        .select({ status: salesAccountingEvents.status })
+        .from(salesAccountingEvents)
+        .where(eq(salesAccountingEvents.sourceId, id))
+        .orderBy(desc(salesAccountingEvents.occurredAt))
+        .limit(1),
+    ]);
+    const derived = this.settlementFromRows(invoice, paymentRows, creditRows);
+    return {
+      invoice: toInvoice(invoice, lineRows),
+      payments: paymentRows.map(toInvoicePayment),
+      creditNotes: creditRows.map(toCreditNote),
+      settlement: derived.settlement,
+      accountingProjection:
+        (latestEvent?.status as InvoiceAggregate['accountingProjection']) ??
+        'pending',
+      legacyPaidOpening: derived.legacyPaidOpening,
+    };
+  }
+
+  async recordPayment(input: RecordInvoicePayment): Promise<InvoiceAggregate> {
+    await this.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from ${invoices} where id = ${input.invoiceId} for update`,
+      );
+      const [invoice] = await tx
+        .select()
+        .from(invoices)
+        .where(eq(invoices.id, input.invoiceId))
+        .limit(1);
+      if (!invoice || invoice.status === 'brouillon') {
+        throw new Error('La facture doit être émise avant tout règlement.');
+      }
+      const [paymentRows, creditRows] = await Promise.all([
+        tx.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, input.invoiceId)),
+        tx.select().from(creditNotes).where(eq(creditNotes.invoiceId, input.invoiceId)),
+      ]);
+      const duplicate = paymentRows.some(
+        (payment) => payment.idempotencyKey === input.idempotencyKey,
+      );
+      if (duplicate) return;
+      const { settlement } = this.settlementFromRows(
+        invoice,
+        paymentRows,
+        creditRows,
+      );
+      if (
+        !Number.isSafeInteger(input.amountCents) ||
+        input.amountCents <= 0 ||
+        input.amountCents > settlement.outstandingCents
+      ) {
+        throw new Error('Le règlement dépasse le solde restant ou est invalide.');
+      }
+      const [payment] = await tx
+        .insert(invoicePayments)
+        .values({
+          invoiceId: input.invoiceId,
+          movementType: 'encaissement',
+          reason: 'reglement_client',
+          amountMad: formatMoneyCents(input.amountCents),
+          method: input.method,
+          treasuryAccount: input.treasuryAccount,
+          valueDate: input.valueDate,
+          reference: input.reference,
+          idempotencyKey: input.idempotencyKey,
+          createdBy: input.actor,
+        })
+        .returning({ id: invoicePayments.id, createdAt: invoicePayments.createdAt });
+      if (!payment) throw new Error('Enregistrement du règlement impossible.');
+      await tx
+        .insert(salesAccountingEvents)
+        .values({
+          eventKey: `payment_recorded:${payment.id}`,
+          eventType: 'payment_recorded',
+          sourceType: 'invoice',
+          sourceId: input.invoiceId,
+          sourceVersion: paymentRows.length + 1,
+          occurredAt: payment.createdAt,
+          payload: { invoiceId: input.invoiceId, paymentId: payment.id },
+        })
+        .onConflictDoNothing();
+    });
+    return (await this.getInvoiceAggregate(input.invoiceId))!;
+  }
+
+  async reversePayment(input: ReverseInvoicePayment): Promise<InvoiceAggregate> {
+    await this.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from ${invoices} where id = ${input.invoiceId} for update`,
+      );
+      const [original] = await tx
+        .select()
+        .from(invoicePayments)
+        .where(
+          and(
+            eq(invoicePayments.id, input.paymentId),
+            eq(invoicePayments.invoiceId, input.invoiceId),
+          ),
+        )
+        .limit(1);
+      if (!original || original.movementType !== 'encaissement') {
+        throw new Error('Règlement original introuvable.');
+      }
+      const [existing] = await tx
+        .select({ id: invoicePayments.id })
+        .from(invoicePayments)
+        .where(eq(invoicePayments.originalMovementId, input.paymentId))
+        .limit(1);
+      if (existing) return;
+      const [reversal] = await tx
+        .insert(invoicePayments)
+        .values({
+          invoiceId: input.invoiceId,
+          movementType: 'remboursement',
+          reason: 'contrepassation',
+          amountMad: original.amountMad,
+          method: original.method,
+          treasuryAccount: original.treasuryAccount,
+          valueDate: input.valueDate,
+          originalMovementId: original.id,
+          idempotencyKey: input.idempotencyKey,
+          createdBy: input.actor,
+        })
+        .returning({ id: invoicePayments.id, createdAt: invoicePayments.createdAt });
+      if (!reversal) throw new Error('Contrepassation impossible.');
+      await tx
+        .insert(salesAccountingEvents)
+        .values({
+          eventKey: `payment_reversed:${reversal.id}`,
+          eventType: 'payment_reversed',
+          sourceType: 'invoice',
+          sourceId: input.invoiceId,
+          sourceVersion: 1,
+          occurredAt: reversal.createdAt,
+          payload: {
+            invoiceId: input.invoiceId,
+            paymentId: original.id,
+            reversalId: reversal.id,
+          },
+        })
+        .onConflictDoNothing();
+    });
+    return (await this.getInvoiceAggregate(input.invoiceId))!;
+  }
+
+  async createCreditNote(input: CreateCreditNote): Promise<CreditNoteRecord> {
+    const totalTtcCents = input.totalHtCents + input.tvaCents;
+    if (
+      !Number.isSafeInteger(totalTtcCents) ||
+      input.totalHtCents < 0 ||
+      input.tvaCents < 0 ||
+      totalTtcCents <= 0
+    ) {
+      throw new Error('Le montant de l’avoir est invalide.');
+    }
+    const [row] = await this.db
+      .insert(creditNotes)
+      .values({
+        invoiceId: input.invoiceId,
+        creditDate: input.creditDate,
+        totalHtMad: formatMoneyCents(input.totalHtCents),
+        tvaPct: '0',
+        tvaMad: formatMoneyCents(input.tvaCents),
+        totalTtcMad: formatMoneyCents(totalTtcCents),
+        reason: input.reason,
+        createdBy: input.createdBy,
+      })
+      .returning();
+    if (!row) throw new Error('Création de l’avoir impossible.');
+    return toCreditNote(row);
+  }
+
+  async issueCreditNote(
+    id: string,
+    actor: string,
+    issuedAt: Date,
+  ): Promise<CreditNoteRecord> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select id from ${creditNotes} where id = ${id} for update`);
+      const [existing] = await tx
+        .select()
+        .from(creditNotes)
+        .where(eq(creditNotes.id, id))
+        .limit(1);
+      if (!existing) throw new Error('Avoir introuvable.');
+      if (existing.reference) return toCreditNote(existing);
+      await tx.execute(
+        sql`select id from ${invoices} where id = ${existing.invoiceId} for update`,
+      );
+      const [invoice] = await tx
+        .select()
+        .from(invoices)
+        .where(eq(invoices.id, existing.invoiceId))
+        .limit(1);
+      if (!invoice || invoice.status === 'brouillon') {
+        throw new Error('La facture liée doit être émise.');
+      }
+      const [paymentRows, creditRows] = await Promise.all([
+        tx.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, invoice.id)),
+        tx.select().from(creditNotes).where(eq(creditNotes.invoiceId, invoice.id)),
+      ]);
+      const summarized = summarizePaymentMovements(
+        paymentRows.map((payment) => ({
+          type: payment.movementType as 'encaissement' | 'remboursement',
+          amountCents: parseMoneyCents(payment.amountMad),
+        })),
+      );
+      const allocation = allocateCreditNote({
+        invoiceTotalCents: parseMoneyCents(invoice.totalTtcMad),
+        previouslyCreditedCents: creditRows
+          .filter((creditNote) => creditNote.status !== 'brouillon')
+          .reduce(
+            (total, creditNote) =>
+              total + parseMoneyCents(creditNote.totalTtcMad),
+            0,
+          ),
+        netReceivedCents:
+          summarized.receivedCents - summarized.refundedCents,
+        requestedCreditCents: parseMoneyCents(existing.totalTtcMad),
+      });
+      const reference = await this.nextReference(tx, 'avoir', existing.creditDate);
+      const nextVersion = existing.version + 1;
+      const [updated] = await tx
+        .update(creditNotes)
+        .set({
+          reference,
+          status: 'emise',
+          issuedAt,
+          issuedBy: actor,
+          legalSnapshot: invoice.legalSnapshot ?? {},
+          contentHash: contentHash({ creditNoteId: id, invoiceId: invoice.id }),
+          againstOutstandingMad: formatMoneyCents(
+            allocation.againstOutstandingCents,
+          ),
+          againstCollectedMad: formatMoneyCents(
+            allocation.againstCollectedCents,
+          ),
+          reversedPendingTvaMad: existing.tvaMad,
+          reversedDueTvaMad: '0.00',
+          version: nextVersion,
+        })
+        .where(eq(creditNotes.id, id))
+        .returning();
+      if (!updated) throw new Error('Émission de l’avoir impossible.');
+      await tx
+        .insert(salesAccountingEvents)
+        .values({
+          eventKey: `credit_note_issued:${id}:${nextVersion}`,
+          eventType: 'credit_note_issued',
+          sourceType: 'credit_note',
+          sourceId: id,
+          sourceVersion: nextVersion,
+          occurredAt: issuedAt,
+          payload: { creditNoteId: id, invoiceId: invoice.id, reference },
+        })
+        .onConflictDoNothing();
+      return toCreditNote(updated);
     });
   }
 
@@ -610,6 +1117,10 @@ function toQuoteListItem(row: QuoteRow): QuoteListItem {
     tvaPct: Number(row.tvaPct),
     totalTtcMad: Number(row.totalTtcMad),
     notes: row.notes ?? undefined,
+    issuedAt: row.issuedAt ?? undefined,
+    issuedBy: row.issuedBy ?? undefined,
+    legalSnapshot: row.legalSnapshot as unknown as LegalSellerSnapshot | undefined,
+    version: row.version,
     createdAt: row.createdAt,
   };
 }
@@ -627,6 +1138,10 @@ function toDeliveryNote(
     deliveryDate: row.deliveryDate,
     status: row.status as DeliveryNoteRecord['status'],
     notes: row.notes ?? undefined,
+    issuedAt: row.issuedAt ?? undefined,
+    issuedBy: row.issuedBy ?? undefined,
+    legalSnapshot: row.legalSnapshot as unknown as LegalSellerSnapshot | undefined,
+    version: row.version,
     createdAt: row.createdAt,
     lines: lineRows.map(toDeliveryLine),
   };
@@ -647,6 +1162,10 @@ function toDeliveryNoteListItem(
     deliveryDate: row.deliveryDate,
     status: row.status as DeliveryNoteRecord['status'],
     notes: row.notes ?? undefined,
+    issuedAt: row.issuedAt ?? undefined,
+    issuedBy: row.issuedBy ?? undefined,
+    legalSnapshot: row.legalSnapshot as unknown as LegalSellerSnapshot | undefined,
+    version: row.version,
     createdAt: row.createdAt,
     lineCount,
   };
@@ -669,12 +1188,57 @@ function toInvoiceListItem(row: InvoiceRow): InvoiceListItem {
     reference: row.reference,
     invoiceDate: row.invoiceDate,
     dueDate: row.dueDate ?? undefined,
-    status: row.status as InvoiceStatus,
+    status: row.status as InvoiceRecord['status'],
     totalHtMad: Number(row.totalHtMad),
     tvaPct: Number(row.tvaPct),
+    tvaMad: Number(row.tvaMad),
     totalTtcMad: Number(row.totalTtcMad),
     paidAt: row.paidAt ?? undefined,
     notes: row.notes ?? undefined,
+    paymentTerms: row.paymentTerms ?? undefined,
+    issuedAt: row.issuedAt ?? undefined,
+    issuedBy: row.issuedBy ?? undefined,
+    legalSnapshot: row.legalSnapshot as unknown as LegalSellerSnapshot | undefined,
+    version: row.version,
+    legacyPaid: row.legacyPaid,
+    createdAt: row.createdAt,
+  };
+}
+
+function toInvoicePayment(row: InvoicePaymentRow): InvoicePaymentRecord {
+  return {
+    id: row.id,
+    invoiceId: row.invoiceId,
+    movementType: row.movementType as InvoicePaymentRecord['movementType'],
+    amountCents: parseMoneyCents(row.amountMad),
+    method: row.method,
+    treasuryAccount: row.treasuryAccount,
+    valueDate: row.valueDate,
+    originalMovementId: row.originalMovementId ?? undefined,
+    reference: row.reference ?? undefined,
+    idempotencyKey: row.idempotencyKey,
+    createdBy: row.createdBy,
+    createdAt: row.createdAt,
+  };
+}
+
+function toCreditNote(row: CreditNoteRow): CreditNoteRecord {
+  return {
+    id: row.id,
+    invoiceId: row.invoiceId,
+    reference: row.reference,
+    status: row.status as CreditNoteRecord['status'],
+    creditDate: row.creditDate,
+    totalHtCents: parseMoneyCents(row.totalHtMad),
+    tvaCents: parseMoneyCents(row.tvaMad),
+    totalTtcCents: parseMoneyCents(row.totalTtcMad),
+    againstOutstandingCents: parseMoneyCents(row.againstOutstandingMad),
+    againstCollectedCents: parseMoneyCents(row.againstCollectedMad),
+    reason: row.reason,
+    issuedAt: row.issuedAt ?? undefined,
+    issuedBy: row.issuedBy ?? undefined,
+    version: row.version,
+    createdBy: row.createdBy,
     createdAt: row.createdAt,
   };
 }
