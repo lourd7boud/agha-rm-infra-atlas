@@ -6,7 +6,12 @@
  * Client upsert keys on name (the DB upserts on (companyId, name)).
  */
 import { randomUUID } from 'node:crypto';
-import { computeDocTotals, lineTotal } from './sales.domain';
+import {
+  computeDocTotals,
+  docExercice,
+  formatDocReference,
+  lineTotal,
+} from './sales.domain';
 import type {
   ClientRecord,
   ClientSummary,
@@ -33,6 +38,7 @@ import type {
 } from './sales.types';
 import type {
   DeliveryNoteStatus,
+  DocType,
   InvoiceStatus,
   QuoteStatus,
 } from './sales.domain';
@@ -69,6 +75,18 @@ export class InMemorySalesRepository implements SalesRepository {
   private quotes: readonly QuoteRecord[] = [];
   private deliveryNotes: readonly DeliveryNoteRecord[] = [];
   private invoices: readonly InvoiceRecord[] = [];
+  /** Per-(docType, exercice) counters — the in-memory twin of the Drizzle
+   *  sales.doc_sequence table, so both paths mint identical FAC-YYYY-NNNN refs. */
+  private readonly sequences = new Map<string, number>();
+
+  /** Next gap-free sequential reference for a document, keyed on its fiscal year. */
+  private nextReference(docType: DocType, date: Date): string {
+    const exercice = docExercice(date);
+    const key = `${docType}:${exercice}`;
+    const next = (this.sequences.get(key) ?? 0) + 1;
+    this.sequences.set(key, next);
+    return formatDocReference(docType, exercice, next);
+  }
 
   async upsertClient(input: UpsertClient): Promise<ClientRecord> {
     const index = this.clients.findIndex((c) => c.name === input.name);
@@ -135,7 +153,7 @@ export class InMemorySalesRepository implements SalesRepository {
       id: randomUUID(),
       clientId: input.clientId,
       projectId: input.projectId,
-      reference: input.reference,
+      reference: input.reference ?? this.nextReference('devis', input.quoteDate),
       objet: input.objet,
       status: 'brouillon',
       quoteDate: input.quoteDate,
@@ -203,7 +221,8 @@ export class InMemorySalesRepository implements SalesRepository {
       clientId: input.clientId,
       projectId: input.projectId,
       quoteId: input.quoteId,
-      reference: input.reference,
+      reference:
+        input.reference ?? this.nextReference('bl', input.deliveryDate),
       deliveryDate: input.deliveryDate,
       status: 'brouillon',
       notes: input.notes,
@@ -261,7 +280,8 @@ export class InMemorySalesRepository implements SalesRepository {
       clientId: input.clientId,
       projectId: input.projectId,
       quoteId: input.quoteId,
-      reference: input.reference,
+      reference:
+        input.reference ?? this.nextReference('facture', input.invoiceDate),
       invoiceDate: input.invoiceDate,
       dueDate: input.dueDate,
       status: 'brouillon',

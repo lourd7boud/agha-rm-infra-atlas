@@ -74,6 +74,39 @@ function resolveKeycloakRealm() {
   return trimEnv('AUTH_KEYCLOAK_REALM') ?? DEFAULT_KEYCLOAK_REALM;
 }
 
+/**
+ * Browser-facing Keycloak issuer.
+ *
+ * In a containerized local stack (web + keycloak on the same Docker network)
+ * the server-side issuer and the browser-side authorization URL CANNOT be the
+ * same host: the web container reaches Keycloak via the Docker service name
+ * (e.g. http://keycloak:8080) while the user's browser reaches it via the
+ * host-published port (e.g. http://localhost:18081). A single issuer breaks
+ * one of the two sides (server-side discovery/token ECONNREFUSED, or the
+ * browser redirect to an unresolvable Docker hostname).
+ *
+ * Set AUTH_KEYCLOAK_BROWSER_ISSUER to override ONLY the authorization URL the
+ * browser is redirected to. Falls back to the server-side issuer when unset,
+ * which preserves the previous single-URL behaviour (production via a reverse
+ * proxy serving /auth/* on the same origin).
+ */
+function resolveKeycloakBrowserIssuer(): string | undefined {
+  const explicit = trimEnv('AUTH_KEYCLOAK_BROWSER_ISSUER');
+  return explicit ? normalizeUrl(explicit) : undefined;
+}
+
+/**
+ * Server-side Keycloak issuer — the URL the web CONTAINER uses to reach
+ * Keycloak for discovery, token exchange and userinfo. In a split-issuer local
+ * stack this differs from the browser issuer (Docker service name vs host
+ * published port). Falls back to the browser issuer when unset, which preserves
+ * the single-URL behaviour (production via a reverse proxy).
+ */
+function resolveKeycloakServerIssuer(): string | undefined {
+  const explicit = trimEnv('AUTH_KEYCLOAK_SERVER_ISSUER');
+  return explicit ? normalizeUrl(explicit) : undefined;
+}
+
 function resolveKeycloakIssuer(request?: NextRequest): string | undefined {
   const explicitIssuer = trimEnv('AUTH_KEYCLOAK_ISSUER');
   const publicOrigin = resolvePublicOrigin(request);
@@ -82,6 +115,14 @@ function resolveKeycloakIssuer(request?: NextRequest): string | undefined {
     : undefined;
 
   if (!explicitIssuer) return fallbackIssuer;
+
+  // When a separate browser issuer is configured (split-issuer local stack),
+  // the explicit issuer is the browser-accessible URL and must be respected
+  // as-is — the loopback override below would rewrite it to the public origin
+  // which does NOT serve Keycloak in this topology.
+  if (trimEnv('AUTH_KEYCLOAK_BROWSER_ISSUER')) {
+    return normalizeUrl(explicitIssuer);
+  }
 
   try {
     const issuerUrl = new URL(explicitIssuer);
@@ -101,6 +142,8 @@ function resolveKeycloakIssuer(request?: NextRequest): string | undefined {
 
 function buildKeycloakProvider(request?: NextRequest) {
   const issuer = resolveKeycloakIssuer(request);
+  const serverIssuer = resolveKeycloakServerIssuer();
+  const browserIssuer = resolveKeycloakBrowserIssuer();
   const clientId = trimEnv('AUTH_KEYCLOAK_ID');
   const clientSecret = trimEnv('AUTH_KEYCLOAK_SECRET');
 
@@ -113,17 +156,30 @@ function buildKeycloakProvider(request?: NextRequest) {
   }
 
   const oidcBase = `${issuer}/protocol/openid-connect`;
+  const serverOidcBase = serverIssuer
+    ? `${serverIssuer}/protocol/openid-connect`
+    : oidcBase;
+  const browserOidcBase = browserIssuer
+    ? `${browserIssuer}/protocol/openid-connect`
+    : oidcBase;
 
   return Keycloak({
     issuer,
     clientId,
     clientSecret,
+    // The `issuer` is the browser-accessible URL (used for `iss` claim
+    // validation), but the web container reaches Keycloak via the Docker
+    // service name. Override discovery to the server-side URL so the
+    // container can actually fetch the OIDC configuration.
+    ...(serverIssuer
+      ? { wellKnown: `${serverIssuer}/.well-known/openid-configuration` }
+      : {}),
     authorization: {
-      url: `${oidcBase}/auth`,
+      url: `${browserOidcBase}/auth`,
       params: { scope: 'openid profile email' },
     },
-    token: { url: `${oidcBase}/token` },
-    userinfo: { url: `${oidcBase}/userinfo` },
+    token: { url: `${serverOidcBase}/token` },
+    userinfo: { url: `${serverOidcBase}/userinfo` },
     client: {
       token_endpoint_auth_method: clientSecret ? 'client_secret_basic' : 'none',
     },
@@ -156,7 +212,12 @@ async function refreshAccessToken(
   token: AtlasToken,
   fallbackIssuer?: string,
 ): Promise<AtlasToken> {
-  const issuer = token.issuer ?? fallbackIssuer ?? resolveKeycloakIssuer();
+  // The server-side issuer takes precedence: the web container reaches
+  // Keycloak via the Docker service name, not the browser-accessible URL
+  // stored in token.issuer.
+  const serverIssuer = resolveKeycloakServerIssuer();
+  const issuer =
+    serverIssuer ?? token.issuer ?? fallbackIssuer ?? resolveKeycloakIssuer();
   const clientId = process.env.AUTH_KEYCLOAK_ID;
   if (!issuer || !clientId || !token.refreshToken) {
     return sanitizedRefreshFailure(token) as AtlasToken;

@@ -10,7 +10,7 @@ import {
   toDecimal,
   trunc2,
 } from './btp-finance.domain';
-import { computeLignePartiel, computeMetreTotals, POIDS_ACIER } from './btp-metre.domain';
+import { computeLignePartiel, computeMetreTotals, normaliseNombreElements, POIDS_ACIER } from './btp-metre.domain';
 import {
   calculateDecompteRevision,
   calculateMonthCoefficient,
@@ -139,6 +139,42 @@ describe('computeDecompte', () => {
 });
 
 describe('métré engine', () => {
+  it('applique les valeurs négatives comme déductions dans toutes les dimensions saisissables', () => {
+    expect(
+      computeLignePartiel('M³', {
+        id: 'deduction-volume',
+        nombreSemblables: -2,
+        longueur: 2,
+        largeur: 3,
+        profondeur: 0.5,
+      }),
+    ).toBe(-6);
+    expect(
+      computeLignePartiel('KG', {
+        id: 'deduction-acier',
+        nombre: 4,
+        nombreElements: -2,
+        longueur: 3,
+        diametre: 12,
+      }),
+    ).toBeCloseTo(-21.312, 10);
+    expect(
+      computeMetreTotals(
+        'KG',
+        [{ id: 'ss-deduction', titre: 'Déduction poteaux', nombreElements: -3 }],
+        [
+          {
+            id: 'deduction-sous-section',
+            subSectionId: 'ss-deduction',
+            nombre: 4,
+            longueur: 3,
+            diametre: 12,
+          },
+        ],
+      ).totalPartiel,
+    ).toBe(-31.97);
+  });
+
   it('volume = L×l×P × nombreSemblables', () => {
     expect(
       computeLignePartiel('M³', {
@@ -180,6 +216,193 @@ describe('métré engine', () => {
 
   it('unknown unités fall back to Nombre', () => {
     expect(computeLignePartiel('FF', { id: '1', nombre: 2 })).toBe(2);
+  });
+});
+
+// « Nombre d'éléments » (nombreElements) d'une ligne de ferraillage : le nombre
+// d'éléments structurels identiques répétés (8 poteaux, 6 poutres…), distinct du
+// « Nombre » qui reste le nombre de barres DANS un seul élément. Défaut = 1,
+// donc tout métré antérieur au champ garde exactement son résultat.
+describe("métré — nombre d'éléments par ligne (acier)", () => {
+  it('normaliseNombreElements : entier non nul, signe de déduction conservé', () => {
+    expect(normaliseNombreElements(undefined)).toBe(1);
+    expect(normaliseNombreElements(null)).toBe(1);
+    expect(normaliseNombreElements(Number.NaN)).toBe(1);
+    expect(normaliseNombreElements(0)).toBe(1);
+    expect(normaliseNombreElements(-8)).toBe(-8);
+    expect(normaliseNombreElements(1)).toBe(1);
+    expect(normaliseNombreElements(8)).toBe(8);
+    expect(normaliseNombreElements(20)).toBe(20);
+    expect(normaliseNombreElements(2.7)).toBe(2); // décimal tronqué
+    expect(normaliseNombreElements(0.9)).toBe(1);
+  });
+
+  it('nombreElements = 1 (ou absent) → calcul historique inchangé', () => {
+    const legacy = computeLignePartiel('KG', { id: 'l1', nombre: 4, longueur: 3, diametre: 12 });
+    expect(
+      computeLignePartiel('KG', {
+        id: 'l1',
+        nombre: 4,
+        nombreElements: 1,
+        longueur: 3,
+        diametre: 12,
+      }),
+    ).toBe(legacy);
+    expect(legacy).toBeCloseTo(10.656, 10); // 4 × 3 × 0,888
+    // Ancienne ligne sans partiel stocké : la formule reste la formule d'avant.
+    expect(
+      computeLignePartiel('KG', { id: 'l2', nombre: 10, longueur: 12, diametre: 8 }),
+    ).toBeCloseTo(47.4, 10);
+  });
+
+  it('vide, 0 et NaN → 1; négatif → déduction; champ ignoré hors acier', () => {
+    const base = { nombre: 4, longueur: 3, diametre: 12 };
+    const expected = 4 * 1 * 3 * 0.888;
+    for (const nombreElements of [undefined, 0, Number.NaN, 1, 0.5]) {
+      expect(computeLignePartiel('KG', { id: 'e', ...base, nombreElements })).toBeCloseTo(
+        expected,
+        10,
+      );
+    }
+    expect(computeLignePartiel('KG', { id: 'e', ...base, nombreElements: -5 })).toBeCloseTo(
+      -4 * 5 * 3 * 0.888,
+      10,
+    );
+    expect(computeLignePartiel('KG', { id: 'e', ...base, nombreElements: 2.9 })).toBeCloseTo(
+      4 * 2 * 3 * 0.888,
+      10,
+    );
+    // Les unités non acier n'ont pas de « Nombre d'éléments » : le champ y est ignoré.
+    expect(
+      computeLignePartiel('M³', {
+        id: 'v1',
+        longueur: 2,
+        largeur: 3,
+        profondeur: 0.5,
+        nombreElements: 9,
+      }),
+    ).toBe(3);
+    expect(computeLignePartiel('U', { id: 'u1', nombre: 5, nombreElements: 9 })).toBe(5);
+    expect(
+      computeLignePartiel('ML', {
+        id: 'ml1',
+        nombreSemblables: 2,
+        longueur: 12.6,
+        nombreElements: 9,
+      }),
+    ).toBeCloseTo(25.2, 10);
+  });
+});
+
+// Les trois scénarios de terrain du cahier des charges : répétition d'éléments
+// identiques sur du ferraillage (kg = Nombre × Nombre d'éléments × Longueur ×
+// poids du Ø), plus la composition avec le facteur d'élément des sous-sections.
+describe("métré — scénarios de répétition (kg d'acier)", () => {
+  it('exemple utilisateur : 4 barres × 8 éléments × 3 m en Ø12 = 85,248 → 85,25', () => {
+    const kg = computeLignePartiel('KG', {
+      id: 'e1',
+      nombre: 4,
+      nombreElements: 8,
+      longueur: 3,
+      diametre: 12,
+    });
+    expect(kg).toBeCloseTo(85.248, 10);
+    expect(round2(toDecimal(kg)).toNumber()).toBe(85.25);
+  });
+
+  it('poteaux : 8 barres × 10 poteaux × 3,5 m en Ø12', () => {
+    expect(
+      computeLignePartiel('KG', {
+        id: 'p1',
+        designation: 'Armatures verticales',
+        nombre: 8,
+        nombreElements: 10,
+        longueur: 3.5,
+        diametre: 12,
+      }),
+    ).toBeCloseTo(248.64, 10);
+  });
+
+  it('poutres : 4 barres × 6 poutres × 5 m en Ø16', () => {
+    expect(
+      computeLignePartiel('KG', {
+        id: 'p2',
+        designation: 'Armatures longitudinales',
+        nombre: 4,
+        nombreElements: 6,
+        longueur: 5,
+        diametre: 16,
+      }),
+    ).toBeCloseTo(189.36, 10);
+  });
+
+  it('étriers : 25 étriers × 4 kms × 2,16 m en Ø8', () => {
+    expect(
+      computeLignePartiel('KG', {
+        id: 'p3',
+        designation: 'Étriers',
+        nombre: 25,
+        nombreElements: 4,
+        longueur: 2.16,
+        diametre: 8,
+      }),
+    ).toBeCloseTo(85.32, 10);
+  });
+
+  it('en tonnes (T) la répétition s’applique avant la division par 1000', () => {
+    const kg = computeLignePartiel('KG', {
+      id: 't1',
+      nombre: 4,
+      nombreElements: 8,
+      longueur: 3,
+      diametre: 12,
+    });
+    expect(
+      computeLignePartiel('T', {
+        id: 't1',
+        nombre: 4,
+        nombreElements: 8,
+        longueur: 3,
+        diametre: 12,
+      }),
+    ).toBeCloseTo(kg / 1000, 10);
+  });
+
+  it('nombreSemblables (kg) et nombre d’éléments se multiplient', () => {
+    expect(
+      computeLignePartiel('KG', {
+        id: 's1',
+        nombreSemblables: 2,
+        nombre: 4,
+        nombreElements: 8,
+        longueur: 3,
+        diametre: 12,
+      }),
+    ).toBeCloseTo(85.248 * 2, 10);
+  });
+
+  it('computeMetreTotals : le facteur de sous-section se compose avec celui de la ligne', () => {
+    const totals = computeMetreTotals(
+      'KG',
+      [{ id: 'ss1', titre: 'Poteaux', nombreElements: 3 }],
+      [
+        { id: 'l1', subSectionId: 'ss1', nombre: 4, nombreElements: 8, longueur: 3, diametre: 12 },
+        { id: 'l2', subSectionId: 'ss1', nombre: 10, longueur: 12, diametre: 8 },
+      ],
+    );
+    expect(totals.lignes[0]!.partiel).toBeCloseTo(85.248 * 3, 10);
+    expect(totals.lignes[1]!.partiel).toBeCloseTo(47.4 * 3, 10);
+    expect(totals.totalPartiel).toBe(397.94); // round2(255,744 + 142,2)
+  });
+
+  it('computeMetreTotals : sans nombre d’éléments, total identique à l’ancien calcul', () => {
+    const totals = computeMetreTotals(
+      'KG',
+      [{ id: 'ss2', titre: 'Semelles', nombreElements: 2 }],
+      [{ id: 'l3', subSectionId: 'ss2', nombre: 10, longueur: 12, diametre: 8 }],
+    );
+    expect(totals.lignes[0]!.partiel).toBeCloseTo(94.8, 10); // 47,4 × 2
+    expect(totals.totalPartiel).toBe(94.8);
   });
 });
 
@@ -259,7 +482,7 @@ describe('délais & pénalités', () => {
 });
 
 describe('terrain — coûts réels & acquisition', () => {
-  it('agrège les coûts, la répartition et la marge brute', () => {
+  it('sépare les ressources des dépenses non rapprochées sans annoncer de marge', () => {
     const couts = computeCoutsTerrain({
       mainOeuvreMad: 40_000,
       materielMad: 25_000,
@@ -268,11 +491,13 @@ describe('terrain — coûts réels & acquisition', () => {
       decompteCumuleTtcMad: 150_000,
       montantMarcheMad: 400_500,
     });
-    expect(couts.totalMad).toBe(100_000);
-    expect(couts.margeBruteMad).toBe(50_000);
-    expect(couts.repartitionPct.mainOeuvre).toBe(40);
-    expect(couts.repartitionPct.depenses).toBe(5);
-    expect(couts.coutSurMarchePct).toBe(24.97);
+    expect(couts.operationalResourceCostsMad).toBe(95_000);
+    expect(couts.expensesAwaitingReconciliationMad).toBe(5_000);
+    expect(couts.totalMad).toBeNull();
+    expect(couts.margeBruteMad).toBeNull();
+    expect(couts.repartitionPct.mainOeuvre).toBe(42.11);
+    expect(couts.repartitionPct.depenses).toBe(0);
+    expect(couts.coutSurMarchePct).toBeNull();
   });
 
   it('coût pointage: taux jour direct et salaire mensuel /26', () => {

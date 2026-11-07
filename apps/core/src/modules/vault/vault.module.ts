@@ -94,6 +94,8 @@ export class VaultController {
     const updated = await this.repository.updateFile(id, {
       bucket: stored.bucket,
       objectKey: stored.key,
+      filename: sanitizeFilename(file.originalname),
+      sizeBytes: stored.sizeBytes,
       sha256: stored.sha256,
       mime: stored.mime,
     });
@@ -116,33 +118,73 @@ export class VaultController {
   }
 }
 
+interface VaultRepositoryFactoryOptions {
+  nodeEnv?: string;
+  databaseUrl?: string;
+  warn?: (message: string) => void;
+}
+
+export function createVaultRepository(
+  options: VaultRepositoryFactoryOptions,
+): VaultRepository {
+  if (options.databaseUrl) return new DrizzleVaultRepository(getDb(options.databaseUrl));
+  if (options.nodeEnv === 'production') {
+    throw new Error('DATABASE_URL is required for Vault in production');
+  }
+  (options.warn ?? ((message) => new Logger('VaultModule').warn(message)))(
+    'DATABASE_URL not set — vault uses a non-persistent in-memory repository',
+  );
+  return new InMemoryVaultRepository();
+}
+
 const vaultRepositoryProvider = {
   provide: VAULT_REPOSITORY,
-  useFactory: (): VaultRepository => {
-    const url = process.env.DATABASE_URL;
-    if (url) return new DrizzleVaultRepository(getDb(url));
-    new Logger('VaultModule').warn(
-      'DATABASE_URL not set — vault uses a non-persistent in-memory repository',
-    );
-    return new InMemoryVaultRepository();
-  },
+  useFactory: (): VaultRepository =>
+    createVaultRepository({
+      nodeEnv: process.env.NODE_ENV,
+      databaseUrl: process.env.DATABASE_URL,
+    }),
 };
+
+interface ObjectStorageFactoryOptions {
+  nodeEnv?: string;
+  endpoint?: string;
+  accessKey?: string;
+  secretKey?: string;
+  bucket?: string;
+  warn?: (message: string) => void;
+}
+
+export function createObjectStorage(options: ObjectStorageFactoryOptions): ObjectStorage {
+  const bucket = options.bucket ?? 'atlas-vault';
+  if (options.endpoint && options.accessKey && options.secretKey) {
+    return new S3ObjectStorage(bucket, {
+      endpoint: options.endpoint,
+      accessKey: options.accessKey,
+      secretKey: options.secretKey,
+    });
+  }
+  if (options.nodeEnv === 'production') {
+    throw new Error(
+      'S3_ENDPOINT, S3_ACCESS_KEY and S3_SECRET_KEY are required for Vault in production',
+    );
+  }
+  (options.warn ?? ((message) => new Logger('VaultModule').warn(message)))(
+    'S3_* not configured — vault files use non-persistent in-memory storage',
+  );
+  return new InMemoryObjectStorage(bucket);
+}
 
 const objectStorageProvider = {
   provide: OBJECT_STORAGE,
-  useFactory: (): ObjectStorage => {
-    const endpoint = process.env.S3_ENDPOINT;
-    const accessKey = process.env.S3_ACCESS_KEY;
-    const secretKey = process.env.S3_SECRET_KEY;
-    const bucket = process.env.VAULT_BUCKET ?? 'atlas-vault';
-    if (endpoint && accessKey && secretKey) {
-      return new S3ObjectStorage(bucket, { endpoint, accessKey, secretKey });
-    }
-    new Logger('VaultModule').warn(
-      'S3_* not configured — vault files use non-persistent in-memory storage',
-    );
-    return new InMemoryObjectStorage(bucket);
-  },
+  useFactory: (): ObjectStorage =>
+    createObjectStorage({
+      nodeEnv: process.env.NODE_ENV,
+      endpoint: process.env.S3_ENDPOINT,
+      accessKey: process.env.S3_ACCESS_KEY,
+      secretKey: process.env.S3_SECRET_KEY,
+      bucket: process.env.VAULT_BUCKET,
+    }),
 };
 
 @Module({

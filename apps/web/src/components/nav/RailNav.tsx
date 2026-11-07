@@ -44,6 +44,7 @@ const SALES: readonly NavItem[] = [
 
 const COMPTA: readonly NavItem[] = [
   { href: '/compta', label: 'Tableau de bord', icon: 'command' },
+  { href: '/compta/a-valider', label: 'À valider', icon: 'activity' },
   { href: '/compta/ecritures', label: 'Écritures & journaux', icon: 'documents' },
   { href: '/compta/plan', label: 'Plan comptable', icon: 'boxes' },
   { href: '/compta/livres', label: 'Livres & états', icon: 'analytics' },

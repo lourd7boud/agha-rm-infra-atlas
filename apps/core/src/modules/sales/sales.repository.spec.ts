@@ -327,3 +327,62 @@ describe('InMemorySalesRepository — invoices', () => {
     expect(summary.totalTtcMad).toBeGreaterThan(summary.outstandingTtcMad);
   });
 });
+
+describe('InMemorySalesRepository — legal sequential numbering (art. 145)', () => {
+  let repo: InMemorySalesRepository;
+  beforeEach(() => {
+    repo = new InMemorySalesRepository();
+  });
+
+  const noRef = { reference: undefined };
+
+  test('createInvoice without a reference mints FAC-{year}-NNNN sequentially', async () => {
+    // Act — two invoices, neither carrying a reference.
+    const first = await repo.createInvoice(invoiceInput(noRef));
+    const second = await repo.createInvoice(invoiceInput(noRef));
+
+    // Assert — gap-free, 1-based, zero-padded to 4 digits.
+    expect(first.reference).toBe('FAC-2026-0001');
+    expect(second.reference).toBe('FAC-2026-0002');
+  });
+
+  test('the counter resets per exercice (fiscal year)', async () => {
+    // Arrange + Act — one invoice in 2026, one in 2025.
+    const y2026 = await repo.createInvoice(
+      invoiceInput({ ...noRef, invoiceDate: new Date('2026-03-01T00:00:00Z') }),
+    );
+    const y2025 = await repo.createInvoice(
+      invoiceInput({ ...noRef, invoiceDate: new Date('2025-11-01T00:00:00Z') }),
+    );
+
+    // Assert — each year starts at 0001.
+    expect(y2026.reference).toBe('FAC-2026-0001');
+    expect(y2025.reference).toBe('FAC-2025-0001');
+  });
+
+  test('each document kind owns an independent sequence', async () => {
+    // Act — first document of each kind in the same year.
+    const invoice = await repo.createInvoice(invoiceInput(noRef));
+    const quote = await repo.createQuote(quoteInput(noRef));
+    const bl = await repo.createDeliveryNote({
+      clientId: 'client-1',
+      deliveryDate: QUOTE_DATE,
+      lines: [{ designation: 'Sable', quantity: 3, unit: 't' }],
+    });
+
+    // Assert — no cross-talk between FAC / DEV / BL counters.
+    expect(invoice.reference).toBe('FAC-2026-0001');
+    expect(quote.reference).toBe('DEV-2026-0001');
+    expect(bl.reference).toBe('BL-2026-0001');
+  });
+
+  test('an explicit reference is preserved verbatim (import/back-compat path)', async () => {
+    // Act — a caller that still supplies a reference keeps it.
+    const invoice = await repo.createInvoice(
+      invoiceInput({ reference: 'LEGACY-2024-999' }),
+    );
+
+    // Assert
+    expect(invoice.reference).toBe('LEGACY-2024-999');
+  });
+});

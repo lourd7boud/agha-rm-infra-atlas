@@ -5,6 +5,7 @@ import { ArmiLogo } from '@/components/brand/ArmiLogo';
 import { ArmiMark } from '@/components/brand/ArmiMark';
 import { RailNav } from '@/components/nav/RailNav';
 import { Icon } from '@/components/ui/Icon';
+import { ThemeToggle } from '@/components/theme/ThemeToggle';
 import { UserMenu } from './UserMenu';
 
 const COMPLIANCE = [
@@ -237,7 +238,8 @@ export function AppShell({
               <Icon name="menu" size={21} />
             </button>
             <ArmiLogo variant="rail" markSize={29} className="min-w-0 scale-[0.92] origin-left" />
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-1.5">
+              <ThemeToggle />
               <UserMenu
                 name={name}
                 role={role}
@@ -276,6 +278,7 @@ export function AppShell({
               <Icon name="bell" size={20} />
               <span className="absolute right-0 top-0 h-2 w-2 rounded-full bg-cyan ring-2 ring-paper" />
             </button>
+            <ThemeToggle />
             <div className="border-l border-line pl-3">
               <UserMenu
                 name={name}

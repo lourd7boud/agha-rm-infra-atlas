@@ -13,11 +13,9 @@ import type { PortalCautionInput } from './portal.repository';
  * states). The cells stack several labelled lines, so we split each cell's text by
  * its "Label :" markers rather than relying on inner tags.
  *
- * SYNTHETIC FIXTURE WARNING: real "Mes cautions" HTML could not be captured (a
- * browser guardrail blocked extraction). This parser is modelled on the portal's
- * PRADO results-table idiom (see ../watch/watch.parser.ts +
- * fixtures/mes-cautions.html) and NEEDS a live-HTML validation pass on first real
- * run — the table id, cell order and label wording may need adjustment.
+ * Supports both the portal's older labelled-cell markup and the production
+ * results-table idiom (`.ref`, `.info-bulle`, direct `tr` children without an
+ * explicit `tbody`).
  *
  * Defensive: a row that doesn't yield a référence is skipped (collected, never
  * thrown) so one malformed row can never crash a crawl.
@@ -32,6 +30,10 @@ export interface SkippedCautionRow {
 export interface ParseMesCautionsOutcome {
   cautions: readonly PortalCautionInput[];
   skipped: readonly SkippedCautionRow[];
+  /** True only when the authenticated Mes cautions results table is present. */
+  surfaceDetected: boolean;
+  /** Rows containing data cells, including malformed rows. */
+  candidateRows: number;
 }
 
 const MIN_CELLS = 4;
@@ -59,8 +61,8 @@ function labelled(text: string, label: RegExp): string | undefined {
  * Cell text with each stacked line preserved as its own line: cheerio's `.text()`
  * concatenates <br>-separated lines without a separator, so we read the cell's
  * HTML and turn <br> (and block-close tags) into newlines before stripping tags.
- * Lets `labelled()` stop at the next line. Amount whitespace is normalized by
- * the shared `parseMoneyMad` parser after the labelled value is extracted.
+ * Lets `labelled()` stop at the next line. Non-breaking spaces are normalised so
+ * "7 700,00" reads as "7 700,00" for parseMoneyMad.
  */
 function stackedCellText(cell: CheerioSelection): string {
   const html = cell.html() ?? '';
@@ -71,10 +73,46 @@ function stackedCellText(cell: CheerioSelection): string {
     .load(withBreaks)
     .root()
     .text()
+    .replace(/[\u00a0\u202f]/g, ' ')
     .split('\n')
     .map((line) => line.replace(/[ \t]+/g, ' ').trim())
     .filter((line) => line.length > 0)
     .join('\n');
+}
+
+function compactText(value: string): string | undefined {
+  const compact = value.replace(/[\u00a0\u202f\s]+/g, ' ').trim();
+  return compact.length > 0 ? compact : undefined;
+}
+
+function liveReference(cell: CheerioSelection): string | undefined {
+  return compactText(cell.find('.ref').first().text());
+}
+
+function liveProcedure(cell: CheerioSelection): string | undefined {
+  return compactText(cell.find('.info-bulle').first().text());
+}
+
+function lastStackedLine(text: string): string | undefined {
+  return compactText(text.split('\n').at(-1) ?? '');
+}
+
+function consultationIdFromRow(row: CheerioSelection): string | undefined {
+  let consultationId: string | undefined;
+  row.find('a[href*="refConsultation"]').each((_, link) => {
+    if (consultationId) return;
+    const href = row.find(link).attr('href');
+    if (!href) return;
+    try {
+      consultationId =
+        new URL(href, 'https://www.marchespublics.gov.ma/').searchParams.get(
+          'refConsultation',
+        ) ?? undefined;
+    } catch {
+      // A malformed action URL must not discard the otherwise valid row.
+    }
+  });
+  return consultationId;
 }
 
 /** Extracts the "Demande_Caution_*.pdf" filename from the caution cell. */
@@ -98,7 +136,8 @@ function parseRow(row: CheerioSelection): PortalCautionInput | null {
   const cautionText = stackedCellText(cells.eq(2));
   const statutText = stackedCellText(cells.eq(3));
 
-  const reference = labelled(refText, /R[ée]f[ée]rence/);
+  const reference =
+    labelled(refText, /R[ée]f[ée]rence/) ?? liveReference(cells.eq(0));
   if (!reference) return null; // a caution with no référence is unusable
 
   const deadlineRaw = labelled(objetText, /Date limite de remise des plis/);
@@ -107,8 +146,10 @@ function parseRow(row: CheerioSelection): PortalCautionInput | null {
 
   return {
     reference,
-    procedure: labelled(refText, /Proc[ée]dure/),
-    category: labelled(refText, /Cat[ée]gorie/),
+    procedure:
+      labelled(refText, /Proc[ée]dure/) ?? liveProcedure(cells.eq(0)),
+    category:
+      labelled(refText, /Cat[ée]gorie/) ?? lastStackedLine(refText),
     objet: labelled(objetText, /Objet/),
     organisme: labelled(objetText, /Organisme/),
     deadlineAt: deadlineRaw ? (parsePmmpDate(deadlineRaw) ?? undefined) : undefined,
@@ -117,6 +158,7 @@ function parseRow(row: CheerioSelection): PortalCautionInput | null {
     amountMad: montantRaw ? (parseMoneyMad(montantRaw) ?? undefined) : undefined,
     statut,
     demandeFile: extractDemandeFile(cells.eq(2), cautionText),
+    consultationId: consultationIdFromRow(row),
     raw: { refText, objetText, cautionText, statutText },
   };
 }
@@ -129,15 +171,19 @@ function parseRow(row: CheerioSelection): PortalCautionInput | null {
  */
 export function parseMesCautionsDetailed(html: string): ParseMesCautionsOutcome {
   const $ = cheerio.load(html);
-  const rows = $('table[id*="tableau"] tbody tr');
-  const selected = rows.length > 0 ? rows : $('table.table-results tbody tr');
+  const legacyTable = $('table[id*="tableau"]').first();
+  const table = legacyTable.length > 0 ? legacyTable : $('table.table-results').first();
+  const selected = table.find('tr');
 
   const cautions: PortalCautionInput[] = [];
   const skipped: SkippedCautionRow[] = [];
+  let candidateRows = 0;
 
   selected.each((_, el) => {
     const row = $(el);
     if (row.find('th').length > 0 && row.find('td').length === 0) return; // header
+    if (row.find('td').length === 0) return;
+    candidateRows += 1;
     let parsed: PortalCautionInput | null;
     try {
       parsed = parseRow(row);
@@ -154,7 +200,12 @@ export function parseMesCautionsDetailed(html: string): ParseMesCautionsOutcome 
     });
   });
 
-  return { cautions, skipped };
+  return {
+    cautions,
+    skipped,
+    surfaceDetected: table.length > 0,
+    candidateRows,
+  };
 }
 
 /**

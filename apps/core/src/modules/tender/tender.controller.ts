@@ -13,6 +13,9 @@ import {
   Query,
   Req,
   Res,
+  ServiceUnavailableException,
+  StreamableFile,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 /** Minimal SSE-write surface needed for the streaming chat route — kept inline
  *  to avoid pulling @types/express into the @atlas/core dependencies. Matches
@@ -23,9 +26,37 @@ interface SseResponse {
   write(chunk: string): boolean;
   end(): void;
 }
+import {
+  releaseLeaseOnResponseEnd,
+  type LeaseAwareResponse,
+} from './http-response-lease';
+interface HeaderResponse extends LeaseAwareResponse {
+  setHeader(name: string, value: string): void;
+}
+interface AbortAwareRequest {
+  aborted?: boolean;
+  once(event: 'aborted', listener: () => void): void;
+  off(event: 'aborted', listener: () => void): void;
+}
+
+function bindRequestAbort(request: AbortAwareRequest): {
+  signal: AbortSignal;
+  dispose: () => void;
+} {
+  const controller = new AbortController();
+  const onAborted = () => controller.abort();
+  if (request.aborted) controller.abort();
+  else request.once('aborted', onAborted);
+  return {
+    signal: controller.signal,
+    dispose: () => request.off('aborted', onAborted),
+  };
+}
+
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import {
+  isDceRawInlineSafe,
   pipelineStateSchema,
   submissionOutcomeInputSchema,
   tenderInputSchema,
@@ -43,9 +74,17 @@ import {
   LiveParticipantsCrawlerService,
   parsePmmpRefs,
 } from '../portal/live-participants.crawler';
+import { SuiviAnalyseService } from '../watch/suivi-analyse.service';
+import type { SuiviAnalyse } from '../watch/suivi-analyse';
 import { buildComplianceChecklist } from './compliance.domain';
 import { buildTenderCompetitorIntel } from './competitor-intel.domain';
 import { DossierService } from './dossier.service';
+import {
+  OfficePreviewConversionError,
+  OfficePreviewService,
+  OfficePreviewUnavailableError,
+  UnsupportedOfficePreviewError,
+} from './office-preview.service';
 import { DossierExtractionService } from './dossier-extraction.service';
 import { EnrichmentService } from './enrichment.service';
 import { TenderChatService } from './tender-chat.service';
@@ -227,6 +266,10 @@ const liveParticipantsCache = new TtlCache<unknown>();
 // of drawer opens collapses to one scan. Keyed by tenderId.
 const COMPETITOR_INTEL_CACHE_TTL_MS = 60_000;
 const competitorIntelCache = new TtlCache<unknown>();
+// Analyse du résultat (marchecal parity): 60 s TTL keyed by refConsultation/org
+// — a burst of clicks collapses to ONE live portal GET of the dépouillement.
+const ANALYSE_CACHE_TTL_MS = 60_000;
+const analyseCache = new TtlCache<SuiviAnalyse | null>();
 // The ?since= delta poll's PAGE must read fresher than the 30 s window; a 2 s
 // single-flighted cache coalesces concurrent pollers (every open tab) into one tiny
 // `updated_at > since` page query. Facets/total are shared from the 30 s cache — a
@@ -248,6 +291,8 @@ export class TenderController {
     @Inject(QualifierService) private readonly qualifier: QualifierService,
     @Inject(EnrichmentService) private readonly enrichment: EnrichmentService,
     @Inject(DossierService) private readonly dossierService: DossierService,
+    @Inject(OfficePreviewService)
+    private readonly officePreview: OfficePreviewService,
     @Inject(DossierExtractionService)
     private readonly dossierExtraction: DossierExtractionService,
     @Inject(INTEL_REPOSITORY) private readonly intel: IntelRepository,
@@ -259,6 +304,8 @@ export class TenderController {
     @Inject(TENDER_EVENT_REPOSITORY) private readonly events: EventRepository,
     @Inject(LiveParticipantsCrawlerService)
     private readonly liveParticipants: LiveParticipantsCrawlerService,
+    @Inject(SuiviAnalyseService)
+    private readonly suiviAnalyse: SuiviAnalyseService,
   ) {}
 
   /** Financial Modeler (B4): G2 pricing scenarios grounded in C1 intel. */
@@ -344,8 +391,13 @@ export class TenderController {
   @Roles('marches', 'direction', 'admin-si')
   @Throttle({ default: { ttl: 60_000, limit: 20 } })
   @Get('tenders/:id/dossier')
-  async dossier(@Param('id') id: string) {
-    return this.dossierService.ensureDossier(id);
+  async dossier(@Param('id') id: string, @Req() request: AbortAwareRequest) {
+    const abort = bindRequestAbort(request);
+    try {
+      return await this.dossierService.ensureDossier(id, abort.signal);
+    } finally {
+      abort.dispose();
+    }
   }
 
   /** Lists every file inside the cached DCE — powers the left rail of the
@@ -355,9 +407,15 @@ export class TenderController {
   @Get('tenders/:id/files')
   async dossierFilesList(
     @Param('id') id: string,
+    @Req() request: AbortAwareRequest,
   ): Promise<{ files: Awaited<ReturnType<DossierService['listDossierFiles']>> }> {
-    const files = await this.dossierService.listDossierFiles(id);
-    return { files };
+    const abort = bindRequestAbort(request);
+    try {
+      const files = await this.dossierService.listDossierFiles(id, abort.signal);
+      return { files };
+    } finally {
+      abort.dispose();
+    }
   }
 
   /** "Voir le fichier source" — extracts ONE file from the cached DCE ZIP and
@@ -371,14 +429,110 @@ export class TenderController {
   async dossierFile(
     @Param('id') id: string,
     @Query('name') name: string,
+    @Req() request: AbortAwareRequest,
+    @Res({ passthrough: true }) response: HeaderResponse,
   ): Promise<{ filename: string; mime: string; bytesBase64: string }> {
     if (!name) throw new BadRequestException('Paramètre "name" requis');
-    const file = await this.dossierService.getDossierFile(id, name);
-    return {
-      filename: file.filename,
-      mime: file.mime,
-      bytesBase64: file.bytes.toString('base64'),
-    };
+    const abort = bindRequestAbort(request);
+    let release: (() => void) | undefined;
+    try {
+      const leased = await this.dossierService.acquireDossierFile(id, name, abort.signal);
+      release = leased.release;
+      const result = {
+        filename: leased.file.filename,
+        mime: leased.file.mime,
+        bytesBase64: leased.file.bytes.toString('base64'),
+      };
+      releaseLeaseOnResponseEnd(response, leased.release, abort.signal);
+      release = undefined;
+      return result;
+    } catch (error) {
+      release?.();
+      throw error;
+    } finally {
+      abort.dispose();
+    }
+  }
+
+  /** Authenticated binary stream for browser-native PDF/image/text rendering.
+   *  Extraction limits are enforced before ZIP inflation by DossierService. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 30 } })
+  @Get('tenders/:id/dossier/raw')
+  async dossierFileRaw(
+    @Param('id') id: string,
+    @Query('name') name: string,
+    @Req() request: AbortAwareRequest,
+    @Res({ passthrough: true }) response: HeaderResponse,
+  ): Promise<StreamableFile> {
+    if (!name) throw new BadRequestException('Paramètre "name" requis');
+    const abort = bindRequestAbort(request);
+    let release: (() => void) | undefined;
+    try {
+      const leased = await this.dossierService.acquireDossierFile(id, name, abort.signal);
+      release = leased.release;
+      const file = leased.file;
+      const disposition = isDceRawInlineSafe(file.filename) ? 'inline' : 'attachment';
+      response.setHeader('X-Content-Type-Options', 'nosniff');
+      response.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+      const stream = new StreamableFile(file.bytes, {
+        type: file.mime,
+        disposition: `${disposition}; filename="document"`,
+        length: file.bytes.length,
+      });
+      releaseLeaseOnResponseEnd(response, leased.release, abort.signal);
+      release = undefined;
+      return stream;
+    } catch (error) {
+      release?.();
+      throw error;
+    } finally {
+      abort.dispose();
+    }
+  }
+
+  /** Local, authenticated Office preview. LibreOffice runs in a networkless,
+   *  secret-free worker and returns PDF; no DCE is sent to a third party. */
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 12 } })
+  @Get('tenders/:id/dossier/preview')
+  async dossierFilePreview(
+    @Param('id') id: string,
+    @Query('name') name: string,
+    @Req() request: AbortAwareRequest,
+    @Res({ passthrough: true }) response: HeaderResponse,
+  ): Promise<StreamableFile> {
+    if (!name) throw new BadRequestException('Paramètre "name" requis');
+    const abort = bindRequestAbort(request);
+    let release: (() => void) | undefined;
+    try {
+      const leased = await this.dossierService.acquireDossierFile(id, name, abort.signal);
+      release = leased.release;
+      const file = leased.file;
+      const pdf = await this.officePreview.render(file.bytes, file.filename, abort.signal);
+      const stream = new StreamableFile(pdf, {
+        type: 'application/pdf',
+        disposition: 'inline; filename="apercu-document.pdf"',
+        length: pdf.length,
+      });
+      releaseLeaseOnResponseEnd(response, leased.release, abort.signal);
+      release = undefined;
+      return stream;
+    } catch (error) {
+      release?.();
+      if (error instanceof UnsupportedOfficePreviewError) {
+        throw new BadRequestException(error.message);
+      }
+      if (error instanceof OfficePreviewConversionError) {
+        throw new UnprocessableEntityException(error.message);
+      }
+      if (error instanceof OfficePreviewUnavailableError) {
+        throw new ServiceUnavailableException(error.message);
+      }
+      throw error;
+    } finally {
+      abort.dispose();
+    }
   }
 
   /** Extracts the REAL budget/caution/qualifications/BPU from the DCE dossier.
@@ -850,6 +1004,59 @@ export class TenderController {
         );
       },
     );
+  }
+
+  /**
+   * Analyse du résultat — marchecal.com/analyse.php parity, in-house. On a
+   * consultation whose commission has published the dépouillement, this GETs
+   * the public "Suivre la commission" page and returns, per lot, the winning
+   * company, the winning price, the Moroccan prix de référence and the full
+   * offers table (admin/finance status, avant/après-correction amounts, diff vs
+   * the MO estimation). Cached 60 s keyed by refConsultation/org so a burst of
+   * drawer clicks stays polite to the portal.
+   *
+   * Returns hasResults=false (not an error) when the commission has not
+   * published the dépouillement yet — the UI renders a "pas encore de résultat"
+   * state. 502 when the portal is unreachable / throttling.
+   */
+  @Roles('marches', 'direction', 'admin-si', 'finance', 'travaux')
+  @Throttle({ default: { ttl: 60_000, limit: 30 } })
+  @Get('tenders/:id/analyse')
+  async analyse(@Param('id') id: string) {
+    const tender = await this.findOr404(id);
+    if (!tender.sourceUrl) {
+      throw new BadRequestException(
+        "Cette consultation n'a pas d'URL PMMP — analyse impossible.",
+      );
+    }
+    const refs = parsePmmpRefs(tender.sourceUrl);
+    if (!refs) {
+      throw new BadRequestException("URL PMMP invalide sur cette consultation.");
+    }
+    const cacheKey = `${refs.refConsultation}/${refs.orgAcronyme}`;
+    const analysis = await analyseCache.getOrCompute(
+      cacheKey,
+      ANALYSE_CACHE_TTL_MS,
+      () =>
+        this.suiviAnalyse.analyse(
+          tender.sourceUrl as string,
+          tender.estimationMad ?? null,
+        ),
+    );
+    if (!analysis) {
+      throw new BadRequestException("URL PMMP invalide sur cette consultation.");
+    }
+    return {
+      reference: tender.reference,
+      buyerName: tender.buyerName,
+      objet: tender.objet,
+      category: tender.category ?? null,
+      location: tender.location ?? null,
+      cautionProvisoireMad: tender.cautionProvisoireMad ?? null,
+      deadlineAt: tender.deadlineAt,
+      sourceUrl: tender.sourceUrl,
+      ...analysis,
+    };
   }
 
   /** The append-only transition history of one tender. */

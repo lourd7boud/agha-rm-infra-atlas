@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import {
   harvestMesReponses,
+  MesReponsesCrawlerService,
   type MesReponsesCrawlDeps,
 } from './mes-reponses.crawler';
 import { InMemoryPortalRepository } from './portal.repository';
@@ -97,34 +98,27 @@ describe('harvestMesReponses', () => {
     expect(skips).toEqual([1]);
   });
 
-  test('stops cleanly and counts nothing on a page without the results table', async () => {
+  test('fails loudly on an unexpected page instead of reporting a false zero', async () => {
     // Arrange
     const repo = new InMemoryPortalRepository();
 
     // Act
-    const summary = await harvestMesReponses(
-      deps(repo, {
-        fetchPage: async () => '<html><body>maintenance</body></html>',
-      }),
+    const action = harvestMesReponses(
+      deps(repo, { fetchPage: async () => '<html><body>maintenance</body></html>' }),
       { delayMs: 0, maxPages: 1 },
     );
 
     // Assert
-    expect(summary).toEqual({
-      fetched: 0,
-      inserted: 0,
-      updated: 0,
-      skipped: 0,
-    });
+    await expect(action).rejects.toThrow(/Mes réponses.*surface/i);
     expect(await repo.listSubmissions(10)).toEqual([]);
   });
 
-  test('does not crash when a page fetch throws — keeps prior totals', async () => {
+  test('propagates a page fetch failure so the worker can retry and alert', async () => {
     // Arrange
     const repo = new InMemoryPortalRepository();
 
     // Act — first page throws before any row is stored.
-    const summary = await harvestMesReponses(
+    const action = harvestMesReponses(
       deps(repo, {
         fetchPage: async () => {
           throw new Error('portal unreachable');
@@ -133,12 +127,18 @@ describe('harvestMesReponses', () => {
       { delayMs: 0, maxPages: 1 },
     );
 
-    // Assert — resolved, not rejected, with zeroed totals.
-    expect(summary).toEqual({
-      fetched: 0,
-      inserted: 0,
-      updated: 0,
-      skipped: 0,
-    });
+    // Assert
+    await expect(action).rejects.toThrow('portal unreachable');
+  });
+});
+
+describe('MesReponsesCrawlerService.harvest', () => {
+  test('throws a clear error when portal credentials are absent', async () => {
+    const repo = new InMemoryPortalRepository();
+    const service = new MesReponsesCrawlerService(null, repo);
+
+    await expect(service.harvest()).rejects.toThrow(
+      /PORTAL_AUTH_LOGIN\/PORTAL_AUTH_PASSWORD/,
+    );
   });
 });

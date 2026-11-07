@@ -118,17 +118,16 @@ export default async function DeliveryNotesPage({
   async function createDeliveryNote(formData: FormData) {
     'use server';
     const clientId = String(formData.get('clientId') ?? '');
-    const reference = String(formData.get('reference') ?? '').trim();
     const deliveryDate = String(formData.get('deliveryDate') ?? '');
     const lines = parseLines(String(formData.get('lines') ?? ''));
-    if (!clientId || reference.length < 2 || !deliveryDate || !lines) {
+    // No reference: the server assigns a sequential BL-{exercice}-NNNN number.
+    if (!clientId || !deliveryDate || !lines) {
       redirect('/sales/delivery-notes?error=createDeliveryNote&code=invalid');
     }
     try {
       const notes = String(formData.get('notes') ?? '').trim();
       await apiPost('/sales/delivery-notes', {
         clientId,
-        reference,
         deliveryDate,
         notes: notes || undefined,
         lines,
@@ -280,16 +279,16 @@ export default async function DeliveryNotesPage({
                 </select>
               </label>
               <label className="text-sm">
-                <span className="mb-1 block text-xs text-muted">Référence</span>
-                <input
-                  type="text"
-                  name="reference"
-                  required
-                  minLength={2}
-                  maxLength={100}
-                  placeholder="BL-2026-001"
-                  className="w-44 rounded-md border border-line-2 bg-paper px-3 py-2 text-sm focus:border-cyan focus:outline-none"
-                />
+                <span className="mb-1 block text-xs text-muted">Numéro</span>
+                <div
+                  className="flex h-[38px] w-44 items-center gap-1 rounded-md border border-dashed border-line-2 bg-rail-2/40 px-3 text-sm text-faint"
+                  title="Numéro séquentiel attribué automatiquement à l'enregistrement"
+                >
+                  <span className="font-mono">BL-AAAA-NNNN</span>
+                  <span className="ml-auto text-[10px] font-semibold uppercase tracking-wider text-cyan/80">
+                    auto
+                  </span>
+                </div>
               </label>
               <label className="text-sm">
                 <span className="mb-1 block text-xs text-muted">

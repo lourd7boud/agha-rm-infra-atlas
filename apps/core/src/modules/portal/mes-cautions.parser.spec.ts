@@ -84,5 +84,52 @@ describe('parseMesCautions', () => {
     // Assert
     expect(outcome.cautions).toEqual([]);
     expect(outcome.skipped).toEqual([]);
+    expect(outcome.surfaceDetected).toBe(false);
+    expect(outcome.candidateRows).toBe(0);
+  });
+
+  test('accepts the portal results-table shape without tbody and extracts consultation id', () => {
+    // Arrange — the authenticated portal uses the same direct-TR result-table idiom.
+    const liveShape = `
+      <table class="table-results">
+        <tr><th>Référence</th><th>Marché</th><th>Caution</th><th>Statut</th><th>Actions</th></tr>
+        <tr>
+          <td>
+            <span class="ref"> 01/2026 </span><br>
+            AOO
+            <div class="info-bulle"><div>Appel d'offres ouvert</div></div><br>
+            Travaux
+          </td>
+          <td>
+            <div><strong>Objet :</strong> Construction d'un ouvrage</div>
+            <div><strong>Organisme :</strong> Commune test</div>
+            <div><strong>Date limite de remise des plis :</strong> 06/04/2026 10:00:00</div>
+          </td>
+          <td>
+            <div><strong>Banque :</strong> Banque test</div>
+            <div><strong>Intitulé :</strong> CAUTION PROVISOIRE</div>
+            <div><strong>Montant :</strong> 7&nbsp;700,00 MAD</div>
+            <a>Demande_Caution_TEST_984959.pdf</a>
+          </td>
+          <td>Validée par la banque</td>
+          <td><a href="index.php?page=entreprise.EntrepriseDetailsConsultation&amp;refConsultation=984959">Consulter</a></td>
+        </tr>
+      </table>`;
+
+    // Act
+    const outcome = parseMesCautionsDetailed(liveShape);
+
+    // Assert
+    expect(outcome.skipped).toEqual([]);
+    expect(outcome.surfaceDetected).toBe(true);
+    expect(outcome.candidateRows).toBe(1);
+    expect(outcome.cautions).toHaveLength(1);
+    expect(outcome.cautions[0]).toMatchObject({
+      reference: '01/2026',
+      procedure: "Appel d'offres ouvert",
+      category: 'Travaux',
+      amountMad: 7700,
+      consultationId: '984959',
+    });
   });
 });

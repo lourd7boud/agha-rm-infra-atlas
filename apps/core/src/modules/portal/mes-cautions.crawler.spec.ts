@@ -115,19 +115,14 @@ describe('crawlMesCautions', () => {
     expect(summary.skipped).toBe(2); // 1 parser-skip + 1 failed upsert
   });
 
-  it('returns an all-zero summary on a page without the results table', async () => {
+  it('fails loudly on an unexpected page instead of reporting a false zero', async () => {
     // Arrange / Act
-    const summary = await crawlMesCautions(
+    const action = crawlMesCautions(
       deps({ fetchListing: async () => '<html><body>maintenance</body></html>' }),
     );
 
     // Assert
-    expect(summary).toEqual({
-      fetched: 0,
-      inserted: 0,
-      updated: 0,
-      skipped: 0,
-    });
+    await expect(action).rejects.toThrow(/Mes cautions.*surface/i);
   });
 });
 
@@ -143,5 +138,22 @@ describe('MesCautionsCrawlerService.harvest', () => {
       /PORTAL_AUTH_LOGIN\/PORTAL_AUTH_PASSWORD/,
     );
     expect(await repo.listCautions(10)).toHaveLength(0);
+  });
+
+  it('refuses the former guessed endpoint when no verified account URL is configured', async () => {
+    const previous = process.env.MES_CAUTIONS_URL;
+    delete process.env.MES_CAUTIONS_URL;
+    try {
+      const repo = new InMemoryPortalRepository();
+      const session = {
+        authedFetch: async () => FIXTURE,
+      } as never;
+      const service = new MesCautionsCrawlerService(session, repo);
+
+      await expect(service.harvest()).rejects.toThrow(/no verified cautions URL/);
+    } finally {
+      if (previous === undefined) delete process.env.MES_CAUTIONS_URL;
+      else process.env.MES_CAUTIONS_URL = previous;
+    }
   });
 });

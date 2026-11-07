@@ -55,23 +55,26 @@ export async function updateFiche(formData: FormData) {
     await apiPatch(`/btp/projects/${id}`, {
       reference: opt(formData, 'reference'),
       name: opt(formData, 'objet')?.slice(0, 180),
-      objet: opt(formData, 'objet'),
-      buyerName: opt(formData, 'maitreOeuvre'),
-      annee: opt(formData, 'annee'),
-      societe: opt(formData, 'societe'),
-      commune: opt(formData, 'commune'),
+      // Empty optional fields are explicit updates. Using opt() here turned
+      // them into undefined; JSON.stringify then removed the key entirely and
+      // Core correctly interpreted that as "leave the old value unchanged".
+      objet: str(formData, 'objet'),
+      buyerName: str(formData, 'maitreOeuvre'),
+      annee: str(formData, 'annee'),
+      societe: str(formData, 'societe'),
+      commune: str(formData, 'commune'),
       typeMarche: opt(formData, 'typeMarche'),
-      modePassation: opt(formData, 'modePassation'),
-      rc: opt(formData, 'rc'),
-      cb: opt(formData, 'cb'),
-      cnss: opt(formData, 'cnss'),
-      patente: opt(formData, 'patente'),
-      programme: opt(formData, 'programme'),
-      projetLibelle: opt(formData, 'projetLibelle'),
-      ligneBudgetaire: opt(formData, 'ligneBudgetaire'),
-      chapitre: opt(formData, 'chapitre'),
-      assistanceTechnique: opt(formData, 'assistanceTechnique'),
-      maitreOeuvre: opt(formData, 'maitreOeuvre'),
+      modePassation: str(formData, 'modePassation'),
+      rc: str(formData, 'rc'),
+      cb: str(formData, 'cb'),
+      cnss: str(formData, 'cnss'),
+      patente: str(formData, 'patente'),
+      programme: str(formData, 'programme'),
+      projetLibelle: str(formData, 'projetLibelle'),
+      ligneBudgetaire: str(formData, 'ligneBudgetaire'),
+      chapitre: str(formData, 'chapitre'),
+      assistanceTechnique: str(formData, 'assistanceTechnique'),
+      maitreOeuvre: str(formData, 'maitreOeuvre'),
       dateOuverture: opt(formData, 'dateOuverture') ?? null,
       ordreServiceDate: opt(formData, 'osc') ?? null,
       delaiMois: num(formData, 'delaiMois') ?? null,
@@ -723,8 +726,8 @@ export async function createMaterielChantier(formData: FormData) {
       regime: opt(formData, 'regime') ?? 'propre',
       heuresUtilisation: num(formData, 'heuresUtilisation'),
       carburantL: num(formData, 'carburantL'),
-      coutCarburantMad: num(formData, 'coutCarburantMad') ?? 0,
-      coutLocationMad: num(formData, 'coutLocationMad') ?? 0,
+      coutCarburantMad: num(formData, 'coutCarburantMad') ?? null,
+      coutLocationMad: num(formData, 'coutLocationMad') ?? null,
       note: opt(formData, 'note'),
     });
   } catch (error) {
@@ -757,7 +760,7 @@ export async function createConsommation(formData: FormData) {
       unite: opt(formData, 'unite') ?? 'u',
       quantite: num(formData, 'quantite') ?? 0,
       prixUnitaireMad: num(formData, 'prixUnitaireMad'),
-      coutMad: num(formData, 'coutMad') ?? 0,
+      coutMad: num(formData, 'coutMad') ?? null,
       fournisseur: opt(formData, 'fournisseur'),
       bonLivraison: opt(formData, 'bonLivraison'),
       note: opt(formData, 'note'),
@@ -858,7 +861,7 @@ export async function integrerAttachement(formData: FormData) {
   const attachementId = str(formData, 'attachementId');
   const target = backTo(formData, `/projects/${id}?section=terrain&tab=attachements`);
   try {
-    await apiPost(`/btp/projects/${id}/terrain/attachements/${attachementId}/integrer`);
+    await apiPost(`/btp/projects/${id}/terrain/attachements/${attachementId}/integrer`, { periodeId: str(formData, 'periodeId') });
   } catch (error) {
     fail(target, 'integrerAttachement', error);
   }

@@ -82,5 +82,54 @@ describe('parseMesReponses', () => {
     // Assert
     expect(outcome.submissions).toEqual([]);
     expect(outcome.skipped).toEqual([]);
+    expect(outcome.surfaceDetected).toBe(false);
+    expect(outcome.candidateRows).toBe(0);
+  });
+
+  test('parses the live portal table shape without tbody or labelled reference fields', () => {
+    // Arrange — captured structural shape of the authenticated production page.
+    const liveShape = `
+      <table class="table-results">
+        <tr><th></th><th>Référence Procédure Catégorie</th><th>Objet</th><th>Date limite</th><th>Ma réponse</th><th>Actions</th></tr>
+        <tr>
+          <td>
+            <span class="ref"> 01/2026 </span><br>
+            AOO <span class="info-suite">…</span>
+            <div class="info-bulle"><div>Appel d'offres ouvert</div></div><br>
+            Travaux
+          </td>
+          <td>
+            <div><strong>Contexte/Programmme :</strong> Programme 2026</div>
+            <div><strong>Objet :</strong> Construction d'un ouvrage</div>
+            <div><strong>Organisme :</strong> Commune test</div>
+          </td>
+          <td><div class="cloture-line">06/04/2026&nbsp;10:00:00</div></td>
+          <td><div class="cloture-line">05/04/2026&nbsp;15:04:11</div></td>
+          <td><a href="index.php?page=entreprise.EntrepriseDetailsConsultation&amp;refConsultation=984959&amp;orgAcronyme=f9f&amp;depots&amp;clotures">Consulter</a></td>
+        </tr>
+      </table>`;
+
+    // Act
+    const outcome = parseMesReponsesDetailed(liveShape);
+
+    // Assert
+    expect(outcome.skipped).toEqual([]);
+    expect(outcome.surfaceDetected).toBe(true);
+    expect(outcome.candidateRows).toBe(1);
+    expect(outcome.submissions).toHaveLength(1);
+    expect(outcome.submissions[0]).toMatchObject({
+      reference: '01/2026',
+      procedure: "Appel d'offres ouvert",
+      category: 'Travaux',
+      objet: "Construction d'un ouvrage",
+      organisme: 'Commune test',
+      consultationId: '984959',
+    });
+    expect(outcome.submissions[0]!.deadlineAt?.toISOString()).toBe(
+      '2026-04-06T09:00:00.000Z',
+    );
+    expect(outcome.submissions[0]!.submittedAt?.toISOString()).toBe(
+      '2026-04-05T14:04:00.000Z',
+    );
   });
 });

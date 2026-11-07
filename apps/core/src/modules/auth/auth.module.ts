@@ -33,13 +33,21 @@ export interface TokenVerifier {
 
 export const TOKEN_VERIFIER = Symbol('TOKEN_VERIFIER');
 
+/**
+ * Keycloak signs tokens with its public issuer, but local Docker consumers
+ * reach Keycloak through the host gateway rather than the browser's localhost
+ * URL. Keep issuer validation strict while allowing a separate internal JWKS
+ * endpoint.
+ */
+export function keycloakJwksUrl(issuer: string, jwksIssuer = issuer): URL {
+  return new URL(`${jwksIssuer.replace(/\/+$/, '')}/protocol/openid-connect/certs`);
+}
+
 class KeycloakTokenVerifier implements TokenVerifier {
   private readonly jwks;
 
-  constructor(private readonly issuer: string) {
-    this.jwks = createRemoteJWKSet(
-      new URL(`${issuer}/protocol/openid-connect/certs`),
-    );
+  constructor(private readonly issuer: string, jwksIssuer?: string) {
+    this.jwks = createRemoteJWKSet(keycloakJwksUrl(issuer, jwksIssuer));
   }
 
   async verify(token: string): Promise<Record<string, unknown>> {
@@ -116,7 +124,7 @@ const tokenVerifierProvider = {
     const issuer = process.env.OIDC_ISSUER;
     if (issuer) {
       new Logger('AuthModule').log(`OIDC token verification active (${issuer})`);
-      return new KeycloakTokenVerifier(issuer);
+      return new KeycloakTokenVerifier(issuer, process.env.OIDC_JWKS_ISSUER);
     }
     // Fail fast: a production process must never boot with auth disabled.
     if (process.env.NODE_ENV === 'production') {

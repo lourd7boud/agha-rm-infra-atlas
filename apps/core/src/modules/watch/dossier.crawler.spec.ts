@@ -28,6 +28,9 @@ interface ResOpts {
 }
 
 function res(opts: ResOpts) {
+  const bodyBytes = opts.buf
+    ? new Uint8Array(opts.buf)
+    : new TextEncoder().encode(opts.text ?? '');
   return {
     ok: opts.ok ?? true,
     status: opts.status ?? 200,
@@ -37,6 +40,7 @@ function res(opts: ResOpts) {
     },
     text: async () => opts.text ?? '',
     arrayBuffer: async () => opts.buf ?? new ArrayBuffer(0),
+    body: new Response(bodyBytes).body,
   };
 }
 

@@ -1,6 +1,7 @@
 # local distributed-worker secrets + helpers (never commit)
 .atlas-worker.env
 scripts-local/
+/scripts/backup-atlas-minio-to-external.ps1
 
 # Dependencies & build output
 node_modules/
@@ -24,14 +25,26 @@ datao-*.json
 # Environment & secrets — only templates are committed
 .env
 .env.*
+.atlas-local.env
+cookies.txt
 !.env.example
 !.env.apps.example
 
 # Database backups (volume-mounted in the backup sidecar)
 platform/backups/
+LOCAL_BACKUPS/
+
+# Local diagnostics, exports and visual verification evidence
+tmp/
+artifacts/
+/*.jpeg
+/p3-pager.md
+/p3-snapshot.md
+/tenders-main.md
 
 # Local tool state
 .claude/
+.codex-tmp/
 .worktrees/
 *.log
 .DS_Store

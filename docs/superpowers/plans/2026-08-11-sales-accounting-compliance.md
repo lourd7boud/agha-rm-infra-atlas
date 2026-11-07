@@ -17,7 +17,7 @@
 - Never mutate an issued invoice or credit note. Correct it with an issued credit note and/or append-only payment reversal.
 - All generated accounting entries remain `brouillon`; only `direction` and `comptable` can validate entries or configure the TVA taxable-event regime.
 - If TVA configuration, account mapping, or an open exercise is missing, the commercial operation succeeds and the reconciliation event is persisted as `blocked`. Never swallow the failure.
-- Use migration `0053_sales_accounting_flow.sql`; retain all existing storage, document, and project-document infrastructure.
+- Use migration `0065_sales_accounting_flow.sql`; retain all existing storage, document, and project-document infrastructure.
 - Every schema/API change must remain backward-readable for rows created before this release.
 - The implementation demonstrates technical alignment with the cited Moroccan sources; final tax/account mapping remains subject to confirmation by the company accountant.
 
@@ -168,7 +168,7 @@ git commit -m "feat(compta): model TVA sales and receipt postings"
 
 - Modify: `apps/core/src/db/schema/sales.ts`
 - Modify: `apps/core/src/db/schema/compta.ts`
-- Create: `apps/core/drizzle/0053_sales_accounting_flow.sql`
+- Create: `apps/core/drizzle/0065_sales_accounting_flow.sql`
 - Modify: `apps/core/drizzle/meta/_journal.json`
 - Create: `apps/core/src/db/sales-accounting-schema.spec.ts`
 
@@ -195,7 +195,7 @@ Add:
 
 Add `faitGenerateurTva` to `compta.profil` with database default `non_configure`. Add `sourceEvent`, `validatedBy`, and `validatedAt` to entries. Replace the active-source uniqueness constraint with `(source, source_id, source_event)` so invoice issue, each receipt, reversal, and credit note are independently idempotent.
 
-- [x] **Step 5: Write migration `0053` with data preflight**
+- [x] **Step 5: Write migration `0065` with data preflight**
 
 The SQL must:
 
@@ -208,7 +208,7 @@ The SQL must:
 
 - [x] **Step 6: Verify migration generation does not produce an unexpected diff**
 
-Run `pnpm --filter @atlas/core db:generate` in a temporary inspection branch or inspect generated output without accepting unrelated drift. If Drizzle generates a snapshot, keep only artifacts consistent with `0053`; never renumber deployed migrations.
+Run `pnpm --filter @atlas/core db:generate` in a temporary inspection branch or inspect generated output without accepting unrelated drift. If Drizzle generates a snapshot, keep only artifacts consistent with `0065`; never renumber deployed migrations.
 
 Audit note (2026-11-07): isolated generation cannot provide a meaningful
 incremental diff because the repository intentionally uses custom migrations
@@ -628,9 +628,9 @@ git push -u origin codex/sales-accounting-compliance
 
 - [ ] **Step 5: Deploy through the repository-supported production path**
 
-Because `0053` replaces draft-reference and invoice-status invariants, first put
+Because `0065` replaces draft-reference and invoice-status invariants, first put
 sales/accounting writes into a verified maintenance drain and stop the old Core
-writer before applying the migration. Apply `0053` once, verify its migration
+writer before applying the migration. Apply `0065` once, verify its migration
 ledger row, start the exact reviewed Core/Web/Worker images, pass health checks,
 then reopen writes. The deploy script must fail closed and keep maintenance mode
 active if migration or health verification fails. Do not leave the legacy Core

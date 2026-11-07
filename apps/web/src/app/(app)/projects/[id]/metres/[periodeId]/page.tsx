@@ -60,7 +60,18 @@ export default async function MetreEditorPage({
             className="rounded-lg border border-line px-3 py-2 text-xs font-semibold text-muted transition hover:border-cyan hover:text-cyan"
           >
             Attachement (imprimable)
-          </Link>
+          </Link>          <a
+            href={`/api/btp-export/${id}/metre.xlsx?periodeId=${periodeId}`}
+            className="rounded-lg bg-emerald px-3 py-2 text-xs font-bold text-paper transition hover:opacity-90"
+          >
+            ⬇ Métré Excel
+          </a>
+          <a
+            href={`/api/btp-export/${id}/metre.pdf?periodeId=${periodeId}`}
+            className="rounded-lg bg-clay px-3 py-2 text-xs font-bold text-paper transition hover:opacity-90"
+          >
+            ⬇ Métré PDF
+          </a>
           <Link
             href={`/projects/${id}?tab=decomptes`}
             className="rounded-lg bg-cyan-soft px-3 py-2 text-xs font-bold text-cyan transition hover:bg-cyan hover:text-paper"

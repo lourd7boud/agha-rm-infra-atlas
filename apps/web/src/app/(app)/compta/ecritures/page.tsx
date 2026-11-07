@@ -64,8 +64,11 @@ export default async function EcrituresPage({
               <form action={genererEcrituresVentes}>
                 <input type="hidden" name="annee" value={annee} />
                 <input type="hidden" name="backTo" value={`/compta/ecritures?annee=${annee}`} />
-                <button className={btnGhost} title="Comptabilise les factures du module Ventes">
-                  ⚡ Générer depuis les ventes
+                <button
+                  className={btnGhost}
+                  title="Comptabilise les factures du module Ventes (écritures de vente + encaissements des factures payées, avec exigibilité TVA)"
+                >
+                  ⚡ Générer ventes + encaissements
                 </button>
               </form>
             }

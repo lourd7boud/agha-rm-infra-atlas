@@ -360,6 +360,13 @@
       "breakpoints": true
     },
     {
+      "idx": 51,
+      "version": "7",
+      "when": 1784100900000,
+      "tag": "0051_sales_doc_sequence",
+      "breakpoints": true
+    },
+    {
       "idx": 52,
       "version": "7",
       "when": 1784510000000,
@@ -369,8 +376,92 @@
     {
       "idx": 53,
       "version": "7",
-      "when": 1786410000000,
-      "tag": "0053_sales_accounting_flow",
+      "when": 1793116800000,
+      "tag": "0053_terrain_cost_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1793116801000,
+      "tag": "0054_terrain_journees",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1793116802000,
+      "tag": "0055_terrain_attachement_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1793116803000,
+      "tag": "0056_terrain_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1793116804000,
+      "tag": "0057_terrain_daily_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1793203200000,
+      "tag": "0058_bid_workspace_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1793203201000,
+      "tag": "0059_bid_workspace_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1793203202000,
+      "tag": "0060_bid_package_freeze",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1793203203000,
+      "tag": "0061_bid_signing_protocol",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1793203204000,
+      "tag": "0062_bid_signing_artifact_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1793203205000,
+      "tag": "0063_bid_signing_upload_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1793203206000,
+      "tag": "0064_bid_signing_upload_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1793203207000,
+      "tag": "0065_sales_accounting_flow",
       "breakpoints": true
     }
   ]

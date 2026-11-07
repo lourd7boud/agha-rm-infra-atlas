@@ -131,3 +131,30 @@ test('mobile navigation uses a touch-friendly drawer', async ({ page }) => {
   await page.keyboard.press('Escape');
   await expect(reopenedDrawer).toHaveCount(0);
 });
+
+test('theme toggle switches between dark and light modes and persists preference', async ({
+  page,
+}) => {
+  await signInAsDirectionGenerale(page);
+
+  const toggle = page.getByTestId('theme-toggle').first();
+  await expect(toggle).toBeVisible();
+
+  // Initially dark by default
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute('data-theme', 'dark');
+
+  // Click to switch to light mode
+  await toggle.click();
+  await expect(html).toHaveAttribute('data-theme', 'light');
+  await expect(html).toHaveClass(/light/);
+
+  // Reload page to verify persistence
+  await page.reload();
+  await expect(html).toHaveAttribute('data-theme', 'light');
+
+  // Click to switch back to dark mode
+  await toggle.click();
+  await expect(html).toHaveAttribute('data-theme', 'dark');
+  await expect(html).toHaveClass(/dark/);
+});

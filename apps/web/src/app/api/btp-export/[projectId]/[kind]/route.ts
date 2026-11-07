@@ -11,7 +11,22 @@ const KIND_PATHS: Record<string, (projectId: string, query: URLSearchParams) => 
     const periodeId = query.get('periodeId');
     return `/btp/projects/${projectId}/export/attachement${periodeId ? `?periodeId=${periodeId}` : ''}`;
   },
+  'attachement.pdf': (projectId, query) => {
+    const periodeId = query.get('periodeId');
+    return `/btp/projects/${projectId}/export/attachement.pdf${periodeId ? `?periodeId=${periodeId}` : ''}`;
+  },
+  'metre.xlsx': (projectId, query) => {
+    const periodeId = query.get('periodeId');
+    if (!periodeId) return null;
+    return `/btp/projects/${projectId}/export/metre.xlsx?periodeId=${periodeId}`;
+  },
+  'metre.pdf': (projectId, query) => {
+    const periodeId = query.get('periodeId');
+    if (!periodeId) return null;
+    return `/btp/projects/${projectId}/export/metre.pdf?periodeId=${periodeId}`;
+  },
   recapitulatif: (projectId) => `/btp/projects/${projectId}/export/recapitulatif`,
+  depenses: (projectId) => `/btp/projects/${projectId}/export/depenses`,
   decompte: (projectId, query) => {
     const decompteId = query.get('decompteId');
     if (!decompteId) return null;

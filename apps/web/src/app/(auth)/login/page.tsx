@@ -5,6 +5,7 @@ import { ArmiLogo } from '@/components/brand/ArmiLogo';
 import { AtlasMark } from '@/components/brand/AtlasMark';
 import { Icon } from '@/components/ui/Icon';
 import { TopoBackground } from '@/components/ui/TopoBackground';
+import { safeCallbackUrl } from '@/lib/callback-url';
 import { isUsableSession } from '@/lib/auth-session';
 
 const STATS = [
@@ -13,13 +14,24 @@ const STATS = [
   { value: '6', label: 'divisions métier' },
 ];
 
-export default async function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ callbackUrl?: string | string[] }>;
+}) {
   const session = await auth();
+  const params = await searchParams;
+  const rawCallbackUrl = Array.isArray(params.callbackUrl)
+    ? params.callbackUrl[0]
+    : params.callbackUrl;
+  // Honor the page the user was working on (whitelisted same-origin path only)
+  // so a session expiry never throws them back to the dashboard. Default: '/'.
+  const returnTo = safeCallbackUrl(rawCallbackUrl);
   // Only bounce to the app when the session is actually usable. A stale session
   // (user present but the access token is gone / refresh failed) must render the
   // login screen to re-authenticate — otherwise /login ⇄ / loops forever
   // (apiGet redirects back here on a dead token) → ERR_TOO_MANY_REDIRECTS.
-  if (isUsableSession(session)) redirect('/');
+  if (isUsableSession(session)) redirect(returnTo);
 
   return (
     <div className="grid min-h-screen lg:grid-cols-[1.05fr_0.95fr]">
@@ -85,7 +97,7 @@ export default async function LoginPage() {
             <form
               action={async () => {
                 'use server';
-                await signIn('keycloak', { redirectTo: '/' });
+                await signIn('keycloak', { redirectTo: returnTo });
               }}
               className="mt-7"
             >
@@ -94,6 +106,11 @@ export default async function LoginPage() {
                 <Icon name="chevronRight" size={16} />
               </button>
             </form>
+            {returnTo !== '/' && (
+              <p className="mt-3 text-center text-[11px] text-faint">
+                Vous serez redirigé vers votre dernière page après connexion.
+              </p>
+            )}
             <p className="mt-4 flex items-center gap-1.5 text-xs text-faint">
               <Icon name="vault" size={13} />
               Authentification sécurisée via Keycloak (SSO).

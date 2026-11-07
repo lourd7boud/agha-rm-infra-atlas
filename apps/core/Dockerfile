@@ -29,13 +29,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unar \
     wget \
     ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /run/atlas-preview \
+  && chown node:node /run/atlas-preview
 # antiword(.doc), catdoc→xls2csv(.xls)/catppt(.ppt), unrtf(.rtf): tiny CLI
 # converters for the legacy Office binaries some buyers still ship — the
 # "never fail on any format" net (see dossier-binary.ts). Total ~5 MB, far
 # lighter than LibreOffice, and they only run as a last resort.
 # unar: unpacks RAR (v4/v5) DCE archives — older buyers ship .rar dossiers that
 # fflate (ZIP-only) can't read; dossier-archive.ts normalizes RAR → ZIP.
+# LibreOffice deliberately lives in the secret-free, networkless preview-worker
+# container. Core talks to it only through /run/atlas-preview/worker.sock.
 
 WORKDIR /app
 

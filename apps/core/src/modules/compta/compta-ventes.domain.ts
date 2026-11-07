@@ -305,3 +305,98 @@ export function buildCreditNotePosting(
   });
   return readyPosting(`Avoir ${input.reference}`, lines);
 }
+
+// Compatibility surface used by the existing sales posting repository. The new
+// centime-based builders above remain authoritative for the compliant event flow.
+export const VENTE_COMPTE_CLIENT = '3421';
+export const VENTE_COMPTE_PRODUIT = '71242';
+export const VENTE_COMPTE_TVA = '4455';
+export const VENTE_JOURNAL = 'VTE';
+
+export interface VenteEcritureLigne {
+  compteCode: string;
+  debit: number;
+  credit: number;
+  tiers?: string;
+}
+
+export type VentePostingReason =
+  | 'posted'
+  | 'already_posted'
+  | 'raced'
+  | 'still_draft'
+  | 'not_paid'
+  | 'not_found'
+  | 'incoherent'
+  | 'exercice_cloture'
+  | 'error';
+
+export interface VentePostingResult {
+  created: boolean;
+  ecritureId?: string;
+  validated?: boolean;
+  reason: VentePostingReason;
+}
+
+export const VENTE_POSTING_NEEDS_ATTENTION: readonly VentePostingReason[] = [
+  'incoherent',
+  'exercice_cloture',
+  'error',
+];
+
+export interface VenteSource {
+  reference: string;
+  clientName: string;
+  totalHtMad: number;
+  totalTtcMad: number;
+}
+
+export interface VenteEcriture {
+  journalCode: typeof VENTE_JOURNAL;
+  pieceRef: string;
+  libelle: string;
+  lignes: VenteEcritureLigne[];
+  tvaMad: number;
+  certaine: boolean;
+}
+
+function roundMad(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+export function buildVenteEcriture(src: VenteSource): VenteEcriture | null {
+  const ht = roundMad(src.totalHtMad);
+  const ttc = roundMad(src.totalTtcMad);
+  const tva = roundMad(ttc - ht);
+  if (ttc <= 0 || ht < 0 || ht > ttc) return null;
+
+  const lignes: VenteEcritureLigne[] = [
+    {
+      compteCode: VENTE_COMPTE_CLIENT,
+      debit: ttc,
+      credit: 0,
+      tiers: src.clientName,
+    },
+    { compteCode: VENTE_COMPTE_PRODUIT, debit: 0, credit: ht },
+  ];
+  if (tva > 0) {
+    lignes.push({ compteCode: VENTE_COMPTE_TVA, debit: 0, credit: tva });
+  }
+
+  const totalDebit = roundMad(lignes.reduce((sum, line) => sum + line.debit, 0));
+  const totalCredit = roundMad(
+    lignes.reduce((sum, line) => sum + line.credit, 0),
+  );
+
+  return {
+    journalCode: VENTE_JOURNAL,
+    pieceRef: src.reference,
+    libelle: `Facture ${src.reference} — ${src.clientName}`,
+    lignes,
+    tvaMad: tva,
+    certaine:
+      src.clientName.trim().length > 0 &&
+      totalDebit === totalCredit &&
+      totalDebit > 0,
+  };
+}

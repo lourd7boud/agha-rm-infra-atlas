@@ -1,7 +1,8 @@
 // Métré engine — faithful port of the source app's metreCalculations.ts plus
 // the MetrePage totals semantics (nombreSemblables multiplier on every ligne,
-// sous-section nombreElements multiplier on poids lignes, totals rounded
-// half-up 2dp for storage).
+// ligne nombreElements multiplier on poids lignes — « Fourniture et pose des
+// aciers » KG/T rows —, sous-section nombreElements multiplier on poids lignes,
+// totals rounded half-up 2dp for storage).
 import { Decimal, round2, toDecimal, toNumber } from './btp-finance.domain';
 
 export type CalculationType = 'volume' | 'surface' | 'lineaire' | 'poids' | 'unite';
@@ -102,10 +103,29 @@ export interface MetreLigne {
   largeur?: number;
   profondeur?: number;
   nombre?: number;
+  /**
+   * Nombre d'éléments structurels IDENTIQUES répétés pour cette mesure (8
+   * poteaux, 6 poutres, 4 bassins, 4 kms d'étriers…). Une valeur négative est
+   * une déduction. « nombre » reste le nombre de barres/pièces DANS un seul
+   * élément. Absent, vide ou 0 → 1 ; un décimal est tronqué. Uniquement
+   * appliqué aux lignes de type poids (KG/T).
+   */
+  nombreElements?: number;
   diametre?: number;
   /** Computed (or manually entered when no dimensions are given). */
   partiel?: number;
   observations?: string;
+}
+
+/**
+ * Normalise le « nombre d'éléments » d'une ligne en entier non nul. Absent,
+ * null, NaN ou 0 → 1 pour la compatibilité historique. Le signe est conservé
+ * afin qu'une répétition négative représente une déduction.
+ */
+export function normaliseNombreElements(value: number | null | undefined): number {
+  if (value == null || !Number.isFinite(value)) return 1;
+  const entier = Math.trunc(value);
+  return entier === 0 ? 1 : entier;
 }
 
 /**
@@ -115,7 +135,9 @@ export interface MetreLigne {
 export function computeLignePartiel(unite: string, ligne: MetreLigne): number {
   const config = resolveUniteConfig(unite);
   const multiplier = toDecimal(
-    ligne.nombreSemblables && ligne.nombreSemblables > 0 ? ligne.nombreSemblables : 1,
+    ligne.nombreSemblables && Number.isFinite(ligne.nombreSemblables)
+      ? ligne.nombreSemblables
+      : 1,
   );
 
   const hasDimensionInput =
@@ -142,7 +164,14 @@ export function computeLignePartiel(unite: string, ligne: MetreLigne): number {
       break;
     case 'poids': {
       const poidsUnitaire = toDecimal(POIDS_ACIER[ligne.diametre ?? 0] ?? 0);
-      const totalKg = toDecimal(ligne.nombre).times(toDecimal(ligne.longueur)).times(poidsUnitaire);
+      // Nombre = barres dans UN élément ; nombreElements = éléments identiques
+      // répétés (1 par défaut → calcul historique inchangé). Le multiplicateur
+      // de sous-section s'applique ensuite, dans computeMetreTotals.
+      const elements = toDecimal(normaliseNombreElements(ligne.nombreElements));
+      const totalKg = toDecimal(ligne.nombre)
+        .times(elements)
+        .times(toDecimal(ligne.longueur))
+        .times(poidsUnitaire);
       result = config === UNITE_CONFIG.T ? totalKg.dividedBy(1000) : totalKg;
       break;
     }
@@ -163,7 +192,10 @@ export interface MetreTotals {
 /**
  * Recomputes every ligne's partiel server-side (the client mirrors this live)
  * and the stored total. On poids lignes the owning sous-section's
- * nombreElements multiplies the base partiel — MetrePage behaviour.
+ * nombreElements multiplies the base partiel — MetrePage behaviour; the
+ * ligne's own nombreElements (répétition d'éléments identiques) is already
+ * applied by computeLignePartiel, so the two factors compose (both default 1,
+ * hence identical results for every métré saved before the field existed).
  */
 export function computeMetreTotals(
   unite: string,
@@ -177,7 +209,7 @@ export function computeMetreTotals(
     let partiel = computeLignePartiel(unite, ligne);
     if (config.type === 'poids' && ligne.subSectionId) {
       const nombreElements = bySousSection.get(ligne.subSectionId)?.nombreElements;
-      if (nombreElements && nombreElements > 0 && nombreElements !== 1) {
+      if (nombreElements && Number.isFinite(nombreElements) && nombreElements !== 1) {
         partiel = toNumber(toDecimal(partiel).times(nombreElements));
       }
     }

@@ -89,9 +89,13 @@ export function computeTvaDue(input: {
 }
 
 /**
- * Pré-remplissage depuis les écritures de la période : la TVA facturée vit au
- * crédit de 4455*, la TVA récupérable au débit de 34551* (immobilisations) et
- * 34552* (charges). Les contre-passations se compensent naturellement.
+ * Pré-remplissage depuis les écritures de la période. RÉGIME DE L'ENCAISSEMENT :
+ * la TVA n'est exigible qu'au règlement, aussi la TVA collectée déclarable vit au
+ * crédit de 4456* (« TVA due ») — l'écriture d'encaissement l'y transfère depuis
+ * 4455* (« TVA facturée », en attente) au moment du paiement, si bien que la
+ * déclaration ne prend que la TVA effectivement encaissée sur la période. La TVA
+ * récupérable reste au débit de 34551* (immobilisations) et 34552* (charges). Les
+ * contre-passations se compensent naturellement.
  */
 export function computeTvaFromLignes(
   lignes: ReadonlyArray<{ compteCode: string; debit: number; credit: number }>,
@@ -100,7 +104,7 @@ export function computeTvaFromLignes(
   let charges = toDecimal(0);
   let immo = toDecimal(0);
   for (const ligne of lignes) {
-    if (ligne.compteCode.startsWith('4455')) {
+    if (ligne.compteCode.startsWith('4456')) {
       collectee = collectee.plus(ligne.credit).minus(ligne.debit);
     } else if (ligne.compteCode.startsWith('34551')) {
       immo = immo.plus(ligne.debit).minus(ligne.credit);

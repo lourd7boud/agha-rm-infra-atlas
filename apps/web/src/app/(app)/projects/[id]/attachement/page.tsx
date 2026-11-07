@@ -42,6 +42,12 @@ export default async function AttachementPage({
           >
             ⬇ Excel
           </a>
+          <a
+            href={`/api/btp-export/${id}/attachement.pdf${periodeQuery}`}
+            className="rounded-lg border border-line px-3 py-2 text-xs font-semibold text-muted transition hover:border-emerald hover:text-emerald"
+          >
+            ⬇ PDF
+          </a>
           <span className="rounded-lg bg-cyan-soft px-3 py-2 text-xs font-bold text-cyan">
             Ctrl+P pour imprimer
           </span>

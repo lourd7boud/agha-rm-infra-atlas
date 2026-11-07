@@ -60,7 +60,7 @@ export interface MesReponsesCrawlDeps {
 
 /** First "Nombre de résultats : N" count on the page, or undefined when absent. */
 function declaredResultCount(html: string): number | undefined {
-  const m = /Nombre\s+de\s+r[ée]sultats\s*:\s*([\d   ]+)/i.exec(html);
+  const m = /Nombre\s+de\s+r[ée]sultats\s*:\s*([\d\s\u00a0\u202f]+)/i.exec(html);
   if (!m?.[1]) return undefined;
   const digits = m[1].replace(/[^\d]/g, '');
   return digits.length > 0 ? Number(digits) : undefined;
@@ -79,7 +79,9 @@ function submissionKey(input: PortalSubmissionInput): string {
  * parses each, upserts every soumission, and returns a {fetched, inserted,
  * updated, skipped} summary. Resilient: a page whose fetch/parse throws is
  * skipped+logged, never aborting the run. Pagination stops when the declared
- * result count is reached, a page yields no new rows, or maxPages is hit.
+ * result count is reached, a page yields no new rows, or maxPages is hit. A
+ * transport failure or unexpected HTML surface is propagated so the worker can
+ * retry/alert; returning a false successful zero would hide lost submissions.
  */
 export async function harvestMesReponses(
   deps: MesReponsesCrawlDeps,
@@ -96,14 +98,17 @@ export async function harvestMesReponses(
   let declared: number | undefined;
 
   for (let page = 1; page <= maxPages; page += 1) {
-    let outcome: ParseMesReponsesOutcome;
-    let html: string;
-    try {
-      html = await deps.fetchPage(page);
-      outcome = parseMesReponsesDetailed(html);
-    } catch {
-      // A bad page must not crash the whole harvest — stop walking, keep totals.
-      break;
+    const html = await deps.fetchPage(page);
+    const outcome: ParseMesReponsesOutcome = parseMesReponsesDetailed(html);
+    if (!outcome.surfaceDetected) {
+      throw new Error(
+        'Mes réponses portal surface not detected; refusing a false zero harvest',
+      );
+    }
+    if (outcome.candidateRows > 0 && outcome.submissions.length === 0) {
+      throw new Error(
+        'Mes réponses portal surface contains rows but none could be parsed',
+      );
     }
 
     if (page === 1) declared = declaredResultCount(html);
@@ -150,19 +155,26 @@ export class MesReponsesCrawlerService {
   private readonly logger = new Logger('MesReponsesCrawler');
 
   constructor(
-    @Inject(PortalAuthSession) private readonly session: PortalAuthSession,
+    @Inject(PortalAuthSession)
+    private readonly session: PortalAuthSession | null,
     @Inject(PORTAL_REPOSITORY) private readonly repository: PortalRepository,
   ) {}
 
   async harvest(
     opts: MesReponsesCrawlOptions = {},
   ): Promise<MesReponsesCrawlSummary> {
+    if (!this.session) {
+      throw new Error(
+        'MesReponses harvest requires portal credentials (PORTAL_AUTH_LOGIN/PORTAL_AUTH_PASSWORD)',
+      );
+    }
+    const session = this.session;
     // Single authed GET per run: re-fetching the same READ-ONLY page for each
     // requested index keeps the orchestrator's de-dup/result-count logic intact
     // without issuing a PRADO postback the session layer cannot replay.
     const summary = await harvestMesReponses(
       {
-        fetchPage: () => this.session.authedFetch(MES_REPONSES_URL),
+        fetchPage: () => session.authedFetch(MES_REPONSES_URL),
         upsertSubmission: (input) => this.repository.upsertSubmission(input),
         sleep: sleepMs,
         onSkipped: (outcome, page) =>

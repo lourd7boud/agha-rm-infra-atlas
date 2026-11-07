@@ -136,13 +136,12 @@ export default async function QuotesPage({
   async function createQuote(formData: FormData) {
     'use server';
     const clientIdValue = String(formData.get('clientId') ?? '');
-    const reference = String(formData.get('reference') ?? '').trim();
     const quoteDate = String(formData.get('quoteDate') ?? '');
     const tvaPct = Number(formData.get('tvaPct'));
     const lines = parseLines(String(formData.get('lines') ?? '[]'));
+    // No reference: the server assigns a sequential DEV-{exercice}-NNNN number.
     if (
       !clientIdValue ||
-      reference.length < 2 ||
       !quoteDate ||
       !Number.isFinite(tvaPct) ||
       tvaPct < 0 ||
@@ -157,7 +156,6 @@ export default async function QuotesPage({
       const notes = String(formData.get('notes') ?? '').trim();
       await apiPost('/sales/quotes', {
         clientId: clientIdValue,
-        reference,
         objet: objet || undefined,
         quoteDate,
         validUntil: validUntil || undefined,
@@ -344,16 +342,16 @@ export default async function QuotesPage({
                 </select>
               </label>
               <label className="text-sm">
-                <span className="mb-1 block text-xs text-muted">Référence</span>
-                <input
-                  type="text"
-                  name="reference"
-                  required
-                  minLength={2}
-                  maxLength={100}
-                  placeholder="DV-2026-001"
-                  className="w-40 rounded-md border border-line-2 px-3 py-2 text-sm focus:border-cyan focus:outline-none"
-                />
+                <span className="mb-1 block text-xs text-muted">Numéro</span>
+                <div
+                  className="flex h-[38px] w-40 items-center gap-1 rounded-md border border-dashed border-line-2 bg-rail-2/40 px-3 text-sm text-faint"
+                  title="Numéro séquentiel attribué automatiquement à l'enregistrement"
+                >
+                  <span className="font-mono">DEV-AAAA-NNNN</span>
+                  <span className="ml-auto text-[10px] font-semibold uppercase tracking-wider text-cyan/80">
+                    auto
+                  </span>
+                </div>
               </label>
               <label className="text-sm">
                 <span className="mb-1 block text-xs text-muted">Date</span>

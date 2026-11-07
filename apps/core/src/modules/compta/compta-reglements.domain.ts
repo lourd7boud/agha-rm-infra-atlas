@@ -1,6 +1,8 @@
 import type { MoneyCents } from '../sales/sales-money.domain';
 import {
   ComptaSalesDomainError,
+  VENTE_COMPTE_CLIENT,
+  VENTE_COMPTE_TVA,
   blockedForMissingAccounts,
   blockedForUnconfiguredTva,
   readyPosting,
@@ -9,6 +11,7 @@ import {
   type PostingResult,
   type ReadyPosting,
   type SalesPostingAccounts,
+  type VenteEcritureLigne,
 } from './compta-ventes.domain';
 
 function assertNonNegativeCents(value: MoneyCents, label: string): void {
@@ -207,4 +210,74 @@ export function buildRefundPosting(input: RefundPostingInput): PostingResult {
       creditCents: input.amountCents,
     },
   ]);
+}
+
+export const REGLEMENT_COMPTE_TVA_DUE = '4456';
+export type ReglementMethod = 'virement' | 'cheque' | 'espece' | 'carte';
+
+export const REGLEMENT_TRESORERIE: Record<
+  ReglementMethod,
+  { compte: string; journal: string }
+> = {
+  virement: { compte: '5141', journal: 'BQ' },
+  cheque: { compte: '5141', journal: 'BQ' },
+  carte: { compte: '5141', journal: 'BQ' },
+  espece: { compte: '5161', journal: 'CAI' },
+};
+
+export const DEFAULT_REGLEMENT_METHOD: ReglementMethod = 'virement';
+
+export interface EncaissementSource {
+  reference: string;
+  clientName: string;
+  montantTtc: number;
+  tvaMad: number;
+  method?: ReglementMethod;
+}
+
+export interface EncaissementEcriture {
+  journalCode: string;
+  pieceRef: string;
+  libelle: string;
+  lignes: VenteEcritureLigne[];
+  certaine: boolean;
+}
+
+function roundMad(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+export function buildEncaissementEcriture(
+  src: EncaissementSource,
+): EncaissementEcriture | null {
+  const montant = roundMad(src.montantTtc);
+  if (montant <= 0) return null;
+  const tva = roundMad(src.tvaMad);
+  const method = src.method ?? DEFAULT_REGLEMENT_METHOD;
+  const { compte, journal } = REGLEMENT_TRESORERIE[method];
+  const lignes: VenteEcritureLigne[] = [
+    { compteCode: compte, debit: montant, credit: 0 },
+    {
+      compteCode: VENTE_COMPTE_CLIENT,
+      debit: 0,
+      credit: montant,
+      tiers: src.clientName,
+    },
+  ];
+  if (tva > 0) {
+    lignes.push({ compteCode: VENTE_COMPTE_TVA, debit: tva, credit: 0 });
+    lignes.push({
+      compteCode: REGLEMENT_COMPTE_TVA_DUE,
+      debit: 0,
+      credit: tva,
+    });
+  }
+
+  return {
+    journalCode: journal,
+    pieceRef: src.reference,
+    libelle: `Encaissement ${src.reference} — ${src.clientName}`,
+    lignes,
+    certaine: src.clientName.trim().length > 0,
+  };
 }

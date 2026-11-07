@@ -25,6 +25,7 @@ import { SupplyModule } from './modules/supply/supply.module';
 import { TenderModule } from './modules/tender/tender.module';
 import { VaultModule } from './modules/vault/vault.module';
 import { WatchModule } from './modules/watch/watch.module';
+import { BidModule } from './modules/bid/bid.module';
 
 const STARTED_AT = Date.now();
 
@@ -49,6 +50,7 @@ export class HealthController {
     // via @Throttle (security-compliance §5).
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     AuthModule,
+    BidModule,
     AgentsModule,
     AuditModule,
     BrainModule,

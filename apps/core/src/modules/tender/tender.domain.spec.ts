@@ -10,20 +10,22 @@ const TODAY = new Date('2026-06-11T00:00:00Z');
 const days = (n: number) => new Date(TODAY.getTime() + n * 86_400_000);
 
 describe('pipeline transitions', () => {
-  test('follows the happy path detected → won', () => {
+  test('follows the public analysis path until bid preparation', () => {
     const path = [
       'detected',
       'parsed',
       'qualified',
       'go_decided',
       'preparing',
-      'submitted',
-      'opened',
-      'won',
     ] as const;
     path.slice(1).forEach((to, i) => {
       expect(transition(path[i]!, to)).toBe(to);
     });
+  });
+
+  test('does not let the legacy tender pipeline claim an official submission', () => {
+    expect(canTransition('preparing', 'submitted')).toBe(false);
+    expect(() => transition('preparing', 'submitted')).toThrow(TransitionError);
   });
 
   test('throws TransitionError on illegal jumps', () => {

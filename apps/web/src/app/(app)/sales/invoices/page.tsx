@@ -132,13 +132,12 @@ export default async function InvoicesPage({
   async function createInvoice(formData: FormData) {
     'use server';
     const clientId = String(formData.get('clientId') ?? '');
-    const reference = String(formData.get('reference') ?? '').trim();
     const invoiceDate = String(formData.get('invoiceDate') ?? '');
     const tvaPct = Number(formData.get('tvaPct'));
     const lines = parsePricedLines(String(formData.get('lines') ?? ''));
+    // No reference: the server assigns the legal sequential FAC-{exercice}-NNNN.
     if (
       !clientId ||
-      reference.length < 2 ||
       !invoiceDate ||
       !Number.isFinite(tvaPct) ||
       tvaPct < 0 ||
@@ -152,7 +151,6 @@ export default async function InvoicesPage({
       const notes = String(formData.get('notes') ?? '').trim();
       await apiPost('/sales/invoices', {
         clientId,
-        reference,
         invoiceDate,
         dueDate: dueDate || undefined,
         tvaPct,
@@ -337,16 +335,16 @@ export default async function InvoicesPage({
                 </select>
               </label>
               <label className="text-sm">
-                <span className="mb-1 block text-xs text-muted">Référence</span>
-                <input
-                  type="text"
-                  name="reference"
-                  required
-                  minLength={2}
-                  maxLength={100}
-                  placeholder="FAC-2026-001"
-                  className="w-44 rounded-md border border-line-2 bg-paper px-3 py-2 text-sm focus:border-cyan focus:outline-none"
-                />
+                <span className="mb-1 block text-xs text-muted">Numéro</span>
+                <div
+                  className="flex h-[38px] w-44 items-center gap-1 rounded-md border border-dashed border-line-2 bg-rail-2/40 px-3 text-sm text-faint"
+                  title="Numéro légal séquentiel attribué automatiquement à l'enregistrement (art. 145 CGI)"
+                >
+                  <span className="font-mono">FAC-AAAA-NNNN</span>
+                  <span className="ml-auto text-[10px] font-semibold uppercase tracking-wider text-cyan/80">
+                    auto
+                  </span>
+                </div>
               </label>
               <label className="text-sm">
                 <span className="mb-1 block text-xs text-muted">

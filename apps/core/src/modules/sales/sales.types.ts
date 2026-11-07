@@ -62,7 +62,10 @@ export interface DocLineRecord extends CreateDocLine {
 export interface CreateQuote {
   clientId: string;
   projectId?: string;
-  reference: string;
+  /** Optional: when omitted the repository assigns a gap-free sequential number
+   *  (DEV-{exercice}-NNNN) inside the insert transaction. The controller never
+   *  forwards a client-supplied reference, so production numbers are server-side. */
+  reference?: string;
   objet?: string;
   quoteDate: Date;
   validUntil?: Date;
@@ -111,7 +114,8 @@ export interface CreateDeliveryNote {
   clientId: string;
   projectId?: string;
   quoteId?: string;
-  reference: string;
+  /** Optional: repository assigns BL-{exercice}-NNNN when omitted. */
+  reference?: string;
   deliveryDate: Date;
   notes?: string;
   lines: CreateDeliveryLine[];
@@ -141,7 +145,9 @@ export interface CreateInvoice {
   clientId: string;
   projectId?: string;
   quoteId?: string;
-  reference: string;
+  /** Optional: repository assigns the legal sequential FAC-{exercice}-NNNN when
+   *  omitted (art. 145 CGI). The controller strips any client-supplied value. */
+  reference?: string;
   invoiceDate: Date;
   dueDate?: Date;
   tvaPct: number;

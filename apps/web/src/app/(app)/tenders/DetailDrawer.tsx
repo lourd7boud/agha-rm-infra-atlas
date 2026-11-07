@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import Link from 'next/link';
 import { BuyerAvatar } from '@/components/ui/BuyerAvatar';
 import { Icon } from '@/components/ui/Icon';
@@ -14,7 +14,11 @@ import {
   type TenderItem,
 } from '@/lib/tenders';
 import { fmtMad } from '@/lib/projects';
-import { SourceFileViewer } from './SourceFileViewer';
+import {
+  SourceFileViewer,
+  TENDER_SPLIT_MEDIA_QUERY,
+} from './SourceFileViewer';
+import { AnalysePanel } from './AnalysePanel';
 import { LiveParticipantsButton } from './LiveParticipantsButton';
 import { ActionButton, AiBanner, ConditionRow } from './drawer-parts';
 import { AddToListButton } from './AddToListButton';
@@ -39,16 +43,30 @@ export function DetailDrawer({
   // button), 'bordereau' = datao-style side panel showing only the BPU source
   // (BPU-tab button). See SourceFileViewer for the two render modes.
   const [showFiles, setShowFiles] = useState<'none' | 'all' | 'bordereau'>('none');
+  // 'Analyser le résultat' side panel (marchecal parity) — opens like Bordereau.
+  const [showAnalyse, setShowAnalyse] = useState(false);
+  const [drawerWidth, setDrawerWidth] = useState(640);
+  const [desktopSplit, setDesktopSplit] = useState(false);
   // Full enrichment for the selected tender. The /inventory list ships only the
   // light item (no bpu/faq/lotsDetail/… heavy arrays); we hydrate them here from
   // GET /api/tender/tenders/:id when the drawer opens. null while loading/absent.
   const [detail, setDetail] = useState<TenderItem | null>(null);
   const panelRef = useRef<HTMLElement>(null);
+  const sourceTriggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const media = window.matchMedia(TENDER_SPLIT_MEDIA_QUERY);
+    const update = () => setDesktopSplit(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
 
   // Reset to the first tab whenever a different tender is opened.
   useEffect(() => {
     setTab('resume');
     setShowFiles('none');
+    setShowAnalyse(false);
   }, [item?.id]);
 
   // Fetch the FULL detail (heavy dossier arrays) whenever a tender is opened.
@@ -178,13 +196,26 @@ export function DetailDrawer({
     { key: 'bpu', label: 'BPU' },
     { key: 'chat', label: 'Chat IA' },
   ];
+  const sourceIsModal = showFiles === 'bordereau' && !desktopSplit;
+  const closeFiles = () => {
+    const restoreSourceTrigger = showFiles === 'bordereau';
+    setShowFiles('none');
+    if (restoreSourceTrigger) {
+      window.setTimeout(() => sourceTriggerRef.current?.focus(), 0);
+    }
+  };
 
   return (
-    <div className="fixed inset-0 z-50">
+    <div
+      className="fixed inset-0 z-50"
+      style={{ '--tender-detail-width': `${drawerWidth}px` } as CSSProperties}
+    >
       <button
         type="button"
         aria-label="Fermer"
         onClick={onClose}
+        inert={sourceIsModal}
+        tabIndex={sourceIsModal ? -1 : undefined}
         className="absolute inset-0 bg-black/40 backdrop-blur-[1px]"
       />
       <aside
@@ -193,7 +224,13 @@ export function DetailDrawer({
         role="dialog"
         aria-modal="true"
         aria-label={`Détail du marché ${item.reference}`}
-        className="absolute right-0 top-0 flex h-full w-full max-w-[640px] flex-col bg-paper shadow-raised focus:outline-none"
+        aria-hidden={sourceIsModal || undefined}
+        inert={sourceIsModal}
+        className={`absolute right-0 top-0 flex h-full w-full max-w-[640px] flex-col bg-paper shadow-raised focus:outline-none ${
+          showFiles === 'bordereau'
+            ? 'xl:w-[var(--tender-detail-width)] xl:max-w-[var(--tender-detail-width)]'
+            : ''
+        }`}
       >
         <header className="flex items-start gap-3 border-b border-line px-5 py-4">
           <BuyerAvatar name={item.buyerName} size="md" className="mt-0.5" />
@@ -384,7 +421,22 @@ export function DetailDrawer({
               label="Télécharger le dossier"
               download
             />
-            <ActionButton href={sourceUrl} icon="external" label="Soumission en ligne" />
+            <Link
+              href={`/tenders/${item.id}/participation`}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-cyan bg-cyan-soft px-4 py-2.5 text-sm font-semibold text-cyan-deep transition hover:bg-cyan hover:text-paper"
+            >
+              <Icon name="tenders" size={16} /> Préparer la participation
+            </Link>
+            {hasSource && (
+              <button
+                type="button"
+                onClick={() => { setShowFiles('none'); setShowAnalyse(true); }}
+                title="Calculer le gagnant et le prix de référence à partir du dépouillement publié"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-ochre-deep px-3 py-2 text-sm font-semibold text-paper transition hover:brightness-110"
+              >
+                <Icon name="analytics" size={16} /> Analyser le résultat
+              </button>
+            )}
           </div>
 
           <nav className="mt-5 flex gap-1 border-b border-line">
@@ -730,6 +782,7 @@ export function DetailDrawer({
               <div className="space-y-3">
                 {hasSource && (
                   <button
+                    ref={sourceTriggerRef}
                     type="button"
                     onClick={() => setShowFiles('bordereau')}
                     className="inline-flex items-center gap-1.5 text-sm font-semibold text-cyan hover:underline"
@@ -816,10 +869,16 @@ export function DetailDrawer({
       {showFiles !== 'none' && (
         <SourceFileViewer
           tenderId={item.id}
-          onClose={() => setShowFiles('none')}
+          onClose={closeFiles}
           mode={showFiles === 'bordereau' ? 'side' : 'modal'}
           bordereauOnly={showFiles === 'bordereau'}
+          drawerWidth={drawerWidth}
+          onDrawerWidthChange={setDrawerWidth}
+          desktopSplit={desktopSplit}
         />
+      )}
+      {showAnalyse && (
+        <AnalysePanel tenderId={item.id} onClose={() => setShowAnalyse(false)} />
       )}
     </div>
   );

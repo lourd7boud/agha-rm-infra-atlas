@@ -272,8 +272,16 @@ export class ComptaCoreController {
     const parsed = z.object({ annee: anneeSchema }).safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     try {
-      const crees = await this.compta.genererEcrituresVentes(parsed.data.annee, actorFrom(req));
-      return { crees };
+      const actor = actorFrom(req);
+      // Backfill BOTH legs so no collected TVA is lost: sale écritures first (they
+      // credit 4455), then the encaissement écritures for already-paid invoices
+      // (they transfer 4455→4456 → the TVA becomes declarable). The safety net.
+      const crees = await this.compta.genererEcrituresVentes(parsed.data.annee, actor);
+      const encaissements = await this.compta.genererEcrituresEncaissements(
+        parsed.data.annee,
+        actor,
+      );
+      return { crees, encaissements };
     } catch (error) {
       toComptaHttp(error);
     }
@@ -290,6 +298,27 @@ export class ComptaCoreController {
     } catch (error) {
       toComptaHttp(error);
     }
+  }
+
+  /** Supervisor bulk-approve: validate every brouillon écriture of the year. */
+  @Post('ecritures/valider-brouillons')
+  async validerBrouillons(@Body() body: unknown) {
+    const parsed = z.object({ annee: anneeSchema }).safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    try {
+      const valides = await this.compta.validerTousBrouillons(parsed.data.annee);
+      return { valides };
+    } catch (error) {
+      toComptaHttp(error);
+    }
+  }
+
+  /** Réconciliation : factures confirmées/payées dont l'écriture manque. */
+  @Get('reconciliation')
+  async reconciliation(@Query('annee') anneeStr?: string) {
+    const parsed = anneeSchema.safeParse(anneeStr);
+    const annee = parsed.success ? parsed.data : new Date().getFullYear();
+    return this.compta.reconciliationVentes(annee);
   }
 
   // Livres.

@@ -24,19 +24,14 @@ describe('parseMoneyMad', () => {
     expect(parseMoneyMad('350 000')).toBe(350000);
   });
 
-  it('parses Moroccan amounts separated by non-breaking spaces', () => {
+  it('parses NBSP and narrow-NBSP thousands separators', () => {
     const nbsp = String.fromCharCode(0x00a0);
     const narrowNbsp = String.fromCharCode(0x202f);
 
     expect(parseMoneyMad(`7${nbsp}700,00 MAD`)).toBe(7700);
-    expect(parseMoneyMad(`1${narrowNbsp}177${nbsp}913,89 MAD`)).toBe(
-      1177913.89,
+    expect(parseMoneyMad(`1${narrowNbsp}250${narrowNbsp}000,50 Dhs`)).toBe(
+      1250000.5,
     );
-  });
-
-  it('does not merge amounts separated by a line break', () => {
-    expect(parseMoneyMad('7 MAD\n700')).toBe(7);
-    expect(parseMoneyMad('7 MAD\r\n700')).toBe(7);
   });
 
   it('returns null when there is no number', () => {

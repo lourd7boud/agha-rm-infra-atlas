@@ -99,8 +99,14 @@ export default async function InvoiceDetailPage({
   async function setStatus(formData: FormData) {
     'use server';
     const to = String(formData.get('to') ?? '');
+    const method = String(formData.get('method') ?? '');
     try {
-      await apiPatch(`/sales/invoices/${id}/status`, { status: to });
+      // On "payée", forward the chosen payment method so compta posts the
+      // encaissement into the right trésorerie account (bank vs caisse).
+      await apiPatch(`/sales/invoices/${id}/status`, {
+        status: to,
+        ...(to === 'payee' && method ? { method } : {}),
+      });
     } catch (error) {
       failToInvoice(id, 'setStatus', error);
     }
@@ -178,10 +184,29 @@ export default async function InvoiceDetailPage({
       </div>
 
       {actions.length > 0 && (
-        <div className="mb-8 flex flex-wrap gap-3">
+        <div className="mb-8 flex flex-wrap items-end gap-3">
           {actions.map((action) => (
-            <form key={action.to} action={setStatus}>
+            <form
+              key={action.to}
+              action={setStatus}
+              className="flex items-end gap-2"
+            >
               <input type="hidden" name="to" value={action.to} />
+              {action.to === 'payee' && (
+                <label className="text-xs text-muted">
+                  <span className="mb-1 block">Mode de règlement</span>
+                  <select
+                    name="method"
+                    defaultValue="virement"
+                    className="rounded-md border border-line-2 bg-paper px-2 py-2 text-sm text-ink focus:border-cyan focus:outline-none"
+                  >
+                    <option value="virement">Virement</option>
+                    <option value="cheque">Chèque</option>
+                    <option value="espece">Espèces</option>
+                    <option value="carte">Carte</option>
+                  </select>
+                </label>
+              )}
               <button
                 className={`rounded-md px-4 py-2 text-sm font-semibold transition ${action.tone}`}
               >

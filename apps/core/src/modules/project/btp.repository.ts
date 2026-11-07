@@ -9,6 +9,7 @@ import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import {
   bordereaux,
+  chantierAttachements,
   decompteRevisions,
   decomptes,
   metres,
@@ -44,6 +45,7 @@ import {
 } from './btp-revision.domain';
 import { BtpTransitionError, assertDecompteTransition } from './btp-registres.domain';
 import type { ArretTravaux } from './btp-registres.domain';
+import { appendTerrainMeasurement, assertTerrainMeasurementsPreserved } from './btp-attachement.domain';
 
 // ─── Records ─────────────────────────────────────────────────────────────────
 
@@ -301,6 +303,8 @@ export interface BtpExecutionRepository {
     periodeId: string,
     entries: MetreSaveEntry[],
   ): Promise<{ metres: MetreRecord[]; decompte: DecompteRecord | null }>;
+
+  integrateTerrainAttachement(projectId: string, attachementId: string, periodeId: string, actor: string): Promise<{ metreId: string; periodeId: string }>;
 
   listDecomptes(projectId: string): Promise<(DecompteRecord & { periodeLibelle: string | null })[]>;
   getDecompte(decompteId: string): Promise<
@@ -892,6 +896,14 @@ export class DrizzleBtpExecutionRepository implements BtpExecutionRepository {
 
   async deletePeriode(projectId: string, periodeId: string): Promise<boolean> {
     return this.db.transaction(async (tx) => {
+      const [periodToDelete] = await tx.select({ id: periodes.id }).from(periodes).where(and(
+        eq(periodes.id, periodeId), eq(periodes.projectId, projectId), isNull(periodes.deletedAt),
+      )).limit(1).for('update');
+      if (!periodToDelete) return false;
+      const linked = await tx.select({ id: chantierAttachements.id }).from(chantierAttachements)
+        .innerJoin(metres, eq(metres.id, chantierAttachements.metreId))
+        .where(and(eq(metres.projectId, projectId), eq(metres.periodeId, periodeId))).limit(1);
+      if (linked.length) throw new BtpTransitionError('Cette période contient des quantités terrain intégrées — suppression impossible');
       const [decompteRow] = await tx
         .select()
         .from(decomptes)
@@ -1035,6 +1047,7 @@ export class DrizzleBtpExecutionRepository implements BtpExecutionRepository {
           )
           .limit(1)
           .for('update');
+        assertTerrainMeasurementsPreserved((existing?.lignes ?? []) as MetreLigne[], entry.lignes);
         const values = {
           designationBordereau: bordereauLigne?.designation ?? null,
           unite,
@@ -1077,6 +1090,53 @@ export class DrizzleBtpExecutionRepository implements BtpExecutionRepository {
   }
 
   // ── Décomptes ──────────────────────────────────────────────────────────────
+
+  async integrateTerrainAttachement(projectId: string, attachementId: string, periodeId: string, actor: string) {
+    return this.db.transaction(async (tx) => {
+      // Same first lock as saveMetres: a concurrent office save cannot erase this contribution.
+      const [periode] = await tx.select().from(periodes).where(and(
+        eq(periodes.id, periodeId), eq(periodes.projectId, projectId), isNull(periodes.deletedAt),
+      )).limit(1).for('update');
+      if (!periode) throw new BtpTransitionError('Période introuvable pour ce projet');
+      const [source] = await tx.select().from(chantierAttachements).where(and(
+        eq(chantierAttachements.id, attachementId), eq(chantierAttachements.projectId, projectId),
+      )).limit(1).for('update');
+      if (!source) throw new BtpTransitionError('Attachement introuvable pour ce projet');
+      if (source.metreId) {
+        const [linked] = await tx.select().from(metres).where(and(eq(metres.id, source.metreId), isNull(metres.deletedAt))).limit(1);
+        if (!linked || linked.periodeId !== periodeId) throw new BtpTransitionError('Attachement déjà intégré à un autre métré');
+        return { metreId: linked.id, periodeId: linked.periodeId };
+      }
+      if (source.statut === 'integre') throw new BtpTransitionError('Ancien marquage sans référence de métré : rapprochez les mesures existantes avant toute nouvelle intégration');
+      if (periode.statut !== 'en_cours') throw new BtpTransitionError('La période doit être en cours pour intégrer une quantité');
+      const [decompte] = await tx.select().from(decomptes).where(and(eq(decomptes.periodeId, periodeId), isNull(decomptes.deletedAt))).limit(1);
+      if (decompte && LOCKED_DECOMPTE_STATUTS.has(decompte.statut)) throw new BtpTransitionError('Le décompte est verrouillé');
+      const laterLocked = await tx.select({ id: decomptes.id }).from(decomptes).where(and(
+        eq(decomptes.projectId, projectId), isNull(decomptes.deletedAt),
+        sql`${decomptes.numero} > ${periode.numero} AND ${decomptes.statut} IN ('validated', 'paid')`,
+      )).limit(1);
+      if (laterLocked.length) throw new BtpTransitionError('Un décompte ultérieur est verrouillé — intégration impossible');
+      const bordereau = await this.getBordereauTx(tx, projectId);
+      const line = bordereau?.lignes.find((l) => (l.id ?? String(l.numero)) === source.ligneId);
+      if (!line) throw new BtpTransitionError('Reliez la quantité à une ligne du bordereau de ce projet');
+      const [existing] = await tx.select().from(metres).where(and(
+        eq(metres.periodeId, periodeId), eq(metres.bordereauLigneId, source.ligneId), isNull(metres.deletedAt),
+      )).limit(1).for('update');
+      const totals = appendTerrainMeasurement(line.unite, (existing?.lignes ?? []) as MetreLigne[], {
+        id: source.id, designation: source.designation, unite: source.unite, quantite: Number(source.quantite), note: source.note,
+      }, (existing?.sousSections ?? []) as MetreSousSection[]);
+      const values = { designationBordereau: line.designation, unite: line.unite, lignes: totals.lignes,
+        totalPartiel: String(totals.totalPartiel), quantiteBordereau: String(line.quantite), updatedAt: new Date() };
+      const [saved] = existing
+        ? await tx.update(metres).set(values).where(eq(metres.id, existing.id)).returning()
+        : await tx.insert(metres).values({ projectId, periodeId, bordereauLigneId: source.ligneId, ...values }).returning();
+      if (!saved) throw new BtpTransitionError('Enregistrement du métré échoué');
+      await tx.update(chantierAttachements).set({ statut: 'integre', metreId: saved.id, integratedAt: new Date(), integratedBy: actor })
+        .where(eq(chantierAttachements.id, source.id));
+      await this.rebuildChainTx(tx, projectId);
+      return { metreId: saved.id, periodeId };
+    });
+  }
 
   async listDecomptes(projectId: string) {
     const rows = await this.db

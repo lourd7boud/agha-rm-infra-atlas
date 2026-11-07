@@ -225,6 +225,30 @@ export async function genererEcrituresVentes(formData: FormData) {
   done(target);
 }
 
+export async function genererEcrituresDepenses(formData: FormData) {
+  const target = backTo(formData, '/compta/a-valider');
+  try {
+    await apiPost('/compta/ecritures/generer-depenses', {
+      annee: Math.round(num(formData, 'annee')),
+    });
+  } catch (error) {
+    fail(target, 'genererEcrituresDepenses', error);
+  }
+  done(target);
+}
+
+export async function validerTousBrouillons(formData: FormData) {
+  const target = backTo(formData, '/compta/a-valider');
+  try {
+    await apiPost('/compta/ecritures/valider-brouillons', {
+      annee: Math.round(num(formData, 'annee')),
+    });
+  } catch (error) {
+    fail(target, 'validerTousBrouillons', error);
+  }
+  done(target);
+}
+
 // ── TVA ──────────────────────────────────────────────────────────────────────
 
 export async function patchTva(formData: FormData) {

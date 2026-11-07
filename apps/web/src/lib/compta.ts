@@ -78,6 +78,20 @@ export interface Ecriture {
   lignes?: EcritureLigne[];
 }
 
+/** A confirmed/paid invoice missing its expected écriture (reconciliation gap). */
+export interface FactureSansEcriture {
+  id: string;
+  reference: string;
+  clientName: string;
+  status: string;
+  totalTtcMad: number;
+}
+
+export interface ReconciliationVentes {
+  ventesManquantes: FactureSansEcriture[];
+  encaissementsManquants: FactureSansEcriture[];
+}
+
 export interface GrandLivreLigne {
   ecritureId: string;
   journalCode: string;

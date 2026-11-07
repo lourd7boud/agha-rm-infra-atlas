@@ -3,30 +3,67 @@
 // Éditeur de métré — un bloc par ligne de bordereau. Hiérarchie fidèle au
 // système source : sections (lieu/douar) → sous-sections (élément, avec
 // multiplicateur nombreElements pour le ferraillage) → lignes de mesures aux
-// colonnes dépendantes de l'unité. Les périodes précédentes s'affichent en
-// lecture seule (badge P{n}); « Enregistrer tout » envoie l'ensemble au moteur
-// qui régénère le décompte.
-import { useMemo, useState, useTransition } from 'react';
+// colonnes dépendantes de l'unité. Sur les lignes acier (KG/T) chaque mesure
+// porte son propre « Nombre d’éléments » (éléments structurels identiques
+// répétés : 8 poteaux, 6 poutres…) à côté du « Nombre » (barres dans UN
+// élément) — vide = 1, donc les métrés antérieurs gardent leur résultat. Les
+// périodes précédentes s'affichent en lecture seule (badge P{n});
+// « Enregistrer tout » envoie l'ensemble au moteur qui régénère le décompte.
+import { useEffect, useMemo, useState, useTransition } from 'react';
 import {
   computeLignePartielClient,
   DIAMETRES_DISPONIBLES,
+  metreOpenStateKey,
   metreCalcType,
+  normaliseNombreElements,
+  POIDS_ACIER,
+  restoreMetreOpenState,
   round2Client,
+  serializeMetreOpenState,
   type MetreContext,
   type MetreLigne,
   type MetreSection,
   type MetreSousSection,
 } from '@/lib/btp-shared';
+import { DIMENSION_COLUMNS, fmtMetreQty as fmtQ } from '@/lib/metre-details';
+import { PreviousPeriodes } from './PreviousPeriodes';
 
 interface EntryState {
   bordereauLigneId: string;
+  /** True when Core already has a row, so clearing its last measure must be persisted. */
+  persisted: boolean;
   sections: MetreSection[];
   sousSections: MetreSousSection[];
   lignes: MetreLigne[];
 }
 
-const fmtQ = (value: number) =>
-  value.toLocaleString('fr-MA', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+export function buildMetreSavePayload(entries: Record<string, EntryState>) {
+  return Object.values(entries)
+    .filter(
+      (entry) =>
+        entry.persisted || entry.lignes.length > 0 || entry.sections.length > 0,
+    )
+    .map((entry) => ({
+      bordereauLigneId: entry.bordereauLigneId,
+      sections: entry.sections,
+      sousSections: entry.sousSections,
+      lignes: entry.lignes,
+    }));
+}
+
+export function markPersistedMetreEntries(
+  entries: Record<string, EntryState>,
+  persistedIds: ReadonlySet<string>,
+): Record<string, EntryState> {
+  let next = entries;
+  for (const [key, entry] of Object.entries(entries)) {
+    if (!entry.persisted && persistedIds.has(entry.bordereauLigneId)) {
+      if (next === entries) next = { ...entries };
+      next[key] = { ...entry, persisted: true };
+    }
+  }
+  return next;
+}
 
 function newId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
@@ -38,7 +75,124 @@ function parseNum(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/**
+ * Champ numérique tolérant à la virgule française ("1,5") et au point ("1.5").
+ * Un <input> contrôlé par une valeur number ré-injecte le nombre parsé à chaque
+ * frappe, ce qui avale immédiatement le séparateur saisi ("1," → parse → 1 →
+ * le champ redevient "1"). Ici on garde un brouillon texte pendant la frappe,
+ * on ne re-normalise l'affichage qu'au blur, et on remonte la valeur analysée
+ * à chaque frappe pour que les totaux restent à jour.
+ */
+function DecimalInput({
+  value,
+  onCommit,
+  inputMode = 'decimal',
+  className,
+  title,
+}: {
+  value: number | undefined;
+  onCommit: (value: number | undefined) => void;
+  inputMode?: 'decimal' | 'numeric';
+  className?: string;
+  title?: string;
+}) {
+  const [draft, setDraft] = useState(() =>
+    value == null ? '' : String(value).replace('.', ','),
+  );
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setDraft(value == null ? '' : String(value).replace('.', ','));
+  }, [value, focused]);
+
+  return (
+    <input
+      inputMode={inputMode}
+      title={title}
+      value={draft}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        onCommit(parseNum(e.target.value));
+      }}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      className={className}
+    />
+  );
+}
+
 const SECTION_COLORS = ['#22d3ee', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#f472b6'];
+
+/**
+ * Saisie d'un comptage d'éléments : entier non nul, avec signe négatif pour une
+ * déduction. Les valeurs vides, nulles ou invalides retombent à 1 comme dans le
+ * moteur serveur.
+ */
+function IntegerInput({
+  value,
+  onCommit,
+  className,
+  title,
+}: {
+  value: number | undefined;
+  onCommit: (value: number) => void;
+  className?: string;
+  title?: string;
+}) {
+  const [draft, setDraft] = useState(() =>
+    value == null ? '' : String(value).replace('.', ','),
+  );
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setDraft(value == null ? '' : String(value).replace('.', ','));
+  }, [value, focused]);
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      placeholder="1"
+      title={title}
+      value={draft}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setDraft(raw);
+        // Vide / 0 / invalide → 1 ; le signe d'une déduction est conservé.
+        onCommit(normaliseNombreElements(parseNum(raw)));
+      }}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      className={className}
+    />
+  );
+}
+
+/** Rappel affiché sous chaque table de ferraillage. */
+const ACIER_LEGENDE =
+  'Nombre = barres / pièces dans UN élément · Nombre d’éléments = éléments identiques répétés (8 poteaux, 6 poutres…) — vide = 1 · négatif = déduction · poids = Nombre × Nombre d’éléments × Longueur × poids du Ø.';
+
+const NOMBRE_ELEMENTS_HINT =
+  'Nombre d’éléments structurels identiques répétés pour cette mesure (ex. 8 poteaux, 6 poutres, 4 bassins). Vide = 1, négatif = déduction. « Nombre » reste le nombre de barres dans UN seul élément.';
+
+const SOUS_SECTION_ELEMENTS_HINT =
+  'Nombre d’éléments identiques de cet élément (multiplie ses mesures acier). Une valeur négative crée une déduction. Se cumule avec le « Nombre d’éléments » saisi sur chaque ligne.';
+
+/** Détail du calcul d'un partiel acier (attribut title de la cellule). */
+function poidsPartielTitle(
+  ligne: MetreLigne,
+  elementsTotal: number,
+  partiel: number,
+): string | undefined {
+  const poidsUnitaire = POIDS_ACIER[ligne.diametre ?? 0];
+  if (!poidsUnitaire) return undefined;
+  const nb = (v: number | undefined) =>
+    (v ?? 0).toLocaleString('fr-MA', { maximumFractionDigits: 4 });
+  const kg = poidsUnitaire.toLocaleString('fr-MA', { maximumFractionDigits: 3 });
+  return `${nb(ligne.nombre)} barres × ${nb(elementsTotal)} élément(s) × ${nb(
+    ligne.longueur,
+  )} m × ${kg} kg/m = ${fmtQ(round2Client(partiel))} kg`;
+}
 
 export function MetreEditor({
   projectId,
@@ -52,6 +206,15 @@ export function MetreEditor({
   action: (formData: FormData) => Promise<void>;
 }) {
   const bordereauLignes = context.bordereau?.lignes ?? [];
+  const entryKeys = useMemo(
+    () => bordereauLignes.map((ligne) => ligne.id ?? String(ligne.numero)),
+    [bordereauLignes],
+  );
+  const openStorageKey = metreOpenStateKey(projectId, periodeId);
+  const persistedEntryIds = useMemo(
+    () => new Set(context.metres.map((metre) => metre.bordereauLigneId)),
+    [context.metres],
+  );
   const [entries, setEntries] = useState<Record<string, EntryState>>(() => {
     const initial: Record<string, EntryState> = {};
     for (const ligne of bordereauLignes) {
@@ -59,6 +222,7 @@ export function MetreEditor({
       const existing = context.metres.find((m) => m.bordereauLigneId === key);
       initial[key] = {
         bordereauLigneId: key,
+        persisted: existing !== undefined,
         sections: existing?.sections ?? [],
         sousSections: existing?.sousSections ?? [],
         lignes: existing?.lignes ?? [],
@@ -74,7 +238,40 @@ export function MetreEditor({
     }
     return state;
   });
+  const [openStateReadyKey, setOpenStateReadyKey] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+
+  // A same-route Server Action refresh may preserve this Client Component's
+  // local state. Promote newly created rows once the refreshed server context
+  // confirms them, without overwriting any in-progress local measurements.
+  useEffect(() => {
+    setEntries((current) => markPersistedMetreEntries(current, persistedEntryIds));
+  }, [persistedEntryIds]);
+
+  useEffect(() => {
+    setOpenStateReadyKey(null);
+    setOpen((defaults) => {
+      try {
+        return restoreMetreOpenState(
+          window.localStorage.getItem(openStorageKey),
+          entryKeys,
+          defaults,
+        );
+      } catch {
+        return restoreMetreOpenState(null, entryKeys, defaults);
+      }
+    });
+    setOpenStateReadyKey(openStorageKey);
+  }, [entryKeys, openStorageKey]);
+
+  useEffect(() => {
+    if (openStateReadyKey !== openStorageKey) return;
+    try {
+      window.localStorage.setItem(openStorageKey, serializeMetreOpenState(open, entryKeys));
+    } catch {
+      // Restricted/private browser storage must not block métré entry.
+    }
+  }, [entryKeys, open, openStateReadyKey, openStorageKey]);
 
   function mutate(key: string, mutator: (entry: EntryState) => EntryState) {
     setEntries((prev) => {
@@ -92,10 +289,14 @@ export function MetreEditor({
       const type = metreCalcType(unite);
       let total = 0;
       for (const ligne of entry.lignes) {
+        // Le facteur « Nombre d’éléments » de la ligne est déjà compris dans le
+        // partiel ci-dessous ; sur les lignes d’acier, le nombre d’éléments de
+        // la sous-section (élément structurel) s’y multiplie ensuite — même
+        // enchaînement que le moteur serveur.
         let partiel = computeLignePartielClient(unite, ligne);
         if (type === 'poids' && ligne.subSectionId) {
           const nombreElements = bySousSection.get(ligne.subSectionId)?.nombreElements;
-          if (nombreElements && nombreElements > 0 && nombreElements !== 1) {
+          if (nombreElements && Number.isFinite(nombreElements) && nombreElements !== 1) {
             partiel *= nombreElements;
           }
         }
@@ -107,14 +308,10 @@ export function MetreEditor({
   }, [entries, bordereauLignes]);
 
   function save() {
-    const payload = Object.values(entries)
-      .filter((entry) => entry.lignes.length > 0 || entry.sections.length > 0)
-      .map((entry) => ({
-        bordereauLigneId: entry.bordereauLigneId,
-        sections: entry.sections,
-        sousSections: entry.sousSections,
-        lignes: entry.lignes,
-      }));
+    // Persisted empty entries are deliberate deletions of the last measure.
+    // Unsaved empty bordereau entries stay out of the request to avoid creating
+    // hundreds of inert metre rows.
+    const payload = buildMetreSavePayload(entries);
     if (payload.length === 0) return;
     const formData = new FormData();
     formData.set('projectId', projectId);
@@ -179,30 +376,8 @@ export function MetreEditor({
 
             {isOpen && (
               <div className="border-t border-line px-4 py-3">
-                {/* Périodes précédentes (lecture seule) */}
-                {previous.length > 0 && (
-                  <div className="mb-3 rounded-lg border border-line bg-paper px-3 py-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-faint">
-                      Périodes précédentes (lecture seule)
-                    </p>
-                    <ul className="mt-1 space-y-0.5">
-                      {previous.map((p) => (
-                        <li
-                          key={p.periodeNumero}
-                          className="flex items-center gap-2 font-mono text-[11px] text-muted"
-                        >
-                          <span className="rounded bg-sand px-1.5 py-0.5 font-bold">
-                            P{p.periodeNumero}
-                          </span>
-                          <span>{p.lignes.length} mesure(s)</span>
-                          <span className="ml-auto tabular-nums">
-                            partiel {fmtQ(p.totalPartiel)}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+                {/* Périodes précédentes (lecture seule, détails repliables) */}
+                <PreviousPeriodes unite={bordereauLigne.unite} previous={previous} />
 
                 {/* Sections & sous-sections */}
                 {entry.sections.map((section) => {
@@ -389,16 +564,15 @@ function SousSectionBlock({
         {type === 'poids' && (
           <label className="flex items-center gap-1 text-[10px] font-semibold text-faint">
             × éléments
-            <input
+            <DecimalInput
               inputMode="numeric"
               value={sousSection.nombreElements ?? 1}
-              onChange={(e) =>
+              title={SOUS_SECTION_ELEMENTS_HINT}
+              onCommit={(v) =>
                 mutate(entryKey, (entry) => ({
                   ...entry,
-                  sousSections: entry.sousSections.map((s) =>
-                    s.id === sousSection.id
-                      ? { ...s, nombreElements: parseNum(e.target.value) ?? 1 }
-                      : s,
+                  sousSections: entry.sousSections.map((ss) =>
+                    ss.id === sousSection.id ? { ...ss, nombreElements: v ?? 1 } : ss,
                   ),
                 }))
               }
@@ -436,33 +610,6 @@ function SousSectionBlock({
 
 // ─── Table des mesures ───────────────────────────────────────────────────────
 
-const DIMENSION_COLUMNS: Record<
-  ReturnType<typeof metreCalcType>,
-  { field: keyof MetreLigne; label: string }[]
-> = {
-  volume: [
-    { field: 'nombreSemblables', label: 'Nb semblables' },
-    { field: 'longueur', label: 'Longueur' },
-    { field: 'largeur', label: 'Largeur' },
-    { field: 'profondeur', label: 'Profondeur' },
-  ],
-  surface: [
-    { field: 'nombreSemblables', label: 'Nb semblables' },
-    { field: 'longueur', label: 'Longueur' },
-    { field: 'largeur', label: 'Largeur' },
-  ],
-  lineaire: [
-    { field: 'nombreSemblables', label: 'Nb semblables' },
-    { field: 'longueur', label: 'Longueur' },
-  ],
-  poids: [
-    { field: 'nombre', label: 'Nombre' },
-    { field: 'longueur', label: 'Longueur (ml)' },
-    { field: 'diametre', label: 'Ø (mm)' },
-  ],
-  unite: [{ field: 'nombre', label: 'Nombre' }],
-};
-
 function LignesTable({
   entryKey,
   unite,
@@ -483,7 +630,17 @@ function LignesTable({
   title?: string;
 }) {
   const columns = DIMENSION_COLUMNS[type];
-  const multiplier = type === 'poids' && nombreElements && nombreElements > 0 ? nombreElements : 1;
+  // Multiplicateur de la sous-section (l'élément entier) — métrique historique,
+  // indépendante du « Nombre d’éléments » propre à chaque ligne de mesure.
+  const sousSectionMult =
+    type === 'poids' && nombreElements && Number.isFinite(nombreElements) ? nombreElements : 1;
+  // Une ligne acier répétée à la fois par sa sous-section et par sa colonne
+  // « Nombre d’éléments » verrait ses kg comptés deux fois : on le signale.
+  const ligneMult =
+    type === 'poids'
+      ? Math.max(1, ...lignes.map((l) => normaliseNombreElements(l.nombreElements)))
+      : 1;
+  const doubleCount = sousSectionMult > 1 && ligneMult > 1;
   return (
     <div className="mt-1.5">
       {title && (
@@ -491,15 +648,30 @@ function LignesTable({
           {title}
         </p>
       )}
+      {doubleCount && (
+        <p className="mb-1 rounded-md border border-ochre-soft bg-ochre-soft/20 px-2 py-1 text-[10px] font-medium text-ochre">
+          ⚠ Répétition comptée deux fois : élément × {sousSectionMult} et « Nombre d’éléments »{' '}
+          × {ligneMult} — les deux facteurs se multiplient.
+        </p>
+      )}
       {lignes.length > 0 && (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[560px] text-left text-xs">
+          <table className="w-full min-w-[760px] text-left text-xs">
             <thead className="text-[10px] uppercase tracking-wider text-faint">
               <tr>
                 <th className="px-2 py-1.5">Désignation</th>
                 {columns.map((col) => (
-                  <th key={String(col.field)} className="w-24 px-2 py-1.5 text-right">
+                  <th
+                    key={String(col.field)}
+                    className="w-24 px-2 py-1.5 text-right"
+                    title={col.hint}
+                  >
                     {col.label}
+                    {col.hint && (
+                      <span aria-hidden className="ml-0.5 font-normal text-faint">
+                        ⓘ
+                      </span>
+                    )}
                   </th>
                 ))}
                 <th className="w-24 px-2 py-1.5 text-right">Partiel</th>
@@ -508,7 +680,11 @@ function LignesTable({
             </thead>
             <tbody className="divide-y divide-line/50">
               {lignes.map((ligne) => {
-                const partiel = computeLignePartielClient(unite, ligne) * multiplier;
+                const ligneElements =
+                  type === 'poids' ? normaliseNombreElements(ligne.nombreElements) : 1;
+                const elementsTotal = ligneElements * sousSectionMult;
+                const partiel = computeLignePartielClient(unite, ligne) * sousSectionMult;
+                const showRepetition = type === 'poids' && elementsTotal > 1;
                 return (
                   <tr key={ligne.id} className="group">
                     <td className="px-1 py-1">
@@ -525,6 +701,15 @@ function LignesTable({
                         placeholder="Mesure…"
                         className="w-full rounded border border-transparent bg-transparent px-1.5 py-1 outline-none focus:border-cyan focus:bg-paper"
                       />
+                      {showRepetition && (
+                        <p
+                          title={`La quantité calculée porte sur ${elementsTotal} exemplaire(s) identique(s).`}
+                          className="mt-0.5 inline-flex w-fit rounded-full bg-emerald-soft px-1.5 py-0.5 font-mono text-[9px] font-bold text-emerald"
+                        >
+                          × {ligneElements}
+                          {sousSectionMult > 1 ? ` × ${sousSectionMult}` : ''} élément(s)
+                        </p>
+                      )}
                     </td>
                     {columns.map((col) => (
                       <td key={String(col.field)} className="px-1 py-1">
@@ -550,17 +735,31 @@ function LignesTable({
                               </option>
                             ))}
                           </select>
-                        ) : (
-                          <input
-                            inputMode="decimal"
-                            value={(ligne[col.field] as number | undefined) ?? ''}
-                            onChange={(e) =>
+                        ) : col.field === 'nombreElements' ? (
+                          <IntegerInput
+                            // Défaut du moteur affiché pour les mesures
+                            // enregistrées avant le champ : rien n'est réécrit
+                            // tant que l'utilisateur ne modifie pas la valeur.
+                            value={ligne.nombreElements ?? col.fallback}
+                            title={NOMBRE_ELEMENTS_HINT}
+                            onCommit={(v) =>
                               mutate(entryKey, (entry) => ({
                                 ...entry,
                                 lignes: entry.lignes.map((l) =>
-                                  l.id === ligne.id
-                                    ? { ...l, [col.field]: parseNum(e.target.value) }
-                                    : l,
+                                  l.id === ligne.id ? { ...l, nombreElements: v } : l,
+                                ),
+                              }))
+                            }
+                            className="w-full rounded border border-transparent bg-transparent px-1.5 py-1 text-right font-mono tabular-nums outline-none focus:border-cyan focus:bg-paper"
+                          />
+                        ) : (
+                          <DecimalInput
+                            value={ligne[col.field] as number | undefined}
+                            onCommit={(v) =>
+                              mutate(entryKey, (entry) => ({
+                                ...entry,
+                                lignes: entry.lignes.map((l) =>
+                                  l.id === ligne.id ? { ...l, [col.field]: v } : l,
                                 ),
                               }))
                             }
@@ -569,7 +768,14 @@ function LignesTable({
                         )}
                       </td>
                     ))}
-                    <td className="px-2 py-1 text-right font-mono font-bold tabular-nums text-emerald">
+                    <td
+                      title={
+                        type === 'poids' && elementsTotal > 0
+                          ? poidsPartielTitle(ligne, elementsTotal, partiel)
+                          : undefined
+                      }
+                      className="px-2 py-1 text-right font-mono font-bold tabular-nums text-emerald"
+                    >
                       {fmtQ(round2Client(partiel))}
                     </td>
                     <td className="px-1 py-1 text-center">
@@ -593,6 +799,9 @@ function LignesTable({
           </table>
         </div>
       )}
+      {type === 'poids' && lignes.length > 0 && (
+        <p className="mt-1 text-[10px] leading-relaxed text-faint">{ACIER_LEGENDE}</p>
+      )}
       <button
         type="button"
         onClick={() =>
@@ -604,7 +813,13 @@ function LignesTable({
                 id: newId('mes'),
                 subSectionId: sousSectionId,
                 designation: '',
-                ...(type !== 'poids' ? { nombreSemblables: 1 } : {}),
+                // Lignes d'acier : « Nombre d’éléments » initialisé à 1 — la
+                // répétition d'éléments identiques ne s'applique que si
+                // l'utilisateur la saisit ; les autres unités gardent
+                // l'historique (1 seul exemplaire).
+                ...(type === 'poids'
+                  ? { nombreElements: 1 }
+                  : { nombreSemblables: 1 }),
               },
             ],
           }))
