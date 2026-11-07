@@ -9,6 +9,7 @@ import {
   banqueMouvements,
   comptaExercices,
   comptaProfil,
+  comptaProfilAudits,
   comptes,
   clients as salesClients,
   ecritureLignes,
@@ -148,6 +149,8 @@ export interface EcritureRecord {
   totalDebit: number;
   totalCredit: number;
   createdBy: string | null;
+  validatedBy: string | null;
+  validatedAt: Date | null;
   createdAt: Date;
   lignes?: EcritureLigneRecord[];
 }
@@ -202,6 +205,10 @@ export class ComptaError extends Error {
 export interface ComptaRepository extends AccountingProjectionPort {
   getProfil(): Promise<ProfilRecord>;
   updateProfil(patch: Partial<Omit<ProfilRecord, 'id'>>): Promise<ProfilRecord>;
+  updateFaitGenerateurTva(
+    value: ProfilRecord['faitGenerateurTva'],
+    actor: string,
+  ): Promise<ProfilRecord>;
 
   listExercices(): Promise<ExerciceRecord[]>;
   getExercice(annee: number): Promise<ExerciceRecord | null>;
@@ -234,10 +241,8 @@ export interface ComptaRepository extends AccountingProjectionPort {
   getEcriture(id: string): Promise<EcritureRecord | null>;
   createEcriture(input: EcritureInput, createdBy: string | null): Promise<EcritureRecord>;
   updateEcriture(id: string, input: EcritureInput): Promise<EcritureRecord>;
-  validerEcriture(id: string): Promise<EcritureRecord>;
-  /** Bulk-approve: validate every brouillon écriture of the exercice at once (the
-   *  supervisor's one-click "tout valider" after reviewing the queue). Returns count. */
-  validerTousBrouillons(annee: number): Promise<number>;
+  validerEcriture(id: string, actor: string): Promise<EcritureRecord>;
+  validateSelectedEntries(ids: string[], actor: string): Promise<EcritureRecord[]>;
   deleteEcriture(id: string): Promise<boolean>;
   /** Reconciliation safety-net: confirmed/paid invoices whose vente/encaissement
    *  écriture is missing — so a gap (closed exercice, crash, import) is always visible. */
@@ -383,6 +388,8 @@ function mapEcriture(row: typeof ecritures.$inferSelect): EcritureRecord {
     totalDebit: num(row.totalDebit),
     totalCredit: num(row.totalCredit),
     createdBy: row.createdBy,
+    validatedBy: row.validatedBy,
+    validatedAt: row.validatedAt,
     createdAt: row.createdAt,
   };
 }
@@ -450,6 +457,36 @@ export class DrizzleComptaRepository implements ComptaRepository {
       .returning();
     if (!row) throw new ComptaError('Profil comptable introuvable', 404);
     return mapProfil(row);
+  }
+
+  async updateFaitGenerateurTva(
+    value: ProfilRecord['faitGenerateurTva'],
+    actor: string,
+  ): Promise<ProfilRecord> {
+    return this.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(comptaProfil)
+        .limit(1)
+        .for('update');
+      if (!current) throw new ComptaError('Profil comptable introuvable', 404);
+      const [updated] = await tx
+        .update(comptaProfil)
+        .set({ faitGenerateurTva: value, updatedAt: new Date() })
+        .where(eq(comptaProfil.id, current.id))
+        .returning();
+      if (!updated) throw new ComptaError('Profil comptable introuvable', 404);
+      if (current.faitGenerateurTva !== value) {
+        await tx.insert(comptaProfilAudits).values({
+          profilId: current.id,
+          field: 'faitGenerateurTva',
+          oldValue: current.faitGenerateurTva,
+          newValue: value,
+          changedBy: actor,
+        });
+      }
+      return mapProfil(updated);
+    });
   }
 
   // Exercices.
@@ -848,30 +885,68 @@ export class DrizzleComptaRepository implements ComptaRepository {
     return updated;
   }
 
-  async validerEcriture(id: string): Promise<EcritureRecord> {
-    const [row] = await this.db
-      .update(ecritures)
-      .set({ statut: 'validee', updatedAt: new Date() })
-      .where(and(eq(ecritures.id, id), isNull(ecritures.deletedAt)))
-      .returning();
+  async validerEcriture(id: string, actor: string): Promise<EcritureRecord> {
+    const [row] = await this.validateSelectedEntries([id], actor);
     if (!row) throw new ComptaError('Écriture introuvable', 404);
-    return mapEcriture(row);
+    return row;
   }
 
-  async validerTousBrouillons(annee: number): Promise<number> {
-    const exercice = await this.ensureExercice(annee);
-    const rows = await this.db
-      .update(ecritures)
-      .set({ statut: 'validee', updatedAt: new Date() })
-      .where(
-        and(
-          eq(ecritures.exerciceId, exercice.id),
-          eq(ecritures.statut, 'brouillon'),
-          isNull(ecritures.deletedAt),
-        ),
-      )
-      .returning({ id: ecritures.id });
-    return rows.length;
+  async validateSelectedEntries(
+    ids: string[],
+    actor: string,
+  ): Promise<EcritureRecord[]> {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) {
+      throw new ComptaError('Sélection vide.', 400);
+    }
+    return this.db.transaction(async (tx) => {
+      const selected = await tx
+        .select()
+        .from(ecritures)
+        .where(
+          and(inArray(ecritures.id, uniqueIds), isNull(ecritures.deletedAt)),
+        )
+        .for('update');
+      const foundIds = new Set(selected.map((entry) => entry.id));
+      const missing = uniqueIds.filter((id) => !foundIds.has(id));
+      const ineligible = selected
+        .filter((entry) => entry.statut !== 'brouillon')
+        .map((entry) => ({ id: entry.id, statut: entry.statut }));
+      if (missing.length > 0 || ineligible.length > 0) {
+        throw new ComptaError(
+          JSON.stringify({
+            message: 'Sélection non validable; aucune écriture modifiée.',
+            missing,
+            ineligible,
+          }),
+          409,
+        );
+      }
+      const now = new Date();
+      const rows = await tx
+        .update(ecritures)
+        .set({
+          statut: 'validee',
+          validatedBy: actor,
+          validatedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            inArray(ecritures.id, uniqueIds),
+            eq(ecritures.statut, 'brouillon'),
+            isNull(ecritures.deletedAt),
+          ),
+        )
+        .returning();
+      if (rows.length !== uniqueIds.length) {
+        throw new ComptaError(
+          'Conflit concurrent; aucune écriture validée.',
+          409,
+        );
+      }
+      return rows.map(mapEcriture);
+    });
   }
 
   async reconciliationVentes(annee: number): Promise<ReconciliationVentes> {

@@ -30,9 +30,11 @@ export type AccountingProjectionStatus = 'pending' | 'projected' | 'blocked';
 // ── Clients ────────────────────────────────────────────────────────────────
 
 export type ClientStatus = 'actif' | 'inactif';
+export type ClientType = 'professionnel' | 'particulier';
 
 export interface UpsertClient {
   name: string;
+  clientType?: ClientType;
   ice?: string;
   contactName?: string;
   phone?: string;
@@ -45,6 +47,7 @@ export interface UpsertClient {
 export interface ClientRecord {
   id: string;
   name: string;
+  clientType: ClientType;
   ice?: string;
   contactName?: string;
   phone?: string;

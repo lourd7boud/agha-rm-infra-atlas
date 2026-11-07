@@ -145,6 +145,7 @@ export class DrizzleSalesRepository implements SalesRepository {
       .insert(clients)
       .values({
         name: input.name,
+        clientType: input.clientType,
         ice: input.ice,
         contactName: input.contactName,
         phone: input.phone,
@@ -156,6 +157,7 @@ export class DrizzleSalesRepository implements SalesRepository {
       .onConflictDoUpdate({
         target: [clients.companyId, clients.name],
         set: {
+          clientType: sql`coalesce(excluded.client_type, ${clients.clientType})`,
           ice: sql`coalesce(excluded.ice, ${clients.ice})`,
           contactName: sql`coalesce(excluded.contact_name, ${clients.contactName})`,
           phone: sql`coalesce(excluded.phone, ${clients.phone})`,
@@ -1198,6 +1200,7 @@ function toClient(row: ClientRow): ClientRecord {
   return {
     id: row.id,
     name: row.name,
+    clientType: row.clientType as ClientRecord['clientType'],
     ice: row.ice ?? undefined,
     contactName: row.contactName ?? undefined,
     phone: row.phone ?? undefined,

@@ -106,6 +106,14 @@ const ecritureInputSchema = z.object({
   lignes: z.array(ligneSchema).min(2).max(60),
 });
 
+const faitGenerateurTvaSchema = z.object({
+  faitGenerateurTva: z.enum(['non_configure', 'encaissement', 'debits']),
+});
+
+const validationSelectionSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(100),
+});
+
 // ── Contrôleur cœur ──────────────────────────────────────────────────────────
 
 @Roles(...COMPTA_ROLES)
@@ -129,6 +137,23 @@ export class ComptaCoreController {
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     try {
       return await this.compta.updateProfil(parsed.data);
+    } catch (error) {
+      toComptaHttp(error);
+    }
+  }
+
+  @Roles('direction', 'comptable')
+  @Patch('profil/tva')
+  async patchTvaProfile(@Body() body: unknown, @Req() req: AuthedRequest) {
+    const parsed = faitGenerateurTvaSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const actor = actorFrom(req);
+    if (!actor) throw new BadRequestException('Identité acteur requise.');
+    try {
+      return await this.compta.updateFaitGenerateurTva(
+        parsed.data.faitGenerateurTva,
+        actor,
+      );
     } catch (error) {
       toComptaHttp(error);
     }
@@ -249,10 +274,30 @@ export class ComptaCoreController {
     }
   }
 
+  @Roles('direction', 'comptable')
   @Post('ecritures/:id/valider')
-  async validerEcriture(@Param('id') id: string) {
+  async validerEcriture(
+    @Param('id') id: string,
+    @Req() req: AuthedRequest,
+  ) {
+    const actor = actorFrom(req);
+    if (!actor) throw new BadRequestException('Identité acteur requise.');
     try {
-      return await this.compta.validerEcriture(id);
+      return await this.compta.validerEcriture(id, actor);
+    } catch (error) {
+      toComptaHttp(error);
+    }
+  }
+
+  @Roles('direction', 'comptable')
+  @Post('ecritures/valider-selection')
+  async validateSelection(@Body() body: unknown, @Req() req: AuthedRequest) {
+    const parsed = validationSelectionSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const actor = actorFrom(req);
+    if (!actor) throw new BadRequestException('Identité acteur requise.');
+    try {
+      return await this.compta.validateSelectedEntries(parsed.data.ids, actor);
     } catch (error) {
       toComptaHttp(error);
     }
@@ -299,19 +344,6 @@ export class ComptaCoreController {
     try {
       const crees = await this.compta.genererEcrituresDepenses(parsed.data.annee, actorFrom(req));
       return { crees };
-    } catch (error) {
-      toComptaHttp(error);
-    }
-  }
-
-  /** Supervisor bulk-approve: validate every brouillon écriture of the year. */
-  @Post('ecritures/valider-brouillons')
-  async validerBrouillons(@Body() body: unknown) {
-    const parsed = z.object({ annee: anneeSchema }).safeParse(body);
-    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
-    try {
-      const valides = await this.compta.validerTousBrouillons(parsed.data.annee);
-      return { valides };
     } catch (error) {
       toComptaHttp(error);
     }

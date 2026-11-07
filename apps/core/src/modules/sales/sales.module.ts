@@ -1,8 +1,8 @@
 import {
   BadRequestException,
   Body,
-  ConflictException,
   Controller,
+  Delete,
   Get,
   Inject,
   Logger,
@@ -18,7 +18,11 @@ import { z } from 'zod';
 import { getDb } from '../../db/client';
 import { Roles } from '../auth/auth.module';
 import { ComptaRepositoryModule } from '../compta/compta-repository.module';
-import { ComptaAutoPostingService } from '../compta/compta-auto-posting.service';
+import {
+  COMPTA_REPOSITORY,
+  type ComptaRepository,
+} from '../compta/compta.repository';
+import { actorFrom, type AuthedRequest } from '../compta/compta-http.helpers';
 import { DrizzleSalesRepository } from './sales.drizzle.repository';
 import { InMemorySalesRepository } from './sales.repository';
 import { SalesAccountingEventModule } from './sales-accounting-event.module';
@@ -31,6 +35,7 @@ import {
 
 const clientSchema = z.object({
   name: z.string().min(2).max(300),
+  clientType: z.enum(['professionnel', 'particulier']).optional(),
   ice: z.string().max(20).optional(),
   contactName: z.string().max(200).optional(),
   phone: z.string().max(30).optional(),
@@ -98,12 +103,37 @@ const deliveryNoteStatusSchema = z.object({
   status: z.enum(['brouillon', 'livre']),
 });
 
-const invoiceStatusSchema = z.object({
-  status: z.enum(['brouillon', 'envoyee', 'payee', 'annulee']),
-  // Optional payment method (only meaningful for → payee) — drives the trésorerie
-  // account/journal of the auto-generated encaissement écriture. Defaults server-
-  // side to virement (bank) when omitted.
-  method: z.enum(['virement', 'cheque', 'espece', 'carte']).optional(),
+const civilDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .transform((value) => new Date(`${value}T00:00:00.000Z`));
+
+const paymentSchema = z.object({
+  amountCents: z.number().int().positive(),
+  method: z.enum(['virement', 'cheque', 'especes', 'carte']),
+  treasuryAccount: z.string().regex(/^\d{4,6}$/),
+  valueDate: civilDateSchema,
+  reference: z.string().min(1).max(200).optional(),
+  idempotencyKey: z.string().min(8).max(200),
+});
+
+const paymentReversalSchema = z.object({
+  valueDate: civilDateSchema,
+  idempotencyKey: z.string().min(8).max(200),
+});
+
+const creditNoteSchema = z.object({
+  creditDate: civilDateSchema,
+  totalHtCents: z.number().int().nonnegative(),
+  tvaCents: z.number().int().nonnegative(),
+  reason: z.string().min(2).max(500),
+});
+
+const updateInvoiceDraftSchema = z.object({
+  version: z.number().int().positive(),
+  dueDate: civilDateSchema.optional(),
+  paymentTerms: z.string().max(500).optional(),
+  notes: z.string().max(2000).optional(),
 });
 
 // ── pagination (datao-parity: DB-side LIMIT/OFFSET) ──────────────────────────
@@ -126,9 +156,14 @@ function parsePaging(page?: string, limit?: string): { limit: number; offset: nu
 export class SalesController {
   constructor(
     @Inject(SALES_REPOSITORY) private readonly repository: SalesRepository,
-    // Auto-posting bridge: confirming an invoice generates its écriture at once.
-    private readonly autoPosting: ComptaAutoPostingService,
+    @Inject(COMPTA_REPOSITORY) private readonly compta: ComptaRepository,
   ) {}
+
+  private actor(req: AuthedRequest): string {
+    const actor = actorFrom(req);
+    if (!actor) throw new BadRequestException('Identité acteur requise.');
+    return actor;
+  }
 
   // ── clients ─────────────────────────────────────────────────────────────────
 
@@ -222,6 +257,12 @@ export class SalesController {
     return quote;
   }
 
+  @Roles('direction', 'finance', 'marches')
+  @Post('quotes/:id/issue')
+  async issueQuote(@Param('id') id: string, @Req() req: AuthedRequest) {
+    return this.repository.issueQuote(id, this.actor(req), new Date());
+  }
+
   @Roles('direction', 'finance', 'marches', 'admin-si')
   @Patch('quotes/:id/status')
   async setQuoteStatus(@Param('id') id: string, @Body() body: unknown) {
@@ -272,6 +313,12 @@ export class SalesController {
     return note;
   }
 
+  @Roles('direction', 'finance', 'marches')
+  @Post('delivery-notes/:id/issue')
+  async issueDeliveryNote(@Param('id') id: string, @Req() req: AuthedRequest) {
+    return this.repository.issueDeliveryNote(id, this.actor(req), new Date());
+  }
+
   @Roles('direction', 'finance', 'marches', 'travaux', 'admin-si')
   @Patch('delivery-notes/:id/status')
   async setDeliveryNoteStatus(@Param('id') id: string, @Body() body: unknown) {
@@ -305,14 +352,13 @@ export class SalesController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    const parsedStatus = invoiceStatusSchema
-      .pick({ status: true })
-      .partial()
-      .safeParse({ status });
+    const parsedStatus = z
+      .enum(['brouillon', 'emise', 'annulee', 'envoyee', 'payee'])
+      .safeParse(status);
     return this.repository.listInvoices(
       {
         clientId: clientId || undefined,
-        status: parsedStatus.success ? parsedStatus.data.status : undefined,
+        status: parsedStatus.success ? parsedStatus.data : undefined,
       },
       parsePaging(page, limit),
     );
@@ -325,13 +371,12 @@ export class SalesController {
     @Query('clientId') clientId?: string,
     @Query('status') status?: string,
   ) {
-    const parsedStatus = invoiceStatusSchema
-      .pick({ status: true })
-      .partial()
-      .safeParse({ status });
+    const parsedStatus = z
+      .enum(['brouillon', 'emise', 'annulee', 'envoyee', 'payee'])
+      .safeParse(status);
     return this.repository.invoicesSummary({
       clientId: clientId || undefined,
-      status: parsedStatus.success ? parsedStatus.data.status : undefined,
+      status: parsedStatus.success ? parsedStatus.data : undefined,
     });
   }
 
@@ -343,54 +388,115 @@ export class SalesController {
     return invoice;
   }
 
-  @Roles('direction', 'finance', 'admin-si')
-  @Patch('invoices/:id/status')
-  async setInvoiceStatus(
+  @Roles('direction', 'finance')
+  @Post('invoices/:id/issue')
+  async issueInvoice(@Param('id') id: string, @Req() req: AuthedRequest) {
+    const invoice = await this.repository.getInvoice(id);
+    if (!invoice) throw new NotFoundException('Facture introuvable');
+    const client = await this.repository.getClient(invoice.clientId);
+    if (!client) throw new NotFoundException('Client introuvable');
+    if (!client.address?.trim()) {
+      throw new BadRequestException('Adresse du client requise pour émettre.');
+    }
+    if (client.clientType === 'professionnel' && !client.ice?.trim()) {
+      throw new BadRequestException(
+        'ICE du client professionnel requis pour émettre.',
+      );
+    }
+    const profile = await this.compta.getProfil();
+    const requiredSeller = [
+      profile.raisonSociale,
+      profile.adresse,
+      profile.ice,
+      profile.identifiantFiscal,
+      profile.registreCommerce,
+    ];
+    if (requiredSeller.some((value) => !value?.trim())) {
+      throw new BadRequestException(
+        'Profil légal vendeur incomplet pour émettre la facture.',
+      );
+    }
+    return this.repository.issueInvoice(id, this.actor(req), new Date(), {
+      legalName: profile.raisonSociale,
+      address: profile.adresse!,
+      ice: profile.ice!,
+      taxId: profile.identifiantFiscal!,
+      tradeRegister: profile.registreCommerce!,
+      professionalTaxId: profile.taxeProfessionnelle ?? undefined,
+    });
+  }
+
+  @Roles('direction', 'finance')
+  @Patch('invoices/:id')
+  async updateInvoiceDraft(@Param('id') id: string, @Body() body: unknown) {
+    const parsed = updateInvoiceDraftSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    return this.repository.updateDraftInvoice(id, parsed.data);
+  }
+
+  @Roles('direction', 'finance')
+  @Delete('invoices/:id')
+  async deleteInvoiceDraft(@Param('id') id: string) {
+    await this.repository.deleteDraftInvoice(id);
+    return { deleted: true };
+  }
+
+  @Roles('direction', 'finance')
+  @Post('invoices/:id/payments')
+  async recordPayment(
     @Param('id') id: string,
     @Body() body: unknown,
-    @Req() req: { user?: { username?: string; sub?: string } },
+    @Req() req: AuthedRequest,
   ) {
-    const parsed = invoiceStatusSchema.safeParse(body);
+    const parsed = paymentSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
-    const existing = await this.repository.getInvoice(id);
-    if (!existing) throw new NotFoundException('Facture introuvable');
-    if (existing.status === 'annulee') {
-      throw new ConflictException('Facture déjà annulée');
-    }
-    // Stamp paidAt only on the FIRST transition into 'payee' — re-marking an
-    // already-paid invoice must not drift the audit date (undefined preserves the
-    // stored value in the repo), keeping it consistent with the idempotent écriture.
-    const isFirstPayment =
-      parsed.data.status === 'payee' && existing.status !== 'payee';
-    const paidAt = isFirstPayment ? new Date() : undefined;
-    const updated = await this.repository.setInvoiceStatus(
-      id,
-      parsed.data.status,
-      paidAt,
-    );
-    // Confirming an invoice (leaving 'brouillon') auto-generates its sale
-    // écriture in compta — the accountant only supervises. Idempotent &
-    // best-effort: it never fails the status change.
-    if (parsed.data.status === 'envoyee' || parsed.data.status === 'payee') {
-      const actor = req.user?.username ?? req.user?.sub ?? null;
-      const ecriture = await this.autoPosting.onInvoiceConfirmed(id, actor);
-      // The encaissement (D 514x/516x / C 3421) CLEARS the client receivable, so it
-      // must only post once the sale écriture that OPENED that receivable exists —
-      // otherwise 3421 would be credited with no matching debit. Gate on it.
-      const saleExists =
-        ecriture.created ||
-        ecriture.reason === 'already_posted' ||
-        ecriture.reason === 'raced';
-      const reglement =
-        parsed.data.status === 'payee' && saleExists
-          ? await this.autoPosting.onInvoicePaid(id, actor, parsed.data.method)
-          : undefined;
-      // Surface the posting outcomes so the UI can warn immediately when an
-      // écriture was not generated (e.g. closed exercice) — not just a server log.
-      return { ...updated, ecriture, ...(reglement ? { reglement } : {}) };
-    }
-    return updated;
+    return this.repository.recordPayment({
+      invoiceId: id,
+      ...parsed.data,
+      actor: this.actor(req),
+    });
   }
+
+  @Roles('direction', 'finance')
+  @Post('invoices/:id/payments/:paymentId/reverse')
+  async reversePayment(
+    @Param('id') id: string,
+    @Param('paymentId') paymentId: string,
+    @Body() body: unknown,
+    @Req() req: AuthedRequest,
+  ) {
+    const parsed = paymentReversalSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    return this.repository.reversePayment({
+      invoiceId: id,
+      paymentId,
+      ...parsed.data,
+      actor: this.actor(req),
+    });
+  }
+
+  @Roles('direction', 'finance')
+  @Post('invoices/:id/credit-notes')
+  async createCreditNote(
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Req() req: AuthedRequest,
+  ) {
+    const parsed = creditNoteSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    return this.repository.createCreditNote({
+      invoiceId: id,
+      ...parsed.data,
+      createdBy: this.actor(req),
+    });
+  }
+
+  @Roles('direction', 'finance')
+  @Post('credit-notes/:id/issue')
+  async issueCreditNote(@Param('id') id: string, @Req() req: AuthedRequest) {
+    return this.repository.issueCreditNote(id, this.actor(req), new Date());
+  }
+
 }
 
 const salesRepositoryProvider = {

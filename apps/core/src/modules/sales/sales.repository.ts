@@ -134,6 +134,7 @@ export class InMemorySalesRepository implements SalesRepository {
       const record: ClientRecord = {
         id: randomUUID(),
         name: input.name,
+        clientType: input.clientType ?? 'professionnel',
         ice: input.ice,
         contactName: input.contactName,
         phone: input.phone,
@@ -151,6 +152,7 @@ export class InMemorySalesRepository implements SalesRepository {
     // Back-fill only: incoming non-null enriches, incoming null keeps existing.
     const merged: ClientRecord = {
       ...existing,
+      clientType: input.clientType ?? existing.clientType,
       ice: input.ice ?? existing.ice,
       contactName: input.contactName ?? existing.contactName,
       phone: input.phone ?? existing.phone,
