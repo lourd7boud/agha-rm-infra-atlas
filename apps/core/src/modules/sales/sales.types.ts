@@ -75,7 +75,7 @@ export interface QuoteRecord {
   id: string;
   clientId: string;
   projectId?: string;
-  reference: string;
+  reference: string | null;
   objet?: string;
   status: QuoteStatus;
   quoteDate: Date;
@@ -122,7 +122,7 @@ export interface DeliveryNoteRecord {
   clientId: string;
   projectId?: string;
   quoteId?: string;
-  reference: string;
+  reference: string | null;
   deliveryDate: Date;
   status: DeliveryNoteStatus;
   notes?: string;
@@ -154,7 +154,7 @@ export interface InvoiceRecord {
   clientId: string;
   projectId?: string;
   quoteId?: string;
-  reference: string;
+  reference: string | null;
   invoiceDate: Date;
   dueDate?: Date;
   status: InvoiceStatus;

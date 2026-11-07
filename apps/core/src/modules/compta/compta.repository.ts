@@ -729,6 +729,8 @@ export class DrizzleComptaRepository implements ComptaRepository {
 
     let crees = 0;
     for (const invoice of rows) {
+      const reference = invoice.reference;
+      if (!reference) continue;
       const ht = num(invoice.totalHt);
       const ttc = num(invoice.totalTtc);
       const tva = round2(toDecimal(ttc).minus(ht));
@@ -745,8 +747,8 @@ export class DrizzleComptaRepository implements ComptaRepository {
           {
             journalCode: 'VTE',
             dateEcriture: invoice.invoiceDate,
-            pieceRef: invoice.reference,
-            libelle: `Facture ${invoice.reference} — ${invoice.clientName}`,
+            pieceRef: reference,
+            libelle: `Facture ${reference} — ${invoice.clientName}`,
             lignes,
           },
           createdBy,

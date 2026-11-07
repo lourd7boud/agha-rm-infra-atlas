@@ -10,7 +10,9 @@
 import { sql } from 'drizzle-orm';
 import {
   boolean,
+  check,
   date,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -27,39 +29,101 @@ export const compta = pgSchema('compta');
 // ── Profil fiscal & légal de l'entreprise (ligne unique) ─────────────────────
 // Tout ce qui paramètre les calculs (régime TVA, taux IS, mois de clôture) et
 // la fiche légale (RC/IF/ICE/TP/CNSS) que le tableau de bord affiche.
-export const comptaProfil = compta.table('profil', {
-  id: text('id').primaryKey().default('agha-rm-infra'),
-  raisonSociale: text('raison_sociale').notNull().default('AGHA RM INFRA'),
-  formeJuridique: text('forme_juridique').notNull().default('SARL'),
-  capitalSocial: numeric('capital_social', { precision: 14, scale: 2 }),
-  registreCommerce: text('registre_commerce'),
-  identifiantFiscal: text('identifiant_fiscal'),
-  ice: text('ice'),
-  taxeProfessionnelle: text('taxe_professionnelle'),
-  cnssAffiliation: text('cnss_affiliation'),
-  adresse: text('adresse'),
-  ville: text('ville'),
-  gerant: text('gerant'),
-  dateCreation: date('date_creation', { mode: 'date' }),
-  /** Mois de clôture de l'exercice (12 = 31 décembre, le cas standard). */
-  exerciceClotureMois: integer('exercice_cloture_mois').notNull().default(12),
-  /** Régime de déclaration TVA: mensuel (CA ≥ 1M MAD) ou trimestriel. */
-  regimeTva: text('regime_tva').notNull().default('mensuel'),
-  /** Prorata de déduction TVA (%) — 100 pour un assujetti total. */
-  prorataTva: numeric('prorata_tva', { precision: 6, scale: 3 }).notNull().default('100'),
-  /** Taux IS applicable (%) — barème LF en vigueur, configurable. */
-  tauxIs: numeric('taux_is', { precision: 6, scale: 3 }).notNull().default('20'),
-  /** Taux de cotisation minimale (%) sur les produits imposables. */
-  tauxCotisationMinimale: numeric('taux_cotisation_minimale', { precision: 6, scale: 3 })
-    .notNull()
-    .default('0.25'),
-  effectif: integer('effectif'),
-  assujettiTp: boolean('assujetti_tp').notNull().default(true),
-  /** Fin de l'exonération quinquennale de taxe professionnelle (création). */
-  exonerationTpJusquau: date('exoneration_tp_jusquau', { mode: 'date' }),
-  notes: text('notes'),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const comptaProfil = compta.table(
+  'profil',
+  {
+    id: text('id').primaryKey().default('agha-rm-infra'),
+    raisonSociale: text('raison_sociale').notNull().default('AGHA RM INFRA'),
+    formeJuridique: text('forme_juridique').notNull().default('SARL'),
+    capitalSocial: numeric('capital_social', { precision: 14, scale: 2 }),
+    registreCommerce: text('registre_commerce'),
+    identifiantFiscal: text('identifiant_fiscal'),
+    ice: text('ice'),
+    taxeProfessionnelle: text('taxe_professionnelle'),
+    cnssAffiliation: text('cnss_affiliation'),
+    adresse: text('adresse'),
+    ville: text('ville'),
+    gerant: text('gerant'),
+    dateCreation: date('date_creation', { mode: 'date' }),
+    /** Mois de clôture de l'exercice (12 = 31 décembre, le cas standard). */
+    exerciceClotureMois: integer('exercice_cloture_mois').notNull().default(12),
+    /** Régime de déclaration TVA: mensuel (CA ≥ 1M MAD) ou trimestriel. */
+    regimeTva: text('regime_tva').notNull().default('mensuel'),
+    /** Événement rendant la TVA collectée exigible; intentionally safe by default. */
+    faitGenerateurTva: text('fait_generateur_tva')
+      .notNull()
+      .default('non_configure'),
+    /** Account mappings are explicit and confirmed by the authorized accountant. */
+    compteClientVentes: text('compte_client_ventes'),
+    compteProduitVentes: text('compte_produit_ventes'),
+    compteTvaAttente: text('compte_tva_attente'),
+    compteTvaDue: text('compte_tva_due'),
+    /** Prorata de déduction TVA (%) — 100 pour un assujetti total. */
+    prorataTva: numeric('prorata_tva', { precision: 6, scale: 3 }).notNull().default('100'),
+    /** Taux IS applicable (%) — barème LF en vigueur, configurable. */
+    tauxIs: numeric('taux_is', { precision: 6, scale: 3 }).notNull().default('20'),
+    /** Taux de cotisation minimale (%) sur les produits imposables. */
+    tauxCotisationMinimale: numeric('taux_cotisation_minimale', {
+      precision: 6,
+      scale: 3,
+    })
+      .notNull()
+      .default('0.25'),
+    effectif: integer('effectif'),
+    assujettiTp: boolean('assujetti_tp').notNull().default(true),
+    /** Fin de l'exonération quinquennale de taxe professionnelle (création). */
+    exonerationTpJusquau: date('exoneration_tp_jusquau', { mode: 'date' }),
+    notes: text('notes'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check(
+      'compta_profil_fait_generateur_tva_chk',
+      sql`${table.faitGenerateurTva} in ('non_configure', 'encaissement', 'debits')`,
+    ),
+    foreignKey({
+      columns: [table.compteClientVentes],
+      foreignColumns: [comptes.code],
+      name: 'compta_profil_compte_client_ventes_fk',
+    }),
+    foreignKey({
+      columns: [table.compteProduitVentes],
+      foreignColumns: [comptes.code],
+      name: 'compta_profil_compte_produit_ventes_fk',
+    }),
+    foreignKey({
+      columns: [table.compteTvaAttente],
+      foreignColumns: [comptes.code],
+      name: 'compta_profil_compte_tva_attente_fk',
+    }),
+    foreignKey({
+      columns: [table.compteTvaDue],
+      foreignColumns: [comptes.code],
+      name: 'compta_profil_compte_tva_due_fk',
+    }),
+  ],
+);
+
+export const comptaProfilAudits = compta.table(
+  'profil_audit',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    profilId: text('profil_id')
+      .notNull()
+      .references(() => comptaProfil.id),
+    field: text('field').notNull(),
+    oldValue: jsonb('old_value'),
+    newValue: jsonb('new_value'),
+    changedBy: text('changed_by').notNull(),
+    changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('compta_profil_audit_profile_date_idx').on(
+      table.profilId,
+      table.changedAt,
+    ),
+  ],
+);
 
 // ── Exercices comptables ─────────────────────────────────────────────────────
 export const comptaExercices = compta.table(
@@ -128,9 +192,12 @@ export const ecritures = compta.table(
     /** Provenance: manuel | vente (facture sales) | systeme. */
     source: text('source').notNull().default('manuel'),
     sourceId: uuid('source_id'),
+    sourceEvent: text('source_event').notNull().default('principal'),
     totalDebit: numeric('total_debit', { precision: 14, scale: 2 }).notNull().default('0'),
     totalCredit: numeric('total_credit', { precision: 14, scale: 2 }).notNull().default('0'),
     createdBy: text('created_by'),
+    validatedBy: text('validated_by'),
+    validatedAt: timestamp('validated_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
@@ -143,10 +210,15 @@ export const ecritures = compta.table(
     ),
     index('compta_ecriture_date_idx').on(table.dateEcriture),
     index('compta_ecriture_exercice_idx').on(table.exerciceId),
-    // Une facture de vente ne génère qu'une écriture (garde anti-doublon).
-    uniqueIndex('compta_ecriture_source_uniq')
-      .on(table.source, table.sourceId)
+    // Each immutable commercial event generates at most one active entry.
+    uniqueIndex('compta_ecriture_source_event_uniq')
+      .on(table.source, table.sourceId, table.sourceEvent)
       .where(sql`source_id is not null and deleted_at is null`),
+    check(
+      'compta_ecriture_validation_audit_chk',
+      sql`(${table.statut} = 'brouillon' and ${table.validatedBy} is null and ${table.validatedAt} is null)
+        or (${table.statut} = 'validee' and ${table.validatedBy} is not null and ${table.validatedAt} is not null)`,
+    ),
   ],
 );
 
