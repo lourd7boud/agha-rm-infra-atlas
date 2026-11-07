@@ -57,6 +57,50 @@ function done(target: string): never {
   redirect(`${target}${sep}saved=1`);
 }
 
+export interface ComptaActionState {
+  status: 'idle' | 'success' | 'error';
+  message?: string;
+}
+
+export const INITIAL_COMPTA_ACTION_STATE: ComptaActionState = { status: 'idle' };
+
+function selectedIds(formData: FormData): string[] {
+  const direct = formData
+    .getAll('ids')
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (direct.length > 0) return [...new Set(direct)];
+  try {
+    const parsed = JSON.parse(str(formData, 'selectedIds')) as unknown;
+    return Array.isArray(parsed)
+      ? [...new Set(parsed.filter((id): id is string => typeof id === 'string'))]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+async function guardedComptaAction(
+  work: () => Promise<unknown>,
+  knownMessage: string,
+): Promise<ComptaActionState> {
+  try {
+    await work();
+    revalidatePath('/compta', 'layout');
+    revalidatePath('/sales/invoices');
+    return { status: 'success' };
+  } catch (error) {
+    if (
+      error instanceof AtlasApiError &&
+      [400, 403, 404, 409, 422].includes(error.status)
+    ) {
+      return { status: 'error', message: knownMessage };
+    }
+    throw error;
+  }
+}
+
 // ── Profil & exercices ───────────────────────────────────────────────────────
 
 export async function updateProfil(formData: FormData) {
@@ -203,6 +247,39 @@ export async function validerEcriture(formData: FormData) {
   done(target);
 }
 
+export async function validateSelectedEntries(
+  _previous: ComptaActionState,
+  formData: FormData,
+): Promise<ComptaActionState> {
+  const ids = selectedIds(formData);
+  if (ids.length === 0) {
+    return {
+      status: 'error',
+      message: 'Sélectionnez au moins une écriture à valider.',
+    };
+  }
+  return guardedComptaAction(
+    () => apiPost('/compta/ecritures/valider-selection', { ids }),
+    'Validation refusée. La sélection a changé; aucune écriture n’a été validée.',
+  );
+}
+
+export async function retrySalesReconciliation(
+  _previous: ComptaActionState,
+  formData: FormData,
+): Promise<ComptaActionState> {
+  const ids = selectedIds(formData);
+  const annee = opt(formData, 'annee');
+  return guardedComptaAction(
+    () =>
+      apiPost('/compta/reconciliation/ventes/retry', {
+        ids: ids.length > 0 ? ids : undefined,
+        annee: annee ? Number(annee) : undefined,
+      }),
+    'Relance refusée. Vérifiez la configuration comptable et réessayez.',
+  );
+}
+
 export async function deleteEcriture(formData: FormData) {
   const target = backTo(formData, '/compta/ecritures');
   try {
@@ -250,6 +327,19 @@ export async function validerTousBrouillons(formData: FormData) {
 }
 
 // ── TVA ──────────────────────────────────────────────────────────────────────
+
+export async function updateFaitGenerateurTva(
+  _previous: ComptaActionState,
+  formData: FormData,
+): Promise<ComptaActionState> {
+  return guardedComptaAction(
+    () =>
+      apiPatch('/compta/profil/tva', {
+        faitGenerateurTva: str(formData, 'faitGenerateurTva'),
+      }),
+    'Configuration TVA refusée. Seuls la direction et le comptable peuvent la modifier.',
+  );
+}
 
 export async function patchTva(formData: FormData) {
   const id = str(formData, 'id');

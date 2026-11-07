@@ -11,10 +11,12 @@ import { fmtMad } from './projects';
 // ── Clients ────────────────────────────────────────────────────────────────
 
 export type ClientStatus = 'actif' | 'inactif';
+export type ClientType = 'professionnel' | 'particulier';
 
 export interface ClientRecord {
   id: string;
   name: string;
+  clientType: ClientType;
   ice?: string;
   contactName?: string;
   phone?: string;
@@ -66,7 +68,7 @@ export interface QuoteRecord {
   id: string;
   clientId: string;
   projectId?: string;
-  reference: string;
+  reference: string | null;
   objet?: string;
   status: QuoteStatus;
   quoteDate: string;
@@ -75,6 +77,10 @@ export interface QuoteRecord {
   tvaPct: number;
   totalTtcMad: number;
   notes?: string;
+  issuedAt?: string;
+  issuedBy?: string;
+  legalSnapshot?: LegalSellerSnapshot;
+  version: number;
   createdAt: string;
   lines: DocLineRecord[];
 }
@@ -127,10 +133,14 @@ export interface DeliveryNoteRecord {
   clientId: string;
   projectId?: string;
   quoteId?: string;
-  reference: string;
+  reference: string | null;
   deliveryDate: string;
   status: DeliveryNoteStatus;
   notes?: string;
+  issuedAt?: string;
+  issuedBy?: string;
+  legalSnapshot?: LegalSellerSnapshot;
+  version: number;
   createdAt: string;
   lines: DeliveryLineRecord[];
 }
@@ -159,24 +169,99 @@ export type DeliveryNoteListItem = Omit<DeliveryNoteRecord, 'lines'> & {
 
 // ── Invoices / factures ──────────────────────────────────────────────────────
 
-export type InvoiceStatus = 'brouillon' | 'envoyee' | 'payee' | 'annulee';
+export type InvoiceLifecycle = 'brouillon' | 'emise' | 'annulee';
+export type InvoiceStatus = InvoiceLifecycle | 'envoyee' | 'payee';
+export type InvoiceSettlementState =
+  | 'non_reglee'
+  | 'partiellement_payee'
+  | 'payee'
+  | 'solde_crediteur'
+  | 'remboursee';
+export type AccountingProjectionStatus = 'pending' | 'projected' | 'blocked';
+
+export interface LegalSellerSnapshot {
+  legalName: string;
+  address: string;
+  ice: string;
+  taxId: string;
+  tradeRegister: string;
+  professionalTaxId?: string;
+}
 
 export interface InvoiceRecord {
   id: string;
   clientId: string;
   projectId?: string;
   quoteId?: string;
-  reference: string;
+  reference: string | null;
   invoiceDate: string;
   dueDate?: string;
   status: InvoiceStatus;
   totalHtMad: number;
   tvaPct: number;
+  tvaMad: number;
   totalTtcMad: number;
   paidAt?: string;
   notes?: string;
+  paymentTerms?: string;
+  issuedAt?: string;
+  issuedBy?: string;
+  legalSnapshot?: LegalSellerSnapshot;
+  version: number;
+  legacyPaid: boolean;
   createdAt: string;
   lines: DocLineRecord[];
+}
+
+export interface InvoicePaymentRecord {
+  id: string;
+  invoiceId: string;
+  movementType: 'encaissement' | 'remboursement';
+  amountCents: number;
+  method: string;
+  treasuryAccount: string;
+  valueDate: string;
+  originalMovementId?: string;
+  reference?: string;
+  idempotencyKey: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface CreditNoteRecord {
+  id: string;
+  invoiceId: string;
+  reference: string | null;
+  status: InvoiceLifecycle;
+  creditDate: string;
+  totalHtCents: number;
+  tvaCents: number;
+  totalTtcCents: number;
+  againstOutstandingCents: number;
+  againstCollectedCents: number;
+  reason: string;
+  issuedAt?: string;
+  issuedBy?: string;
+  version: number;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface SettlementSummary {
+  state: InvoiceSettlementState;
+  netInvoiceCents: number;
+  netReceivedCents: number;
+  outstandingCents: number;
+  customerCreditCents: number;
+}
+
+export interface InvoiceAggregate {
+  invoice: InvoiceRecord;
+  payments: InvoicePaymentRecord[];
+  creditNotes: CreditNoteRecord[];
+  settlement: SettlementSummary;
+  accountingProjection: AccountingProjectionStatus;
+  legacyPaidOpening: boolean;
 }
 
 /** One page of results plus the total matching count (mirrors core Paged<T>). */
@@ -200,6 +285,7 @@ export const INVOICE_STATUS_BADGES: Record<
   { label: string; classes: string }
 > = {
   brouillon: { label: 'Brouillon', classes: 'bg-sand text-muted' },
+  emise: { label: 'Émise', classes: 'bg-cyan-soft text-cyan' },
   envoyee: { label: 'Envoyée', classes: 'bg-cyan-soft text-cyan' },
   payee: { label: 'Payée', classes: 'bg-emerald-soft text-emerald' },
   annulee: { label: 'Annulée', classes: 'bg-clay-soft text-clay' },
@@ -210,10 +296,43 @@ export const INVOICE_STATUS_OPTIONS: readonly {
   label: string;
 }[] = [
   { value: 'brouillon', label: 'Brouillon' },
+  { value: 'emise', label: 'Émise' },
   { value: 'envoyee', label: 'Envoyée' },
   { value: 'payee', label: 'Payée' },
   { value: 'annulee', label: 'Annulée' },
 ];
+
+export const INVOICE_SETTLEMENT_BADGES: Record<
+  InvoiceSettlementState,
+  { label: string; classes: string }
+> = {
+  non_reglee: { label: 'Non réglée', classes: 'bg-sand text-muted' },
+  partiellement_payee: {
+    label: 'Partiellement payée',
+    classes: 'bg-ochre-soft text-ochre',
+  },
+  payee: { label: 'Payée', classes: 'bg-emerald-soft text-emerald' },
+  solde_crediteur: {
+    label: 'Solde créditeur',
+    classes: 'bg-cyan-soft text-cyan',
+  },
+  remboursee: { label: 'Remboursée', classes: 'bg-sand text-faint' },
+};
+
+export const ACCOUNTING_PROJECTION_BADGES: Record<
+  AccountingProjectionStatus,
+  { label: string; classes: string }
+> = {
+  pending: { label: 'Comptabilisation en attente', classes: 'bg-sand text-muted' },
+  projected: {
+    label: 'Projetée en comptabilité',
+    classes: 'bg-emerald-soft text-emerald',
+  },
+  blocked: {
+    label: 'Comptabilisation bloquée',
+    classes: 'bg-clay-soft text-clay',
+  },
+};
 
 // ── Aliases ────────────────────────────────────────────────────────────────
 // Short, domain-facing names for the records above. The `*Record` names stay
@@ -253,4 +372,64 @@ export function fmtDate(value: string | undefined): string {
 /** TVA amount derived from a document's HT / TTC (avoids re-rounding drift). */
 export function tvaMad(doc: { totalHtMad: number; totalTtcMad: number }): number {
   return doc.totalTtcMad - doc.totalHtMad;
+}
+
+const centsFormatter = new Intl.NumberFormat('fr-MA', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+export function fmtCentsMad(cents: number): string {
+  if (!Number.isSafeInteger(cents)) {
+    throw new Error('Le montant doit être un entier sûr en centimes.');
+  }
+  return `${centsFormatter.format(cents / 100)} MAD`;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function assertSafeCents(value: unknown, field: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new Error(`Agrégat de facture invalide: ${field}.`);
+  }
+}
+
+export function parseInvoiceAggregate(value: unknown): InvoiceAggregate {
+  if (!isObject(value)) throw new Error('Agrégat de facture invalide.');
+  if (
+    !isObject(value.invoice) ||
+    !Array.isArray(value.payments) ||
+    !Array.isArray(value.creditNotes) ||
+    !isObject(value.settlement) ||
+    typeof value.legacyPaidOpening !== 'boolean'
+  ) {
+    throw new Error('Agrégat de facture incomplet.');
+  }
+  const projection = value.accountingProjection;
+  if (!['pending', 'projected', 'blocked'].includes(String(projection))) {
+    throw new Error('Projection comptable invalide.');
+  }
+  const state = value.settlement.state;
+  if (
+    ![
+      'non_reglee',
+      'partiellement_payee',
+      'payee',
+      'solde_crediteur',
+      'remboursee',
+    ].includes(String(state))
+  ) {
+    throw new Error('Agrégat de facture invalide: état de règlement.');
+  }
+  for (const field of [
+    'netInvoiceCents',
+    'netReceivedCents',
+    'outstandingCents',
+    'customerCreditCents',
+  ] as const) {
+    assertSafeCents(value.settlement[field], field);
+  }
+  return value as unknown as InvoiceAggregate;
 }

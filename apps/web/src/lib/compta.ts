@@ -18,6 +18,11 @@ export interface ComptaProfil {
   dateCreation: string | null;
   exerciceClotureMois: number;
   regimeTva: 'mensuel' | 'trimestriel';
+  faitGenerateurTva: 'non_configure' | 'encaissement' | 'debits';
+  compteClientVentes: string | null;
+  compteProduitVentes: string | null;
+  compteTvaAttente: string | null;
+  compteTvaDue: string | null;
   prorataTva: number;
   tauxIs: number;
   tauxCotisationMinimale: number;
@@ -75,7 +80,33 @@ export interface Ecriture {
   totalDebit: number;
   totalCredit: number;
   createdBy: string | null;
+  validatedBy: string | null;
+  validatedAt: string | null;
   lignes?: EcritureLigne[];
+}
+
+export type ReconciliationStatus = 'pending' | 'projected' | 'blocked';
+
+export interface SalesAccountingEvent {
+  id: string;
+  eventKey: string;
+  eventType: string;
+  sourceId: string;
+  sourceVersion: number;
+  occurredAt: string;
+  payload: Record<string, unknown>;
+  status: ReconciliationStatus;
+  attempts: number;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+  accountingEntryId?: string;
+}
+
+export interface ReconciliationSummary {
+  projected: number;
+  blocked: number;
+  pending: number;
+  records: SalesAccountingEvent[];
 }
 
 /** A confirmed/paid invoice missing its expected écriture (reconciliation gap). */
