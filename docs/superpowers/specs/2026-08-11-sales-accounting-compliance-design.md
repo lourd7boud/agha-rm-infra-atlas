@@ -138,6 +138,10 @@ retry from issuing the same document twice.
 - Existing official references, if any appear before migration, are preserved.
   A deployment preflight must abort on ambiguous or conflicting legacy numbers
   rather than silently renumber them.
+- A legacy `payee` invoice is accepted only when `paid_at` is present. Migration
+  marks it `legacy_paid` before normalizing the lifecycle to `emise`; settlement
+  remains fully paid through that explicit compatibility marker until an
+  accountant reconciles it into the append-only payment ledger.
 
 ## Legally Relevant Invoice Data
 
@@ -195,6 +199,10 @@ refund remains payable; after the refund is recorded it becomes `remboursee`.
 
 Money is calculated in integer centimes at domain boundaries. Display-layer
 floating-point values are not used to decide balances or legal state.
+The aggregate treats `legacy_paid` as a paid opening position only when no
+post-migration settlement movements exist, and exposes that provenance in its
+audit/compatibility data instead of fabricating a treasury account or payment
+method.
 
 ## Credit Notes and Refunds
 

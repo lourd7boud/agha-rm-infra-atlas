@@ -172,15 +172,15 @@ git commit -m "feat(compta): model TVA sales and receipt postings"
 - Modify: `apps/core/drizzle/meta/_journal.json`
 - Create: `apps/core/src/db/sales-accounting-schema.spec.ts`
 
-- [ ] **Step 1: Write failing schema contract tests**
+- [x] **Step 1: Write failing schema contract tests**
 
 Import the Drizzle tables and assert the columns, unique indexes, and foreign-key surfaces required by the domain. The test must instantiate schema metadata, not grep SQL text.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm --filter @atlas/core test -- sales-accounting-schema.spec.ts`
 
-- [ ] **Step 3: Extend `sales` schema additively**
+- [x] **Step 3: Extend `sales` schema additively**
 
 Add:
 
@@ -191,11 +191,11 @@ Add:
 - `sales.credit_note` and `sales.credit_note_line`, each draft-first and officially numbered on issue;
 - `sales.accounting_event` with unique event identity, payload snapshot, `pending | projected | blocked`, attempts, last error code/message, and linked accounting entry.
 
-- [ ] **Step 4: Extend `compta` schema additively**
+- [x] **Step 4: Extend `compta` schema additively**
 
 Add `faitGenerateurTva` to `compta.profil` with database default `non_configure`. Add `sourceEvent`, `validatedBy`, and `validatedAt` to entries. Replace the active-source uniqueness constraint with `(source, source_id, source_event)` so invoice issue, each receipt, reversal, and credit note are independently idempotent.
 
-- [ ] **Step 5: Write migration `0053` with data preflight**
+- [x] **Step 5: Write migration `0053` with data preflight**
 
 The SQL must:
 
@@ -206,11 +206,17 @@ The SQL must:
 5. replace only the old accounting-source unique index;
 6. use a timestamp greater than `1784510000000` in the journal.
 
-- [ ] **Step 6: Verify migration generation does not produce an unexpected diff**
+- [x] **Step 6: Verify migration generation does not produce an unexpected diff**
 
 Run `pnpm --filter @atlas/core db:generate` in a temporary inspection branch or inspect generated output without accepting unrelated drift. If Drizzle generates a snapshot, keep only artifacts consistent with `0053`; never renumber deployed migrations.
 
-- [ ] **Step 7: Run tests/typecheck and commit**
+Audit note (2026-11-07): isolated generation cannot provide a meaningful
+incremental diff because the repository intentionally uses custom migrations
+without a snapshot for every migration number. No generated artifact was
+accepted. The Drizzle metadata contract test, migration preflight SQL, journal
+ordering, focused tests, and Core typecheck are the authoritative checks.
+
+- [x] **Step 7: Run tests/typecheck and commit**
 
 ```powershell
 pnpm --filter @atlas/core test -- sales-accounting-schema.spec.ts
@@ -256,7 +262,7 @@ createCreditNote(input: CreateCreditNote): Promise<CreditNoteRecord>;
 issueCreditNote(id: string, actor: string, issuedAt: Date): Promise<CreditNoteRecord>;
 ```
 
-Return an `InvoiceAggregate` containing authoritative totals, payments, credit notes, settlement, and accounting-event status.
+Return an `InvoiceAggregate` containing authoritative totals, payments, credit notes, settlement, and accounting-event status. Preserve the migration's explicit `legacyPaid` opening position: when no payment movements exist it yields a paid settlement with visible legacy provenance; never invent a treasury account or payment method.
 
 - [ ] **Step 4: Implement in-memory behavior**
 
@@ -622,7 +628,14 @@ git push -u origin codex/sales-accounting-compliance
 
 - [ ] **Step 5: Deploy through the repository-supported production path**
 
-Apply `0053` once, verify its migration ledger row, deploy the exact reviewed commit, and restart only the required services. Do not use ad-hoc edits on the server.
+Because `0053` replaces draft-reference and invoice-status invariants, first put
+sales/accounting writes into a verified maintenance drain and stop the old Core
+writer before applying the migration. Apply `0053` once, verify its migration
+ledger row, start the exact reviewed Core/Web/Worker images, pass health checks,
+then reopen writes. The deploy script must fail closed and keep maintenance mode
+active if migration or health verification fails. Do not leave the legacy Core
+serving between migration commit and new-container readiness, and do not use
+ad-hoc edits on the server.
 
 - [ ] **Step 6: Run post-deploy smoke tests**
 
