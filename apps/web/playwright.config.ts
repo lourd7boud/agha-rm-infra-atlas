@@ -11,7 +11,7 @@ export default defineConfig({
   // Dev-server first compiles exceed the 5s default; still a deterministic wait.
   expect: { timeout: 20_000 },
   use: {
-    baseURL: 'http://localhost:3001',
+    baseURL: process.env.ATLAS_E2E_WEB_URL ?? 'http://localhost:3001',
     screenshot: 'only-on-failure',
   },
 });

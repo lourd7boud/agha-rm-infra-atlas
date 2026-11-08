@@ -241,11 +241,10 @@ export function buildCreditNotePosting(
       pendingTvaCents = nominalPendingTvaCents;
       const closesOutstanding =
         input.againstOutstandingCents === input.outstandingBeforeCreditCents;
-      const hasCollectedAllocation = input.againstCollectedCents > 0;
       if (
         closesOutstanding &&
-        hasCollectedAllocation &&
-        input.availablePendingTvaCents === nominalPendingTvaCents + 1
+        Math.abs(input.availablePendingTvaCents - nominalPendingTvaCents) <= 1 &&
+        input.availablePendingTvaCents <= input.tvaCents
       ) {
         pendingTvaCents = input.availablePendingTvaCents;
       }

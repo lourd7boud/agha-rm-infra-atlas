@@ -108,10 +108,10 @@ const ecritureInputSchema = z.object({
 
 const faitGenerateurTvaSchema = z.object({
   faitGenerateurTva: z.enum(['non_configure', 'encaissement', 'debits']),
-  compteClientVentes: z.string().regex(/^\d{4,6}$/).optional(),
-  compteProduitVentes: z.string().regex(/^\d{4,6}$/).optional(),
-  compteTvaAttente: z.string().regex(/^\d{4,6}$/).optional(),
-  compteTvaDue: z.string().regex(/^\d{4,6}$/).optional(),
+  compteClientVentes: z.string().regex(/^\d{4,6}$/).nullable().optional(),
+  compteProduitVentes: z.string().regex(/^\d{4,6}$/).nullable().optional(),
+  compteTvaAttente: z.string().regex(/^\d{4,6}$/).nullable().optional(),
+  compteTvaDue: z.string().regex(/^\d{4,6}$/).nullable().optional(),
 });
 
 const validationSelectionSchema = z.object({

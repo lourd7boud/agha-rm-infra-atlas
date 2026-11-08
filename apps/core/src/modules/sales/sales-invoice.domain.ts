@@ -115,8 +115,10 @@ export interface PaymentMovement {
 
 export function summarizePaymentMovements(
   movements: readonly PaymentMovement[],
+  openingReceivedCents: MoneyCents = 0,
 ): Pick<SettlementInput, 'receivedCents' | 'refundedCents'> {
-  let receivedCents = 0;
+  assertNonNegativeCents(openingReceivedCents, 'La position de reprise encaissée');
+  let receivedCents = openingReceivedCents;
   let refundedCents = 0;
 
   for (const movement of movements) {

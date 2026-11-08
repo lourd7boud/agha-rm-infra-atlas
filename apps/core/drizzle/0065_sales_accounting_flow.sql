@@ -349,9 +349,9 @@ CREATE TABLE sales.credit_note (
   CONSTRAINT sales_credit_note_totals_chk
     CHECK (total_ht_mad + tva_mad = total_ttc_mad),
   CONSTRAINT sales_credit_note_allocation_chk
-    CHECK (against_outstanding_mad + against_collected_mad = total_ttc_mad),
+    CHECK (status = 'brouillon' OR against_outstanding_mad + against_collected_mad = total_ttc_mad),
   CONSTRAINT sales_credit_note_reversed_tva_chk
-    CHECK (reversed_pending_tva_mad + reversed_due_tva_mad = tva_mad),
+    CHECK (status = 'brouillon' OR reversed_pending_tva_mad + reversed_due_tva_mad = tva_mad),
   CONSTRAINT sales_credit_note_issue_state_chk CHECK (
     (status = 'brouillon' AND reference IS NULL AND issued_at IS NULL
       AND issued_by IS NULL AND legal_snapshot IS NULL AND content_hash IS NULL)

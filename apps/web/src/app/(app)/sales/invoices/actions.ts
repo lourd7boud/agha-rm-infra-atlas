@@ -16,6 +16,7 @@ type SalesOperation =
   | 'reversePayment'
   | 'createCreditNote'
   | 'issueCreditNote'
+  | 'refundCreditNote'
   | 'issueQuote'
   | 'issueDeliveryNote';
 
@@ -29,6 +30,7 @@ const KNOWN_ERROR_MESSAGES: Record<SalesOperation, string> = {
   reversePayment: 'Annulation du règlement refusée.',
   createCreditNote: 'Création de l’avoir refusée. Vérifiez les montants.',
   issueCreditNote: 'Émission de l’avoir refusée.',
+  refundCreditNote: 'Remboursement refusé. Vérifiez le solde de l’avoir.',
   issueQuote: 'Émission du devis refusée.',
   issueDeliveryNote: 'Émission du bon de livraison refusée.',
 };
@@ -219,6 +221,25 @@ export async function issueQuote(
     'issueQuote',
     () => apiPost(`/sales/quotes/${id}/issue`, {}),
     ['/sales/quotes', `/sales/quotes/${id}`, `/sales/quotes/${id}/print`],
+  );
+}
+
+export async function refundInvoiceCreditNote(
+  _previous: SalesActionState,
+  formData: FormData,
+): Promise<SalesActionState> {
+  const id = value(formData, 'invoiceId');
+  const creditNoteId = value(formData, 'creditNoteId');
+  return mutate(
+    'refundCreditNote',
+    () => apiPost(`/sales/invoices/${id}/credit-notes/${creditNoteId}/refunds`, {
+      amountCents: centsFromForm(formData, 'amountCents', 'amountMad'),
+      method: value(formData, 'method'),
+      treasuryAccount: value(formData, 'treasuryAccount'),
+      valueDate: value(formData, 'valueDate'),
+      idempotencyKey: value(formData, 'idempotencyKey'),
+    }),
+    invoicePaths(id),
   );
 }
 

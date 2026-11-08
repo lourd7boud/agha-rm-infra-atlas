@@ -476,11 +476,11 @@ export const creditNotes = sales.table(
     ),
     check(
       'sales_credit_note_allocation_chk',
-      sql`${table.againstOutstandingMad} + ${table.againstCollectedMad} = ${table.totalTtcMad}`,
+      sql`${table.status} = 'brouillon' or ${table.againstOutstandingMad} + ${table.againstCollectedMad} = ${table.totalTtcMad}`,
     ),
     check(
       'sales_credit_note_reversed_tva_chk',
-      sql`${table.reversedPendingTvaMad} + ${table.reversedDueTvaMad} = ${table.tvaMad}`,
+      sql`${table.status} = 'brouillon' or ${table.reversedPendingTvaMad} + ${table.reversedDueTvaMad} = ${table.tvaMad}`,
     ),
     check(
       'sales_credit_note_issue_state_chk',

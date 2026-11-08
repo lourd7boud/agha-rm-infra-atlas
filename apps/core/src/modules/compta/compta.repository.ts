@@ -792,7 +792,7 @@ export class DrizzleComptaRepository implements ComptaRepository {
       this.db
         .select({ statut: comptaExercices.statut })
         .from(comptaExercices)
-        .where(eq(comptaExercices.annee, event.occurredAt.getUTCFullYear()))
+        .where(eq(comptaExercices.annee, this.salesAccountingDate(event).getUTCFullYear()))
         .limit(1),
     ]);
     return {
@@ -833,7 +833,8 @@ export class DrizzleComptaRepository implements ComptaRepository {
     posting: ReadyPosting,
     actor: string,
   ): Promise<DraftAccountingEntry> {
-    const exercise = await this.ensureExercice(event.occurredAt.getUTCFullYear());
+    const accountingDate = this.salesAccountingDate(event);
+    const exercise = await this.ensureExercice(accountingDate.getUTCFullYear());
     if (exercise.statut !== 'ouvert') {
       throw new ComptaError(`L'exercice ${exercise.annee} est clôturé.`, 409);
     }
@@ -842,8 +843,8 @@ export class DrizzleComptaRepository implements ComptaRepository {
         tx,
         exercise.id,
         {
-          journalCode: event.eventType.includes('payment') ? 'BQ' : 'VTE',
-          dateEcriture: event.occurredAt,
+          journalCode: event.eventType.includes('payment') || event.eventType === 'refund_recorded' ? 'BQ' : 'VTE',
+          dateEcriture: accountingDate,
           pieceRef:
             typeof event.payload.reference === 'string'
               ? event.payload.reference
@@ -864,6 +865,19 @@ export class DrizzleComptaRepository implements ComptaRepository {
       ),
     );
     return { id, status: 'brouillon' };
+  }
+
+  private salesAccountingDate(event: SalesAccountingEvent): Date {
+    if (event.payload.accountingDate === undefined) return event.occurredAt;
+    const value = event.payload.accountingDate;
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new ComptaError('Date comptable de vente invalide.');
+    }
+    const date = new Date(value + 'T00:00:00Z');
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+      throw new ComptaError('Date comptable de vente invalide.');
+    }
+    return date;
   }
 
   async updateEcriture(id: string, input: EcritureInput): Promise<EcritureRecord> {

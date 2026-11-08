@@ -164,6 +164,14 @@ describe('ComptaAutoPostingService.projectEvent', () => {
     expect(result.lastErrorCode).toBe('projection_transitoire');
   });
 
+  test('records invalid event payloads as blocked instead of aborting reconciliation', async () => {
+    harness = makeHarness({ ...EVENT, payload: { ...EVENT.payload, totalHtCents: -1 } });
+    const result = await harness.service.projectEvent('event-1', 'comptable-1');
+    expect(result.status).toBe('blocked');
+    expect(result.lastErrorCode).toBe('payload_invalide');
+    expect(harness.projection.createDraftEntry).not.toHaveBeenCalled();
+  });
+
   test('successful retry clears the previous blocking message', async () => {
     harness = makeHarness({
       ...EVENT,

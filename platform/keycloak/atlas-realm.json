@@ -10,6 +10,7 @@
       { "name": "marches", "description": "Division Marchés" },
       { "name": "travaux", "description": "Direction Travaux" },
       { "name": "finance", "description": "Direction Administrative & Financière" },
+      { "name": "comptable", "description": "Comptabilité — configuration TVA et validation des écritures" },
       { "name": "terrain", "description": "Field staff (mobile)" },
       { "name": "admin-si", "description": "Systems administration" }
     ]

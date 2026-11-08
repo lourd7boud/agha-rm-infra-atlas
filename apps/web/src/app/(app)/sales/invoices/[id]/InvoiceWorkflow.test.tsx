@@ -9,6 +9,7 @@ vi.mock('../actions', () => ({
   deleteInvoiceDraft: vi.fn(),
   recordInvoicePayment: vi.fn(),
   reverseInvoicePayment: vi.fn(),
+  refundInvoiceCreditNote: vi.fn(),
   createInvoiceCreditNote: vi.fn(),
   issueInvoiceCreditNote: vi.fn(),
 }));

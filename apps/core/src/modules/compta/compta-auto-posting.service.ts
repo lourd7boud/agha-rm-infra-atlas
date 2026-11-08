@@ -133,7 +133,13 @@ export class ComptaAutoPostingService {
       );
     }
 
-    const posting = this.buildPosting(event, context);
+    let posting: PostingResult;
+    try {
+      posting = this.buildPosting(event, context);
+    } catch (error) {
+      return this.events.markBlocked(event.id, 'payload_invalide',
+        error instanceof Error ? error.message : 'Payload comptable invalide.');
+    }
     if (posting.kind === 'blocked') {
       return this.events.markBlocked(event.id, posting.code, posting.message);
     }
@@ -184,6 +190,8 @@ export class ComptaAutoPostingService {
           event.payload,
           'previouslyTransferredTvaCents',
         ),
+        receiptTvaCents: event.payload.receiptTvaCents === undefined
+          ? undefined : cents(event.payload, 'receiptTvaCents'),
         treasuryAccount: text(event.payload, 'treasuryAccount'),
         accounts: context.accounts,
       });
@@ -201,6 +209,8 @@ export class ComptaAutoPostingService {
           event.payload,
           'previouslyTransferredTvaCents',
         ),
+        receiptTvaCents: event.payload.receiptTvaCents === undefined
+          ? undefined : cents(event.payload, 'receiptTvaCents'),
         treasuryAccount: text(event.payload, 'treasuryAccount'),
         accounts: context.accounts,
       });
@@ -241,7 +251,9 @@ export class ComptaAutoPostingService {
           event.payload,
           'availablePendingTvaCents',
         ),
-        availableDueTvaCents: cents(event.payload, 'availableDueTvaCents'),
+        availableDueTvaCents: cents(event.payload, 'availableDueTvaCents') +
+          (context.faitGenerateurTva === 'debits'
+            ? cents(event.payload, 'availablePendingTvaCents') : 0),
         accounts: context.accounts,
       });
     }

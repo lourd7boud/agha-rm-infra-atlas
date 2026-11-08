@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ConflictException,
   Delete,
   Get,
   Inject,
@@ -26,6 +27,7 @@ import { actorFrom, type AuthedRequest } from '../compta/compta-http.helpers';
 import { DrizzleSalesRepository } from './sales.drizzle.repository';
 import { InMemorySalesRepository } from './sales.repository';
 import { SalesAccountingEventModule } from './sales-accounting-event.module';
+import { SalesInvoiceDomainError } from './sales-invoice.domain';
 import {
   SALES_REPOSITORY,
   type LegalSellerSnapshot,
@@ -513,6 +515,28 @@ export class SalesController {
       ...parsed.data,
       actor: this.actor(req),
     });
+  }
+
+  @Roles('direction', 'finance')
+  @Post('invoices/:id/credit-notes/:creditNoteId/refunds')
+  async refundCreditNote(
+    @Param('id') id: string,
+    @Param('creditNoteId') creditNoteId: string,
+    @Body() body: unknown,
+    @Req() req: AuthedRequest,
+  ) {
+    const parsed = paymentSchema.safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    try {
+      return await this.repository.refundCreditNote({
+        invoiceId: id, creditNoteId, ...parsed.data, actor: this.actor(req),
+      });
+    } catch (error) {
+      if (error instanceof SalesInvoiceDomainError) {
+        throw new ConflictException(error.message);
+      }
+      throw error;
+    }
   }
 
   @Roles('direction', 'finance')

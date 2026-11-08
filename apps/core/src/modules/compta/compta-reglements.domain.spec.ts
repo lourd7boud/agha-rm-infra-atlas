@@ -75,7 +75,7 @@ describe('receipt accounting', () => {
     expectBalanced(result.lines);
   });
 
-  test('does not transfer TVA again under the debits taxable event', () => {
+  test.each([0, 10000])('does not transfer TVA again under debits with prior hypothetical transfer %i', (priorTransfer) => {
     const result = buildReceiptPosting({
       invoiceReference: 'FAC-2026-000003',
       clientName: 'Client Atlas',
@@ -83,8 +83,8 @@ describe('receipt accounting', () => {
       amountCents: 60_000,
       invoiceTtcCents: 120_000,
       invoiceTvaCents: 20_000,
-      previouslyReceivedCents: 0,
-      previouslyTransferredTvaCents: 0,
+      previouslyReceivedCents: priorTransfer > 0 ? 60000 : 0,
+      previouslyTransferredTvaCents: priorTransfer,
       treasuryAccount: '5141',
       accounts,
     });

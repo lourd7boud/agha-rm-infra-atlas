@@ -42,6 +42,7 @@ export function ValidationQueue({
               <tr key={entry.id} className="border-t border-line">
                 <td className="py-3">
                   <input type="checkbox" aria-label={`Sélectionner ${entry.libelle}`}
+                    value={entry.id}
                     checked={selected.includes(entry.id)} disabled={!canApprove || pending}
                     onChange={() => {
                       setSelected(toggleSelectedId(selected, entry.id));

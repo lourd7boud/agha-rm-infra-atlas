@@ -231,6 +231,7 @@ export interface InvoicePaymentRecord {
   treasuryAccount: string;
   valueDate: string;
   originalMovementId?: string;
+  creditNoteId?: string;
   reference?: string;
   idempotencyKey: string;
   createdBy: string;

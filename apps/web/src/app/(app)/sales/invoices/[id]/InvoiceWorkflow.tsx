@@ -16,6 +16,7 @@ import {
   issueInvoiceCreditNote,
   recordInvoicePayment,
   reverseInvoicePayment,
+  refundInvoiceCreditNote,
   updateInvoiceDraft,
   type SalesActionState,
 } from '../actions';
@@ -76,6 +77,9 @@ export function InvoiceWorkflow({
   const [issueCreditState, issueCreditAction, issuingCredit] = useActionState(
     issueInvoiceCreditNote,
     INITIAL_SALES_ACTION_STATE,
+  );
+  const [refundState, refundAction, refunding] = useActionState(
+    refundInvoiceCreditNote, INITIAL_SALES_ACTION_STATE,
   );
 
   const issueBlockReasons = [
@@ -204,7 +208,8 @@ export function InvoiceWorkflow({
             <div key={payment.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-line px-4 py-3 text-sm">
               <span className="font-mono font-bold">{fmtCentsMad(payment.amountCents)}</span>
               <span className="text-muted">{payment.movementType === 'encaissement' ? 'Encaissement' : 'Remboursement'} · {fmtDate(payment.valueDate)}</span>
-              {payment.movementType === 'encaissement' && !reversedMovementIds.has(payment.id) && canSettle && (
+              {payment.movementType === 'encaissement' && !reversedMovementIds.has(payment.id) && canSettle &&
+                !creditNotes.some((credit) => credit.status === 'emise' && credit.againstCollectedCents > 0) && (
                 <form action={reversalAction} className="ml-auto flex items-center gap-2">
                   <input type="hidden" name="invoiceId" value={invoice.id} />
                   <input type="hidden" name="paymentId" value={payment.id} />
@@ -250,11 +255,26 @@ export function InvoiceWorkflow({
                   <button disabled={issuingCredit} className="font-semibold text-cyan hover:underline">Émettre l’avoir</button>
                 </form>
               )}
+              {credit.status === 'emise' && settlement.customerCreditCents > 0 &&
+                credit.againstCollectedCents > payments.filter((payment) => payment.creditNoteId === credit.id)
+                  .reduce((sum, payment) => sum + payment.amountCents, 0) && (
+                <form action={refundAction} className="mt-3 flex w-full flex-wrap items-end gap-3">
+                  <input type="hidden" name="invoiceId" value={invoice.id} />
+                  <input type="hidden" name="creditNoteId" value={credit.id} />
+                  <input type="hidden" name="idempotencyKey" value={`${idempotencySeed}:refund:${credit.id}`} />
+                  <label>Montant à rembourser (MAD)<input name="amountMad" required inputMode="decimal" className="mt-1 block rounded border border-line-2 bg-paper px-2 py-1" /></label>
+                  <label>Mode de remboursement<select name="method" className="mt-1 block rounded border border-line-2 bg-paper px-2 py-1"><option value="virement">Virement</option><option value="cheque">Chèque</option><option value="especes">Espèces</option></select></label>
+                  <label>Compte de remboursement<input name="treasuryAccount" required pattern="[0-9]{4,6}" defaultValue="5141" className="mt-1 block rounded border border-line-2 bg-paper px-2 py-1" /></label>
+                  <label>Date du remboursement<input name="valueDate" required type="date" defaultValue={operationDate} className="mt-1 block rounded border border-line-2 bg-paper px-2 py-1" /></label>
+                  <button disabled={refunding} className="rounded border border-line-2 px-3 py-2 font-semibold text-cyan">Rembourser cet avoir</button>
+                </form>
+              )}
             </div>
           ))}
           {creditNotes.length === 0 && <p className="text-sm text-faint">Aucun avoir.</p>}
         </div>
         <ActionMessage state={issueCreditState} />
+        <ActionMessage state={refundState} />
       </section>
     </div>
   );

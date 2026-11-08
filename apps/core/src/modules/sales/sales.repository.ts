@@ -14,6 +14,7 @@ import {
 } from './sales.domain';
 import {
   allocateCreditNote,
+  SalesInvoiceDomainError,
   deriveSettlement,
   summarizePaymentMovements,
 } from './sales-invoice.domain';
@@ -44,6 +45,7 @@ import type {
   QuoteSummary,
   RecordInvoicePayment,
   ReverseInvoicePayment,
+  RefundInvoiceCreditNote,
   SalesAccountingEventRecord,
   SalesRepository,
   LegalSellerSnapshot,
@@ -480,12 +482,13 @@ export class InMemorySalesRepository implements SalesRepository {
         type: payment.movementType,
         amountCents: payment.amountCents,
       })),
+      invoice.legacyPaid ? parseMoneyCents(invoice.totalTtcMad) : 0,
     );
     const totalCents = parseMoneyCents(invoice.totalTtcMad);
-    const legacyPaidOpening = invoice.legacyPaid && payments.length === 0;
+    const legacyPaidOpening = invoice.legacyPaid;
     const settlement = deriveSettlement({
       totalCents,
-      receivedCents: legacyPaidOpening ? totalCents : summarized.receivedCents,
+      receivedCents: summarized.receivedCents,
       refundedCents: summarized.refundedCents,
       creditedCents: issuedCredits.reduce(
         (total, creditNote) => total + creditNote.totalTtcCents,
@@ -559,6 +562,10 @@ export class InMemorySalesRepository implements SalesRepository {
       (payment) => payment.originalMovementId === original.id,
     );
     if (!existingReversal) {
+      if (this.creditNotes.some((credit) => credit.invoiceId === input.invoiceId &&
+          credit.status === 'emise' && credit.againstCollectedCents > 0)) {
+        throw new SalesInvoiceDomainError('Après un avoir, utilisez le remboursement de l’avoir.');
+      }
       const reversal: InvoicePaymentRecord = {
         id: randomUUID(),
         invoiceId: input.invoiceId,
@@ -580,6 +587,43 @@ export class InMemorySalesRepository implements SalesRepository {
         reversal.createdAt,
       );
     }
+    return (await this.getInvoiceAggregate(input.invoiceId))!;
+  }
+
+  async refundCreditNote(input: RefundInvoiceCreditNote): Promise<InvoiceAggregate> {
+    const aggregate = await this.getInvoiceAggregate(input.invoiceId);
+    const credit = aggregate?.creditNotes.find((item) => item.id === input.creditNoteId);
+    if (!aggregate || !credit || credit.status !== 'emise') {
+      throw new SalesInvoiceDomainError('Un avoir émis de cette facture est requis.');
+    }
+    const duplicate = aggregate.payments.find((item) => item.idempotencyKey === input.idempotencyKey);
+    if (duplicate) {
+      if (duplicate.creditNoteId !== input.creditNoteId ||
+          duplicate.amountCents !== input.amountCents ||
+          duplicate.method !== input.method ||
+          duplicate.treasuryAccount !== input.treasuryAccount ||
+          duplicate.valueDate.toISOString().slice(0, 10) !== input.valueDate.toISOString().slice(0, 10)) {
+        throw new SalesInvoiceDomainError('Clé d’idempotence déjà utilisée avec une autre opération.');
+      }
+      return aggregate;
+    }
+    const alreadyRefunded = aggregate.payments
+      .filter((item) => item.creditNoteId === credit.id)
+      .reduce((sum, item) => sum + item.amountCents, 0);
+    if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0 ||
+        input.amountCents > aggregate.settlement.customerCreditCents ||
+        input.amountCents > credit.againstCollectedCents - alreadyRefunded) {
+      throw new SalesInvoiceDomainError('Le montant dépasse le solde remboursable de l’avoir.');
+    }
+    const refund: InvoicePaymentRecord = {
+      id: randomUUID(), invoiceId: input.invoiceId, creditNoteId: credit.id,
+      movementType: 'remboursement', amountCents: input.amountCents,
+      method: input.method, treasuryAccount: input.treasuryAccount,
+      valueDate: input.valueDate, reference: input.reference,
+      idempotencyKey: input.idempotencyKey, createdBy: input.actor, createdAt: new Date(),
+    };
+    this.payments = [...this.payments, refund];
+    this.appendAccountingEvent('refund_recorded', input.invoiceId, aggregate.payments.length + 1, refund.createdAt);
     return (await this.getInvoiceAggregate(input.invoiceId))!;
   }
 

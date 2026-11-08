@@ -46,6 +46,7 @@ export interface ReceiptPostingInput {
   invoiceTvaCents: MoneyCents;
   previouslyReceivedCents: MoneyCents;
   previouslyTransferredTvaCents: MoneyCents;
+  receiptTvaCents?: MoneyCents;
   treasuryAccount: string | null;
   accounts: SalesPostingAccounts;
 }
@@ -114,13 +115,15 @@ export function buildReceiptPosting(
   }
 
   const targetTvaCents = targetTransferredTva(input);
-  if (targetTvaCents < input.previouslyTransferredTvaCents) {
-    throw new ComptaSalesDomainError(
-      'La TVA déjà transférée dépasse la quote-part cumulée des encaissements.',
-    );
+  const previousTransfer = input.faitGenerateurTva === 'encaissement'
+    ? input.previouslyTransferredTvaCents : 0;
+  const tvaTransferredCents = input.faitGenerateurTva === 'encaissement'
+    ? input.receiptTvaCents ?? Math.max(0, targetTvaCents - previousTransfer) : 0;
+  assertNonNegativeCents(tvaTransferredCents, 'La TVA de cet encaissement');
+  if (tvaTransferredCents > input.amountCents ||
+      previousTransfer + tvaTransferredCents > input.invoiceTvaCents) {
+    throw new ComptaSalesDomainError('La TVA transférée dépasse le solde disponible.');
   }
-  const tvaTransferredCents =
-    targetTvaCents - input.previouslyTransferredTvaCents;
   const lines: PostingLine[] = [
     {
       accountCode: treasuryAccount,

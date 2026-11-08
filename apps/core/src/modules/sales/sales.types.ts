@@ -225,6 +225,7 @@ export interface InvoicePaymentRecord {
   treasuryAccount: string;
   valueDate: Date;
   originalMovementId?: string;
+  creditNoteId?: string;
   reference?: string;
   idempotencyKey: string;
   createdBy: string;
@@ -248,6 +249,10 @@ export interface ReverseInvoicePayment {
   valueDate: Date;
   idempotencyKey: string;
   actor: string;
+}
+
+export interface RefundInvoiceCreditNote extends RecordInvoicePayment {
+  creditNoteId: string;
 }
 
 export interface CreateCreditNote {
@@ -403,6 +408,7 @@ export interface SalesRepository {
   deleteDraftInvoice(id: string): Promise<void>;
   recordPayment(input: RecordInvoicePayment): Promise<InvoiceAggregate>;
   reversePayment(input: ReverseInvoicePayment): Promise<InvoiceAggregate>;
+  refundCreditNote(input: RefundInvoiceCreditNote): Promise<InvoiceAggregate>;
   createCreditNote(input: CreateCreditNote): Promise<CreditNoteRecord>;
   issueCreditNote(
     id: string,

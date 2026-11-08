@@ -30,6 +30,7 @@ import {
 } from './sales.domain';
 import {
   allocateCreditNote,
+  SalesInvoiceDomainError,
   deriveSettlement,
   summarizePaymentMovements,
 } from './sales-invoice.domain';
@@ -67,6 +68,7 @@ import type {
   QuoteSummary,
   RecordInvoicePayment,
   ReverseInvoicePayment,
+  RefundInvoiceCreditNote,
   CreditNoteRecord,
   LegalSellerSnapshot,
   UpdateInvoiceDraft,
@@ -597,6 +599,7 @@ export class DrizzleSalesRepository implements SalesRepository {
           occurredAt: issuedAt,
           payload: {
             invoiceId: id,
+            accountingDate: existing.invoiceDate.toISOString().slice(0, 10),
             reference,
             clientName: client.name,
             totalHtCents: parseMoneyCents(existing.totalHtMad),
@@ -661,14 +664,15 @@ export class DrizzleSalesRepository implements SalesRepository {
         type: payment.movementType as 'encaissement' | 'remboursement',
         amountCents: parseMoneyCents(payment.amountMad),
       })),
+      invoice.legacyPaid ? parseMoneyCents(invoice.totalTtcMad) : 0,
     );
     const totalCents = parseMoneyCents(invoice.totalTtcMad);
-    const legacyPaidOpening = invoice.legacyPaid && paymentRows.length === 0;
+    const legacyPaidOpening = invoice.legacyPaid;
     return {
       legacyPaidOpening,
       settlement: deriveSettlement({
         totalCents,
-        receivedCents: legacyPaidOpening ? totalCents : summarized.receivedCents,
+        receivedCents: summarized.receivedCents,
         refundedCents: summarized.refundedCents,
         creditedCents: creditRows
           .filter((creditNote) => creditNote.status !== 'brouillon')
@@ -769,9 +773,12 @@ export class DrizzleSalesRepository implements SalesRepository {
           type: payment.movementType as 'encaissement' | 'remboursement',
           amountCents: parseMoneyCents(payment.amountMad),
         })),
+        invoice.legacyPaid ? parseMoneyCents(invoice.totalTtcMad) : 0,
       );
       const previouslyReceivedCents =
-        summarizedBefore.receivedCents - summarizedBefore.refundedCents;
+        summarizedBefore.receivedCents - paymentRows
+          .filter((payment) => payment.reason === 'contrepassation')
+          .reduce((sum, payment) => sum + parseMoneyCents(payment.amountMad), 0);
       const invoiceTtcCents = parseMoneyCents(invoice.totalTtcMad);
       const invoiceTvaCents = parseMoneyCents(invoice.tvaMad);
       const transferredAt = (receivedCents: number) =>
@@ -781,12 +788,18 @@ export class DrizzleSalesRepository implements SalesRepository {
               (BigInt(invoiceTvaCents) * BigInt(receivedCents)) /
                 BigInt(invoiceTtcCents),
             );
-      const previouslyTransferredTvaCents = transferredAt(
-        previouslyReceivedCents,
-      );
-      const paymentTvaCents =
-        transferredAt(previouslyReceivedCents + input.amountCents) -
-        previouslyTransferredTvaCents;
+      const previouslyTransferredTvaCents = (invoice.legacyPaid ? invoiceTvaCents : 0) +
+        paymentRows.reduce((sum, payment) => sum +
+          (payment.movementType === 'encaissement' ? 1 : -1) * parseMoneyCents(payment.tvaTransferredMad), 0);
+      const reversedPendingTvaCents = creditRows.filter((credit) => credit.status === 'emise')
+        .reduce((sum, credit) => sum + parseMoneyCents(credit.reversedPendingTvaMad), 0);
+      const targetTvaCents = input.amountCents === settlement.outstandingCents
+        ? invoiceTvaCents - reversedPendingTvaCents
+        : Math.min(invoiceTvaCents - reversedPendingTvaCents,
+          transferredAt(previouslyReceivedCents + input.amountCents));
+      // A reversal can retain the rounding centime on a later receipt. Carry
+      // that surplus until the cumulative target catches up; never transfer twice.
+      const paymentTvaCents = Math.max(0, targetTvaCents - previouslyTransferredTvaCents);
       const [payment] = await tx
         .insert(invoicePayments)
         .values({
@@ -816,6 +829,7 @@ export class DrizzleSalesRepository implements SalesRepository {
           payload: {
             invoiceId: input.invoiceId,
             paymentId: payment.id,
+            accountingDate: input.valueDate.toISOString().slice(0, 10),
             reference: invoice.reference,
             clientName: client.name,
             amountCents: input.amountCents,
@@ -823,6 +837,7 @@ export class DrizzleSalesRepository implements SalesRepository {
             invoiceTvaCents,
             previouslyReceivedCents,
             previouslyTransferredTvaCents,
+            receiptTvaCents: paymentTvaCents,
             treasuryAccount: input.treasuryAccount,
           },
         })
@@ -878,6 +893,11 @@ export class DrizzleSalesRepository implements SalesRepository {
         .where(eq(invoicePayments.originalMovementId, input.paymentId))
         .limit(1);
       if (existing) return;
+      const issuedCredits = await tx.select().from(creditNotes)
+        .where(and(eq(creditNotes.invoiceId, input.invoiceId), eq(creditNotes.status, 'emise')));
+      if (issuedCredits.some((credit) => parseMoneyCents(credit.againstCollectedMad) > 0)) {
+        throw new SalesInvoiceDomainError('Après un avoir, utilisez le remboursement de l’avoir.');
+      }
       const [reversal] = await tx
         .insert(invoicePayments)
         .values({
@@ -885,6 +905,7 @@ export class DrizzleSalesRepository implements SalesRepository {
           movementType: 'remboursement',
           reason: 'contrepassation',
           amountMad: original.amountMad,
+          tvaTransferredMad: original.tvaTransferredMad,
           method: original.method,
           treasuryAccount: original.treasuryAccount,
           valueDate: input.valueDate,
@@ -908,12 +929,70 @@ export class DrizzleSalesRepository implements SalesRepository {
             paymentId: original.id,
             reversalId: reversal.id,
             ...originalEvent.payload,
+            accountingDate: input.valueDate.toISOString().slice(0, 10),
             reference: invoice.reference,
             clientName: client.name,
             treasuryAccount: original.treasuryAccount,
           },
         })
         .onConflictDoNothing();
+    });
+    return (await this.getInvoiceAggregate(input.invoiceId))!;
+  }
+
+  async refundCreditNote(input: RefundInvoiceCreditNote): Promise<InvoiceAggregate> {
+    await this.db.transaction(async (tx) => {
+      const [invoice] = await tx.select().from(invoices)
+        .where(eq(invoices.id, input.invoiceId)).for('update');
+      const creditRows = await tx.select().from(creditNotes)
+        .where(eq(creditNotes.invoiceId, input.invoiceId));
+      const credit = creditRows.find((item) => item.id === input.creditNoteId);
+      if (!invoice?.reference || !credit || credit.status !== 'emise') {
+        throw new SalesInvoiceDomainError('Un avoir émis de cette facture est requis.');
+      }
+      const paymentRows = await tx.select().from(invoicePayments)
+        .where(eq(invoicePayments.invoiceId, input.invoiceId))
+        .orderBy(asc(invoicePayments.createdAt));
+      const duplicate = paymentRows.find((item) => item.idempotencyKey === input.idempotencyKey);
+      if (duplicate) {
+        if (duplicate.creditNoteId !== input.creditNoteId ||
+            parseMoneyCents(duplicate.amountMad) !== input.amountCents ||
+            duplicate.method !== input.method ||
+            duplicate.treasuryAccount !== input.treasuryAccount ||
+            duplicate.valueDate.toISOString().slice(0, 10) !== input.valueDate.toISOString().slice(0, 10)) {
+          throw new SalesInvoiceDomainError('Clé d’idempotence déjà utilisée avec une autre opération.');
+        }
+        return;
+      }
+      const { settlement } = this.settlementFromRows(invoice, paymentRows, creditRows);
+      const alreadyRefunded = paymentRows.filter((item) => item.creditNoteId === credit.id)
+        .reduce((sum, item) => sum + parseMoneyCents(item.amountMad), 0);
+      if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0 ||
+          input.amountCents > settlement.customerCreditCents ||
+          input.amountCents > parseMoneyCents(credit.againstCollectedMad) - alreadyRefunded) {
+        throw new SalesInvoiceDomainError('Le montant dépasse le solde remboursable de l’avoir.');
+      }
+      const [client] = await tx.select({ name: clients.name }).from(clients)
+        .where(eq(clients.id, invoice.clientId));
+      if (!client) throw new Error('Client introuvable.');
+      const [refund] = await tx.insert(invoicePayments).values({
+        invoiceId: input.invoiceId, creditNoteId: credit.id,
+        movementType: 'remboursement', reason: 'remboursement_avoir',
+        amountMad: formatMoneyCents(input.amountCents),
+        method: input.method, treasuryAccount: input.treasuryAccount,
+        valueDate: input.valueDate, reference: input.reference,
+        idempotencyKey: input.idempotencyKey, createdBy: input.actor,
+      }).returning();
+      if (!refund) throw new Error('Remboursement impossible.');
+      await tx.insert(salesAccountingEvents).values({
+        eventKey: `refund_recorded:${refund.id}`, eventType: 'refund_recorded',
+        sourceType: 'invoice', sourceId: input.invoiceId,
+        sourceVersion: paymentRows.length + 1, occurredAt: refund.createdAt,
+        payload: { invoiceId: input.invoiceId, reference: invoice.reference,
+            accountingDate: input.valueDate.toISOString().slice(0, 10),
+          clientName: client.name, amountCents: input.amountCents,
+          treasuryAccount: input.treasuryAccount, creditNoteId: credit.id },
+      });
     });
     return (await this.getInvoiceAggregate(input.invoiceId))!;
   }
@@ -979,6 +1058,7 @@ export class DrizzleSalesRepository implements SalesRepository {
           type: payment.movementType as 'encaissement' | 'remboursement',
           amountCents: parseMoneyCents(payment.amountMad),
         })),
+        invoice.legacyPaid ? parseMoneyCents(invoice.totalTtcMad) : 0,
       );
       const allocation = allocateCreditNote({
         invoiceTotalCents: parseMoneyCents(invoice.totalTtcMad),
@@ -1001,15 +1081,11 @@ export class DrizzleSalesRepository implements SalesRepository {
       if (!client) throw new Error('Client de la facture introuvable.');
       const invoiceTtcCents = parseMoneyCents(invoice.totalTtcMad);
       const invoiceTvaCents = parseMoneyCents(invoice.tvaMad);
-      const netReceivedCents =
-        summarized.receivedCents - summarized.refundedCents;
-      const transferredTvaCents =
-        netReceivedCents >= invoiceTtcCents
-          ? invoiceTvaCents
-          : Number(
-              (BigInt(invoiceTvaCents) * BigInt(netReceivedCents)) /
-                BigInt(invoiceTtcCents),
-            );
+      // Credit-note refunds repay an existing customer credit; they do not
+      // reverse a receipt's TVA transfer a second time.
+      const transferredTvaCents = (invoice.legacyPaid ? invoiceTvaCents : 0) +
+        paymentRows.reduce((sum, payment) => sum +
+          (payment.movementType === 'encaissement' ? 1 : -1) * parseMoneyCents(payment.tvaTransferredMad), 0);
       const reversedPendingCents = creditRows
         .filter((creditNote) => creditNote.status !== 'brouillon')
         .reduce(
@@ -1037,6 +1113,21 @@ export class DrizzleSalesRepository implements SalesRepository {
         paymentRows,
         creditRows,
       ).settlement.outstandingCents;
+      const creditTvaCents = parseMoneyCents(existing.tvaMad);
+      let reversedPendingTvaCents = Number(
+        BigInt(creditTvaCents) * BigInt(allocation.againstOutstandingCents) /
+        BigInt(parseMoneyCents(existing.totalTtcMad)),
+      );
+      if (allocation.againstOutstandingCents === outstandingBeforeCreditCents &&
+          Math.abs(availablePendingTvaCents - reversedPendingTvaCents) <= 1 &&
+          availablePendingTvaCents <= creditTvaCents) {
+        reversedPendingTvaCents = availablePendingTvaCents;
+      }
+      const reversedDueTvaCents = creditTvaCents - reversedPendingTvaCents;
+      if (reversedPendingTvaCents > availablePendingTvaCents ||
+          reversedDueTvaCents > availableDueTvaCents) {
+        throw new SalesInvoiceDomainError('La TVA de l’avoir dépasse le solde disponible.');
+      }
       const reference = await this.nextReference(tx, 'avoir', existing.creditDate);
       const nextVersion = existing.version + 1;
       const [updated] = await tx
@@ -1054,8 +1145,8 @@ export class DrizzleSalesRepository implements SalesRepository {
           againstCollectedMad: formatMoneyCents(
             allocation.againstCollectedCents,
           ),
-          reversedPendingTvaMad: existing.tvaMad,
-          reversedDueTvaMad: '0.00',
+          reversedPendingTvaMad: formatMoneyCents(reversedPendingTvaCents),
+          reversedDueTvaMad: formatMoneyCents(reversedDueTvaCents),
           version: nextVersion,
         })
         .where(eq(creditNotes.id, id))
@@ -1072,6 +1163,7 @@ export class DrizzleSalesRepository implements SalesRepository {
           occurredAt: issuedAt,
           payload: {
             creditNoteId: id,
+            accountingDate: existing.creditDate.toISOString().slice(0, 10),
             invoiceId: invoice.id,
             reference,
             clientName: client.name,
@@ -1375,6 +1467,7 @@ function toInvoicePayment(row: InvoicePaymentRow): InvoicePaymentRecord {
     treasuryAccount: row.treasuryAccount,
     valueDate: row.valueDate,
     originalMovementId: row.originalMovementId ?? undefined,
+    creditNoteId: row.creditNoteId ?? undefined,
     reference: row.reference ?? undefined,
     idempotencyKey: row.idempotencyKey,
     createdBy: row.createdBy,
