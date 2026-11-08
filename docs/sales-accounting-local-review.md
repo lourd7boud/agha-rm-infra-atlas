@@ -24,7 +24,7 @@ guards production reconciliation dependency injection.
 
 ## Verification
 
-- Final full workspace suite on the synchronized main checkout: Core 1,374,
+- Final full workspace suite after local dependency cleanup: Core 1,378,
   Web 158, signing bridge 10 and preview 3 passed. The production wiring correction
   also passed all 8 focused controller/Nest checks; workspace typechecks passed.
 - Dedicated PostgreSQL verification: all 29 formerly skipped repository cases,
@@ -71,6 +71,10 @@ They are alternative NBSP/narrow-NBSP parsing corrections and fixture regression
 equivalent runtime fixes and the money regression already exist in commit
 `8f5ec39` and are included in this release. They do not represent unfinished new
 features. Those older worktrees were preserved, without overwriting their edits.
+Their exact tracked diffs are now also saved in the reviewed
+[preservation archive](archives/2026-11-08-parser-worktrees/README.md).
+The follow-up [storage audit](storage-audit-2026-11-08.md) records object counts,
+safe dependency cleanup and the latest verification results.
 
 Retained invoice `FAC-2026-000001` is clearly labelled TEST E2E. Its issued credit
 and refund compensate it fully. All seven accounting entries were explicitly
