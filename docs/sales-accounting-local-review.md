@@ -1,52 +1,83 @@
-# Local sales/accounting review — 2026-11-08
+# Local sales/accounting release — 2026-11-08
 
-Working branch: `codex/sales-accounting-compliance`.
-Implementation is saved separately from the running system; migration 0065
-has not been applied to the operational database.
+Branch: `codex/sales-accounting-compliance`, pushed to origin.
+Application source: `aa364d82ed502a723745fe86e6dc86ce3463f6e0`.
+The user authorized updating their existing local Docker installation and testing
+with compensating records. The remote VPS was not deployed.
 
-Completed local work includes issue-time numbering, exact-centime settlement,
-immutable seller/client snapshots, event reconciliation into draft entries,
-explicit accounting approval selection, audited TVA/account mapping configuration,
-and removal of the old public manual invoice-status and annual approval paths.
+## Delivered behavior
 
-## Evidence and limits
+Drafts receive official six-digit numbers when issued. Issued documents retain
+immutable seller/client legal snapshots and references. Settlement uses integer
+centimes, append-only receipts/reversals, issued credits and bounded idempotent
+refunds. Transactions serialize concurrent numbering and payments.
 
-- Web unit suite: 158 passing tests.
-- Sales repository/controller focused suite: 31 passing tests.
-- Controller authorization/configuration suite: 7 passing tests.
-- Sales/accounting orchestration regression: passing.
-- Full Core suite after dependency remediation: 1,370 passing tests, 29 skipped
-  (162 passing files, 7 skipped), including oversized collection validation.
-- Core and Web TypeScript checks: passed.
-- Final Web production build: passed. The earlier server-action object export
-  failure was corrected before this build.
-- Browser suite: 3 skipped because dedicated test credentials/tokens were absent.
-  Skips are not release verification.
-- PostgreSQL verification subsequently ran in a disposable pgvector:pg16
-  container, separate from the running application database: all 29 previously
-  skipped repository integration tests passed, plus 2 migration regressions
-  and 1 real sales/accounting workflow test (32 passing integration tests).
-- Fresh migration replay: all 66 migrations applied. Fixed 0065 colliding with
-  the sequence table from 0051. Legacy counters are retained and mapped using
-  their high-water marks; existing four-digit official references are preserved.
-- Dependency audit after remediation: zero reported vulnerabilities, down from
-  92 (6 critical, 43 high, 35 moderate, 8 low).
-  See [dependency remediation](security-dependency-remediation.md) for versions,
-  compatibility decisions, and audit scope.
+Accounting events produce balanced draft entries, expose blocked/retry states and
+require explicit selected-entry approval by direction/comptable. Admin-si cannot
+approve entries or configure TVA. The original `non_configure` TVA setting was
+restored after testing; an accountant must choose the real taxable event/mappings.
 
-## Outstanding work
+Release review corrected draft-credit constraints, refunds, reversal TVA copying,
+historical rounding, partial-credit final residuals, debits receipts, legacy paid
+openings and business-date exercise selection. A real Nest container regression
+guards production reconciliation dependency injection.
 
-Run the authenticated browser journeys against a designated local/staging dataset,
-including issued print fields, partial settlement, credit notes/reversals,
-blocked reconciliation retry, and actual direction/comptable/admin-si sessions.
-The current browser suite covers the review destination and the admin approval
-denial; the complete planned financial journeys are still pending.
+## Verification
 
-The separate PostgreSQL workflow verifies balanced draft projection, partial
-receipts, all-or-nothing rejected approval selection, and validation actor/time.
-Complete the remaining sales-specific concurrent issuance/payment and
-credit-note/refund browser scenarios before release.
+- Full workspace suite: Core 1,373, Web 158, signing bridge 10 and preview 3 passed.
+  The later production wiring correction passed all 8 focused controller/Nest
+  checks; workspace typechecks passed again.
+- Dedicated PostgreSQL verification: all 29 formerly skipped repository cases,
+  2 fresh/legacy migration regressions and 5 sales/accounting workflows passed.
+  Coverage includes concurrency, rejected overpayment, duplicate refunds,
+  out-of-order reversal/recollection, final TVA centimes and a closed prior year.
+- Real authenticated local browser journeys passed: direction's draft, issue,
+  partial/full receipt, reversal, credit, refund and legal print; comptable's
+  blocked state, TVA setup, UI retry and explicit audited approval; admin-si's
+  read-only UI and HTTP 403 financial-command denials. Direction passed on the
+  initial run; accounting/admin were rerun after the wiring correction on that
+  same compensated invoice, avoiding another official test number.
+- Dependency audit: zero known vulnerabilities, down from 92.
+- Next.js production Docker build and TypeScript checks passed.
+- Independent review found no remaining critical/important release findings.
 
-Do not treat this branch as deployment-ready based solely on the unit checks.
-No push, deployment, operational migration, Docker cleanup, or removal of another
-dirty worktree is part of this verification.
+## Operational migration and backup
+
+Old Web/Core/Worker writers were stopped before migration. A fresh custom-format
+dump was copied outside Docker; host/container SHA256 hashes matched:
+
+`LOCAL_BACKUPS/before-sales-e1bcd95/atlas-before-sales.dump`
+
+SHA256: `ec016299bead99e4e1a748383b53c758aa6ae0d8204de3ba7ac818ee5f367145`.
+
+The restored legacy sequence table belonged to postgres; its ownership was
+normalized to the existing schema/application owner atlas. Drizzle migration
+0065 succeeded. The ledger has 66 rows, ending at `1793203207000`.
+The original 65 projects and 109,800 tenders were preserved. Previous images
+remain tagged `before-sales-e1bcd95`.
+The fresh dump also passed a complete restore with `--exit-on-error` in a separate
+PostgreSQL database: the same 65 projects, 109,800 tenders and 65 pre-release
+migrations were recovered. Temporary database containers/volume, intermediate
+images and the redundant older dump were removed afterwards. The verified fresh
+dump remains outside Docker. Final Core/Worker/Web revision labels all match the
+application source above; health and the normal account's project/tender browser
+navigation passed after the final container recreation.
+
+Retained invoice `FAC-2026-000001` is clearly labelled TEST E2E. Its issued credit
+and refund compensate it fully. All seven accounting entries were explicitly
+validated; each account 3421, 4455, 4456, 5141 and 71242 has a 0.00 MAD net balance.
+Temporary identity accounts were removed; audit actor names remain in history.
+
+## Remaining operational configuration
+
+The accountant must choose the real TVA taxable event and active account mappings.
+Until then, commercial events remain available for reconciliation and are not
+auto-approved.
+
+An unrelated existing AI-provider configuration returns HTTP 404 for
+`gemini-2.5-flash` at runtime. AI extraction availability needs a separate
+provider/model configuration check; credentials/model routes were not changed.
+
+A pre-migration restore discards later writes. Once issued documents exist, use a
+reviewed recovery/forward-fix procedure instead of blindly replacing the database
+or starting old writers against the new schema.

@@ -98,7 +98,7 @@ grep '^AUTH_URL=https://atlas.marocinfra.com$' /opt/atlas/platform/.env.apps
 ### Sales/accounting release 0065
 
 Before applying `0065_sales_accounting_flow.sql`, drain sales/accounting writes
-and stop the old Core writer. Verify a timestamped PostgreSQL backup with a
+and stop both the old Core and background Worker writers. Verify a timestamped PostgreSQL backup with a
 restore drill. Check existing references, migration order, and row counts.
 Apply the migration once and verify its ledger entry before starting the
 reviewed Core/Web images. Keep maintenance active if migration or health fails.
@@ -116,6 +116,27 @@ the local/staging stack. Supply `ATLAS_E2E_DIRECTION_USER/PASSWORD`,
 `ATLAS_E2E_COMPTABLE_USER/PASSWORD`, and `ATLAS_E2E_ADMIN_TOKEN` through the
 test process environment, never through Git. Missing fixtures are reported as
 skipped tests and do not count as a successful browser release check.
+
+The complete mutating local suite is `e2e/sales-accounting-live.spec.ts`. It requires
+`ATLAS_E2E_LIVE=1`, `ATLAS_E2E_WEB_URL=http://localhost:13001` and
+`ATLAS_E2E_CORE_URL=http://localhost:13000/api`; remote hosts are rejected. It creates
+temporary direction/comptable/admin-si identities, compensates the issued test
+invoice with a credit/refund, validates that sequence, restores previous TVA
+settings and removes temporary users. Retain issued test records and audit history.
+To resume accounting/admin checks on an already compensated seven-event fixture,
+set `ATLAS_E2E_EXISTING_INVOICE_ID` and use `--grep 'comptable:|admin-si:'`.
+Run with `pnpm --filter @atlas/web exec playwright test e2e/sales-accounting-live.spec.ts`.
+
+Local evidence and backup hash are in `docs/sales-accounting-local-review.md`.
+Verify the migration ledger, existing references and project/tender/sales counts
+before migrating. Local Drizzle uses the application schema owner; check ownership
+of restored legacy tables first. Build images before stopping services, then use
+the existing atlas-local Compose project with an explicit reviewed image override
+and `up -d --no-deps --no-build core worker web`. Check image revision labels,
+`http://localhost:13000/api/health` and `http://localhost:13001/login` afterwards.
+Keep old writers stopped on migration failure. Never restore the old dump over
+issued documents or other later writes without a reviewed recovery plan.
+Accountant sign-off on TVA/account mappings remains a separate configuration step.
 
 | Task | Command |
 |------|---------|

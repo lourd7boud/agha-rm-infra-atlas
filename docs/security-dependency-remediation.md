@@ -51,8 +51,10 @@ validations). It tests the actual vulnerable behavior rather than the version.
   legacy numbering preservation and real accounting validation audit.
 
 Final full-suite/build outcomes are recorded in the local release review.
-Authenticated browser fixtures remain a separate release gate; passing
-dependency and PostgreSQL tests does not satisfy that browser verification.
+The authenticated browser release gate was subsequently completed on the
+user-authorized local Docker installation, including direction, comptable and
+admin-si sessions. See `docs/sales-accounting-local-review.md` for evidence and
+the deployment/backup boundaries.
 
 ## Sources
 
