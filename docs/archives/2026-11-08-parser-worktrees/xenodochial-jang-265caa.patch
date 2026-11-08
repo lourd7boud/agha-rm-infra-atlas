@@ -1,0 +1,32 @@
+diff --git a/apps/core/src/modules/portal/mes-cautions.parser.ts b/apps/core/src/modules/portal/mes-cautions.parser.ts
+index 75a7af3..3e68378 100644
+--- a/apps/core/src/modules/portal/mes-cautions.parser.ts
++++ b/apps/core/src/modules/portal/mes-cautions.parser.ts
+@@ -71,7 +71,7 @@ function stackedCellText(cell: CheerioSelection): string {
+     .load(withBreaks)
+     .root()
+     .text()
+-    .replace(/ /g, ' ')
++    .replace(/[  ]/g, ' ')
+     .split('\n')
+     .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+     .filter((line) => line.length > 0)
+diff --git a/apps/core/src/modules/watch/detail.parser.ts b/apps/core/src/modules/watch/detail.parser.ts
+index d200af2..facad05 100644
+--- a/apps/core/src/modules/watch/detail.parser.ts
++++ b/apps/core/src/modules/watch/detail.parser.ts
+@@ -90,9 +90,12 @@ export interface DetailFields {
+ /** "7 000,00 MAD" / "1 250 000,50 Dhs" → number (MAD), or null. */
+ export function parseMoneyMad(text: string | null | undefined): number | null {
+   if (!text) return null;
+-  // Drop currency words and any non [digit , . space] noise, keep separators.
++  // Normalize NBSP (U+00A0) and narrow NBSP (U+202F) thousands separators to a
++  // regular space — French amounts group as "7 700,00" and the portal emits the
++  // grouping as &nbsp;, which would otherwise halt the digit/space/comma matcher
++  // below at the first group (e.g. "7 700,00" → 7). Then drop currency words.
+   const cleaned = text
+-    .replace(/ /g, ' ')
++    .replace(/[  ]/g, ' ')
+     .replace(/mad|dhs?|dirhams?|ttc|ht/gi, '')
+     .trim();
+   const m = /\d[\d .]*(?:,\d+)?/.exec(cleaned);

@@ -1,0 +1,30 @@
+diff --git a/apps/core/src/modules/portal/mes-cautions.parser.ts b/apps/core/src/modules/portal/mes-cautions.parser.ts
+index 75a7af3..bd2df3a 100644
+--- a/apps/core/src/modules/portal/mes-cautions.parser.ts
++++ b/apps/core/src/modules/portal/mes-cautions.parser.ts
+@@ -71,7 +71,7 @@ function stackedCellText(cell: CheerioSelection): string {
+     .load(withBreaks)
+     .root()
+     .text()
+-    .replace(/ /g, ' ')
++    .replace(/\u00a0/g, ' ')
+     .split('\n')
+     .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+     .filter((line) => line.length > 0)
+diff --git a/apps/core/src/modules/watch/detail.parser.ts b/apps/core/src/modules/watch/detail.parser.ts
+index d200af2..e216bf1 100644
+--- a/apps/core/src/modules/watch/detail.parser.ts
++++ b/apps/core/src/modules/watch/detail.parser.ts
+@@ -91,8 +91,11 @@ export interface DetailFields {
+ export function parseMoneyMad(text: string | null | undefined): number | null {
+   if (!text) return null;
+   // Drop currency words and any non [digit , . space] noise, keep separators.
++  // Normalise the no-break space (U+00A0) the portal emits as a thousands
++  // separator to a plain space. Written as an escape so a formatter can't
++  // silently fold it back to a regular space (which made this a no-op before).
+   const cleaned = text
+-    .replace(/ /g, ' ')
++    .replace(/\u00a0/g, ' ')
+     .replace(/mad|dhs?|dirhams?|ttc|ht/gi, '')
+     .trim();
+   const m = /\d[\d .]*(?:,\d+)?/.exec(cleaned);
