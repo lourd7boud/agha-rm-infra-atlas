@@ -15,15 +15,17 @@ and removal of the old public manual invoice-status and annual approval paths.
 - Sales repository/controller focused suite: 31 passing tests.
 - Controller authorization/configuration suite: 7 passing tests.
 - Sales/accounting orchestration regression: passing.
-- Full Core suite: 1,369 passing tests, 29 skipped (161 passing files, 7 skipped).
+- Full Core suite after dependency remediation: 1,370 passing tests, 29 skipped
+  (162 passing files, 7 skipped), including oversized collection validation.
 - Core and Web TypeScript checks: passed.
 - Final Web production build: passed. The earlier server-action object export
   failure was corrected before this build.
 - Browser suite: 3 skipped because dedicated test credentials/tokens were absent.
   Skips are not release verification.
-- Dependency audit: 92 findings (6 critical, 43 high, 35 moderate, 8 low).
-  Includes the pinned Next.js version; package upgrades and regression checks
-  remain necessary before release.
+- Dependency audit after remediation: zero reported vulnerabilities, down from
+  92 (6 critical, 43 high, 35 moderate, 8 low).
+  See [dependency remediation](security-dependency-remediation.md) for versions,
+  compatibility decisions, and audit scope.
 
 ## Outstanding work
 
@@ -33,7 +35,7 @@ blocked reconciliation retry, and actual direction/comptable/admin-si sessions.
 The current browser suite covers the review destination and the admin approval
 denial; the complete planned financial journeys are still pending.
 
-Review and resolve dependency audit findings. Complete database-backed concurrency,
+Complete database-backed concurrency,
 rollback, sequence and validation auditing checks with a disposable PostgreSQL
 database. The in-memory orchestration regression does not prove database isolation.
 
