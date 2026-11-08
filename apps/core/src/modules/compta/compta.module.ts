@@ -108,6 +108,10 @@ const ecritureInputSchema = z.object({
 
 const faitGenerateurTvaSchema = z.object({
   faitGenerateurTva: z.enum(['non_configure', 'encaissement', 'debits']),
+  compteClientVentes: z.string().regex(/^\d{4,6}$/).optional(),
+  compteProduitVentes: z.string().regex(/^\d{4,6}$/).optional(),
+  compteTvaAttente: z.string().regex(/^\d{4,6}$/).optional(),
+  compteTvaDue: z.string().regex(/^\d{4,6}$/).optional(),
 });
 
 const validationSelectionSchema = z.object({
@@ -150,9 +154,11 @@ export class ComptaCoreController {
     const actor = actorFrom(req);
     if (!actor) throw new BadRequestException('Identité acteur requise.');
     try {
+      const { faitGenerateurTva, ...mappings } = parsed.data;
       return await this.compta.updateFaitGenerateurTva(
-        parsed.data.faitGenerateurTva,
+        faitGenerateurTva,
         actor,
+        ...(Object.keys(mappings).length ? [mappings] : []),
       );
     } catch (error) {
       toComptaHttp(error);

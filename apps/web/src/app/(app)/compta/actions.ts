@@ -310,6 +310,10 @@ export async function updateFaitGenerateurTva(
     () =>
       apiPatch('/compta/profil/tva', {
         faitGenerateurTva: str(formData, 'faitGenerateurTva'),
+        compteClientVentes: opt(formData, 'compteClientVentes'),
+        compteProduitVentes: opt(formData, 'compteProduitVentes'),
+        compteTvaAttente: opt(formData, 'compteTvaAttente'),
+        compteTvaDue: opt(formData, 'compteTvaDue'),
       }),
     'Configuration TVA refusée. Seuls la direction et le comptable peuvent la modifier.',
   );

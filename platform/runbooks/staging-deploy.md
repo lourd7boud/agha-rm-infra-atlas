@@ -95,6 +95,28 @@ grep '^AUTH_URL=https://atlas.marocinfra.com$' /opt/atlas/platform/.env.apps
 
 ## Operations
 
+### Sales/accounting release 0065
+
+Before applying `0065_sales_accounting_flow.sql`, drain sales/accounting writes
+and stop the old Core writer. Verify a timestamped PostgreSQL backup with a
+restore drill. Check existing references, migration order, and row counts.
+Apply the migration once and verify its ledger entry before starting the
+reviewed Core/Web images. Keep maintenance active if migration or health fails.
+
+In a designated staging database, verify draft invoices have no official number,
+issue allocates an immutable six-digit reference, partial payments retain exact
+centimes, and unconfigured TVA produces visible blocked reconciliation events.
+Configure the taxable event and explicit active account mappings as direction or
+comptable, retry reconciliation, then review the resulting draft entries.
+Verify admin-si receives 403 for approval and TVA configuration. Never delete an
+issued test invoice; use an explicit credit note or reversal when required.
+
+Run `pnpm --filter @atlas/web test:e2e -- sales-accounting.spec.ts` against
+the local/staging stack. Supply `ATLAS_E2E_DIRECTION_USER/PASSWORD`,
+`ATLAS_E2E_COMPTABLE_USER/PASSWORD`, and `ATLAS_E2E_ADMIN_TOKEN` through the
+test process environment, never through Git. Missing fixtures are reported as
+skipped tests and do not count as a successful browser release check.
+
 | Task | Command |
 |------|---------|
 | Health | `curl https://atlas.marocinfra.com/api/health` |

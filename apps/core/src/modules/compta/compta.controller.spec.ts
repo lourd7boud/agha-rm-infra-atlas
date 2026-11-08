@@ -87,4 +87,21 @@ describe('ComptaCoreController financial approval guards', () => {
       actor: 'comptable-1',
     });
   });
+
+  test('passes explicit sales account mappings through the audited TVA command', async () => {
+    const { controller, compta } = makeController();
+    await controller.patchTvaProfile({
+      faitGenerateurTva: 'encaissement',
+      compteClientVentes: '3421',
+      compteProduitVentes: '71242',
+      compteTvaAttente: '4455',
+      compteTvaDue: '4456',
+    }, REQUEST);
+    expect(compta.updateFaitGenerateurTva).toHaveBeenCalledWith(
+      'encaissement', 'comptable-1', {
+        compteClientVentes: '3421', compteProduitVentes: '71242',
+        compteTvaAttente: '4455', compteTvaDue: '4456',
+      },
+    );
+  });
 });

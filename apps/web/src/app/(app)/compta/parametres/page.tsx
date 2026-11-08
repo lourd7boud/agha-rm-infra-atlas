@@ -52,7 +52,7 @@ export default async function ParametresPage({
         subtitle="Le profil pilote tous les calculs (taux IS, cotisation minimale, régime TVA) et la fiche légale affichée au tableau de bord."
       />
       <StatusBanners searchParams={params} />
-      <TvaConfiguration value={profil.faitGenerateurTva} canConfigure={canConfigure} />
+      <TvaConfiguration value={profil.faitGenerateurTva} canConfigure={canConfigure} profile={profil} />
 
       <div className="grid gap-6 xl:grid-cols-3">
         <div className="xl:col-span-2">

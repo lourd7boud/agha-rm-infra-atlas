@@ -109,6 +109,10 @@ export interface ExerciceRecord {
   resultatNet: number | null;
 }
 
+export type SalesAccountMappings = Partial<Pick<ProfilRecord,
+  'compteClientVentes' | 'compteProduitVentes' | 'compteTvaAttente' | 'compteTvaDue'
+>>;
+
 export interface CompteRecord {
   code: string;
   intitule: string;
@@ -208,6 +212,7 @@ export interface ComptaRepository extends AccountingProjectionPort {
   updateFaitGenerateurTva(
     value: ProfilRecord['faitGenerateurTva'],
     actor: string,
+    mappings?: SalesAccountMappings,
   ): Promise<ProfilRecord>;
 
   listExercices(): Promise<ExerciceRecord[]>;
@@ -462,6 +467,7 @@ export class DrizzleComptaRepository implements ComptaRepository {
   async updateFaitGenerateurTva(
     value: ProfilRecord['faitGenerateurTva'],
     actor: string,
+    mappings: SalesAccountMappings = {},
   ): Promise<ProfilRecord> {
     return this.db.transaction(async (tx) => {
       const [current] = await tx
@@ -470,20 +476,37 @@ export class DrizzleComptaRepository implements ComptaRepository {
         .limit(1)
         .for('update');
       if (!current) throw new ComptaError('Profil comptable introuvable', 404);
+      const codes = [...new Set(Object.values(mappings).filter(
+        (code): code is string => typeof code === 'string',
+      ))];
+      if (codes.length) {
+        const available = await tx.select({ code: comptes.code }).from(comptes)
+          .where(and(inArray(comptes.code, codes), eq(comptes.actif, true)));
+        const availableCodes = new Set(available.map((account) => account.code));
+        const missing = codes.filter((code) => !availableCodes.has(code));
+        if (missing.length) throw new ComptaError(
+          `Comptes absents ou inactifs : ${missing.join(', ')}.`, 400,
+        );
+      }
       const [updated] = await tx
         .update(comptaProfil)
-        .set({ faitGenerateurTva: value, updatedAt: new Date() })
+        .set({ ...mappings, faitGenerateurTva: value, updatedAt: new Date() })
         .where(eq(comptaProfil.id, current.id))
         .returning();
       if (!updated) throw new ComptaError('Profil comptable introuvable', 404);
-      if (current.faitGenerateurTva !== value) {
-        await tx.insert(comptaProfilAudits).values({
-          profilId: current.id,
-          field: 'faitGenerateurTva',
-          oldValue: current.faitGenerateurTva,
-          newValue: value,
-          changedBy: actor,
-        });
+      for (const field of [
+        'faitGenerateurTva', 'compteClientVentes', 'compteProduitVentes',
+        'compteTvaAttente', 'compteTvaDue',
+      ] as const) {
+        if (current[field] !== updated[field]) {
+          await tx.insert(comptaProfilAudits).values({
+            profilId: current.id,
+            field,
+            oldValue: current[field],
+            newValue: updated[field],
+            changedBy: actor,
+          });
+        }
       }
       return mapProfil(updated);
     });
