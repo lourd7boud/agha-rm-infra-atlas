@@ -79,9 +79,14 @@ Temporary identity accounts were removed; audit actor names remain in history.
 
 ## Remaining operational configuration
 
-The accountant must choose the real TVA taxable event and active account mappings.
-Until then, commercial events remain available for reconciliation and are not
-auto-approved.
+The user confirmed the accountant-approved TVA taxable event is `encaissement`.
+It was saved through the authenticated direction API on 2026-11-08. Readback
+confirmed `encaissement`; the audit records `non_configure` -> `encaissement`,
+actor `dg`, at `2026-11-08T16:43:26.626853Z`.
+All four existing account mappings were preserved and remain unset: client,
+sales revenue, pending TVA and due TVA. Their accountant-approved account codes
+are still required before automatic sales projection can be completed. No account
+codes were inferred and no accounting entries were relinked or auto-approved.
 
 The user subsequently confirmed Gemini is unavailable and has not been purchased.
 The local configuration now sets `DEFAULT_LLM_ENABLED=false` to disable the stale
