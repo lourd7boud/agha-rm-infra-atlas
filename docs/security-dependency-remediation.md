@@ -44,10 +44,15 @@ validations). It tests the actual vulnerable behavior rather than the version.
 - All workspace TypeScript checks passed.
 - Frozen-lockfile install passed.
 - Patched Drizzle and tsx CLI version checks passed.
+- Final patched full suite: Core 1,370, Web 158, signing bridge 10, preview 3 passed.
+- Final Next.js 15.5.29 production build passed (existing jose Edge warnings remain).
+- Additional disposable PostgreSQL verification: 32 integration tests passed,
+  including all 29 cases previously skipped, a complete migration replay,
+  legacy numbering preservation and real accounting validation audit.
 
 Final full-suite/build outcomes are recorded in the local release review.
-The 29 infrastructure-dependent Core tests and missing authenticated browser
-fixtures remain separate release gates; dependency updates do not satisfy them.
+Authenticated browser fixtures remain a separate release gate; passing
+dependency and PostgreSQL tests does not satisfy that browser verification.
 
 ## Sources
 

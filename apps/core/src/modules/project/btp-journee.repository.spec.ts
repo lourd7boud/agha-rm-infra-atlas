@@ -6,11 +6,11 @@ import { randomUUID } from 'node:crypto';
 import { DrizzleBtpJourneeRepository } from './btp-journee.repository';
 import { terrainJourneePayloadSchema } from '@atlas/contracts';
 import type { Db } from '../../db/client';
-const enabled = process.env.TERRAIN_JOURNEE_DB_TEST === '1';
+const url = process.env.TERRAIN_JOURNEE_DATABASE_URL;
+const enabled = Boolean(url);
 describe.skipIf(!enabled)('journee PostgreSQL transactional workflow', () => {
   const pool = new Pool({
-    connectionString:
-      'postgresql://atlas:atlas-local@127.0.0.1:15433/atlas_terrain_journee_test',
+    connectionString: url,
   });
   const repo = new DrizzleBtpJourneeRepository(drizzle(pool) as Db);
   const project = randomUUID(),
@@ -18,6 +18,9 @@ describe.skipIf(!enabled)('journee PostgreSQL transactional workflow', () => {
     assignment = randomUUID(),
     photo = randomUUID();
   beforeAll(async () => {
+    if (new URL(url!).pathname !== '/atlas_terrain_journee_test') {
+      throw new Error('Dedicated disposable journee test database required');
+    }
     expect(
       (await pool.query('SELECT current_database() name')).rows[0].name,
     ).toBe('atlas_terrain_journee_test');

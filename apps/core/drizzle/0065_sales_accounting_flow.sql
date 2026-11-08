@@ -44,15 +44,15 @@ BEGIN
   IF EXISTS (
     SELECT 1 FROM sales.quote
     WHERE status <> 'brouillon'
-      AND reference !~ '^DEV-[0-9]{4}-[0-9]{6}$'
+      AND reference !~ '^DEV-[0-9]{4}-[0-9]{4,6}$'
   ) OR EXISTS (
     SELECT 1 FROM sales.delivery_note
     WHERE status <> 'brouillon'
-      AND reference !~ '^BL-[0-9]{4}-[0-9]{6}$'
+      AND reference !~ '^BL-[0-9]{4}-[0-9]{4,6}$'
   ) OR EXISTS (
     SELECT 1 FROM sales.invoice
     WHERE status <> 'brouillon'
-      AND reference !~ '^FAC-[0-9]{4}-[0-9]{6}$'
+      AND reference !~ '^FAC-[0-9]{4}-[0-9]{4,6}$'
   ) THEN
     RAISE EXCEPTION '0065 preflight: malformed legacy official reference detected';
   END IF;
@@ -203,6 +203,10 @@ ALTER TABLE sales.invoice
   ADD CONSTRAINT sales_invoice_legacy_paid_chk CHECK (NOT legacy_paid OR paid_at IS NOT NULL);
 --> statement-breakpoint
 
+-- 0051 already created the legacy counter. Keep it intact for audit and
+-- migrate its high-water marks; issuing a draft must never reuse an old number.
+ALTER TABLE sales.doc_sequence RENAME TO doc_sequence_legacy_0051;
+--> statement-breakpoint
 CREATE TABLE sales.doc_sequence (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
   company_id text NOT NULL,
@@ -221,24 +225,34 @@ CREATE UNIQUE INDEX sales_doc_sequence_scope_uniq
 
 INSERT INTO sales.doc_sequence (company_id, doc_type, fiscal_year, last_value)
 SELECT company_id, 'DEV', substring(reference FROM '^DEV-([0-9]{4})-')::integer,
-       max(substring(reference FROM '-([0-9]{6})$')::integer)
+       max(substring(reference FROM '-([0-9]{4,6})$')::integer)
 FROM sales.quote
-WHERE reference ~ '^DEV-[0-9]{4}-[0-9]{6}$'
+WHERE reference ~ '^DEV-[0-9]{4}-[0-9]{4,6}$'
 GROUP BY company_id, substring(reference FROM '^DEV-([0-9]{4})-')::integer;
 --> statement-breakpoint
 INSERT INTO sales.doc_sequence (company_id, doc_type, fiscal_year, last_value)
 SELECT company_id, 'BL', substring(reference FROM '^BL-([0-9]{4})-')::integer,
-       max(substring(reference FROM '-([0-9]{6})$')::integer)
+       max(substring(reference FROM '-([0-9]{4,6})$')::integer)
 FROM sales.delivery_note
-WHERE reference ~ '^BL-[0-9]{4}-[0-9]{6}$'
+WHERE reference ~ '^BL-[0-9]{4}-[0-9]{4,6}$'
 GROUP BY company_id, substring(reference FROM '^BL-([0-9]{4})-')::integer;
 --> statement-breakpoint
 INSERT INTO sales.doc_sequence (company_id, doc_type, fiscal_year, last_value)
 SELECT company_id, 'FAC', substring(reference FROM '^FAC-([0-9]{4})-')::integer,
-       max(substring(reference FROM '-([0-9]{6})$')::integer)
+       max(substring(reference FROM '-([0-9]{4,6})$')::integer)
 FROM sales.invoice
-WHERE reference ~ '^FAC-[0-9]{4}-[0-9]{6}$'
+WHERE reference ~ '^FAC-[0-9]{4}-[0-9]{4,6}$'
 GROUP BY company_id, substring(reference FROM '^FAC-([0-9]{4})-')::integer;
+--> statement-breakpoint
+
+INSERT INTO sales.doc_sequence (company_id, doc_type, fiscal_year, last_value)
+SELECT company_id,
+       CASE doc_type WHEN 'devis' THEN 'DEV' WHEN 'bl' THEN 'BL'
+         WHEN 'facture' THEN 'FAC' WHEN 'avoir' THEN 'AV' ELSE doc_type END,
+       exercice, last_number
+FROM sales.doc_sequence_legacy_0051
+ON CONFLICT (company_id, doc_type, fiscal_year)
+DO UPDATE SET last_value = GREATEST(sales.doc_sequence.last_value, EXCLUDED.last_value);
 --> statement-breakpoint
 
 CREATE TABLE sales.invoice_payment (

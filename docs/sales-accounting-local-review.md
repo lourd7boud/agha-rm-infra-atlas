@@ -22,6 +22,13 @@ and removal of the old public manual invoice-status and annual approval paths.
   failure was corrected before this build.
 - Browser suite: 3 skipped because dedicated test credentials/tokens were absent.
   Skips are not release verification.
+- PostgreSQL verification subsequently ran in a disposable pgvector:pg16
+  container, separate from the running application database: all 29 previously
+  skipped repository integration tests passed, plus 2 migration regressions
+  and 1 real sales/accounting workflow test (32 passing integration tests).
+- Fresh migration replay: all 66 migrations applied. Fixed 0065 colliding with
+  the sequence table from 0051. Legacy counters are retained and mapped using
+  their high-water marks; existing four-digit official references are preserved.
 - Dependency audit after remediation: zero reported vulnerabilities, down from
   92 (6 critical, 43 high, 35 moderate, 8 low).
   See [dependency remediation](security-dependency-remediation.md) for versions,
@@ -35,9 +42,10 @@ blocked reconciliation retry, and actual direction/comptable/admin-si sessions.
 The current browser suite covers the review destination and the admin approval
 denial; the complete planned financial journeys are still pending.
 
-Complete database-backed concurrency,
-rollback, sequence and validation auditing checks with a disposable PostgreSQL
-database. The in-memory orchestration regression does not prove database isolation.
+The separate PostgreSQL workflow verifies balanced draft projection, partial
+receipts, all-or-nothing rejected approval selection, and validation actor/time.
+Complete the remaining sales-specific concurrent issuance/payment and
+credit-note/refund browser scenarios before release.
 
 Do not treat this branch as deployment-ready based solely on the unit checks.
 No push, deployment, operational migration, Docker cleanup, or removal of another
