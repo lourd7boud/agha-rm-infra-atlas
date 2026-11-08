@@ -11,7 +11,8 @@ type Role = typeof roles[number];
 const accounts = new Map<Role, { id: string; username: string; password: string }>();
 let adminToken = '';
 let originalSettings: Record<string, unknown> | undefined;
-let invoiceId = '';
+// Resume accounting checks on an already compensated local test invoice.
+let invoiceId = process.env.ATLAS_E2E_EXISTING_INVOICE_ID ?? '';
 let reference = '';
 let entryIds: string[] = [];
 
@@ -172,6 +173,18 @@ test.describe.serial('authorized local sales/accounting verification', () => {
   test('comptable: configures TVA, retries reconciliation and validates explicit entries', async ({ page }) => {
     test.setTimeout(120_000);
     await login(page, 'comptable');
+    const events = (await api('comptable', '/compta/reconciliation/ventes')).filter(
+      (event: { payload: { invoiceId?: string } }) => event.payload.invoiceId === invoiceId,
+    );
+    expect(events).toHaveLength(7);
+    if (originalSettings?.faitGenerateurTva === 'non_configure') {
+      const blocked = await api('comptable', '/compta/reconciliation/ventes/retry', 'POST', {
+        ids: events.map((event: { id: string }) => event.id),
+      });
+      expect(blocked.blocked).toBe(7);
+      await page.goto(web + '/compta/a-valider');
+      await expect(page.getByText('Le fait générateur de TVA doit être configuré avant la projection comptable.', { exact: true }).first()).toBeVisible();
+    }
     await page.goto(web + '/compta/parametres');
     await page.getByLabel('Exigibilité de la TVA').selectOption('encaissement');
     for (const [label, code] of [
@@ -180,9 +193,11 @@ test.describe.serial('authorized local sales/accounting verification', () => {
     ]) await page.getByLabel(label, { exact: true }).fill(code!);
     await page.getByRole('button', { name: 'Enregistrer le fait générateur', exact: true }).click();
     await expect(page.getByText('Configuration enregistrée.', { exact: true })).toBeVisible();
-    const events = (await api('comptable', '/compta/reconciliation/ventes')).filter(
-      (event: { payload: { invoiceId?: string } }) => event.payload.invoiceId === invoiceId,
-    );
+    await page.goto(web + '/compta/a-valider');
+    const retry = page.locator('form').filter({ has: page.locator(`input[name="ids"][value="${events[0].id}"]`) });
+    await retry.getByRole('button', { name: 'Relancer cet événement', exact: true }).click();
+    await expect.poll(async () => (await api('comptable', '/compta/reconciliation/ventes'))
+      .find((event: { id: string }) => event.id === events[0].id).status).toBe('projected');
     const reconciled = await api('comptable', '/compta/reconciliation/ventes/retry', 'POST', {
       ids: events.map((event: { id: string }) => event.id),
     });

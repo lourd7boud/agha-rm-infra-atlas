@@ -126,7 +126,7 @@ export class ComptaCoreController {
   constructor(
     @Inject(COMPTA_REPOSITORY) private readonly compta: ComptaRepository,
     @Inject(COMPTA_REGISTRES_REPOSITORY) private readonly registres: ComptaRegistresRepository,
-    private readonly autoPosting: ComptaAutoPostingService,
+    @Inject(ComptaAutoPostingService) private readonly autoPosting: ComptaAutoPostingService,
   ) {}
 
   // Profil & paramètres.
