@@ -11,7 +11,6 @@ import {
 import {
   createEcriture,
   deleteEcriture,
-  genererEcrituresVentes,
   validerEcriture,
 } from '../actions';
 import { AnneePicker, ComptaHeader, SectionCard, StatusBanners, StatutBadge, btnGhost } from '../ui';
@@ -61,16 +60,9 @@ export default async function EcrituresPage({
           <SectionCard
             title={`Journal — ${liste.total} écriture${liste.total > 1 ? 's' : ''}`}
             actions={
-              <form action={genererEcrituresVentes}>
-                <input type="hidden" name="annee" value={annee} />
-                <input type="hidden" name="backTo" value={`/compta/ecritures?annee=${annee}`} />
-                <button
-                  className={btnGhost}
-                  title="Comptabilise les factures du module Ventes (écritures de vente + encaissements des factures payées, avec exigibilité TVA)"
-                >
-                  ⚡ Générer ventes + encaissements
-                </button>
-              </form>
+              <Link href={`/compta/a-valider?annee=${annee}`} className={btnGhost}>
+                Réconciliation et validation
+              </Link>
             }
           >
             <form className="flex flex-wrap gap-2 border-b border-line bg-paper px-4 py-2.5">

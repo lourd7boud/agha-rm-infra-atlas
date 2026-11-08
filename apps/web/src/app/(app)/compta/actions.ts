@@ -288,18 +288,6 @@ export async function deleteEcriture(formData: FormData) {
   done(target);
 }
 
-export async function genererEcrituresVentes(formData: FormData) {
-  const target = backTo(formData, '/compta/ecritures');
-  try {
-    await apiPost('/compta/ecritures/generer-ventes', {
-      annee: Math.round(num(formData, 'annee')),
-    });
-  } catch (error) {
-    fail(target, 'genererEcrituresVentes', error);
-  }
-  done(target);
-}
-
 export async function genererEcrituresDepenses(formData: FormData) {
   const target = backTo(formData, '/compta/a-valider');
   try {
@@ -308,18 +296,6 @@ export async function genererEcrituresDepenses(formData: FormData) {
     });
   } catch (error) {
     fail(target, 'genererEcrituresDepenses', error);
-  }
-  done(target);
-}
-
-export async function validerTousBrouillons(formData: FormData) {
-  const target = backTo(formData, '/compta/a-valider');
-  try {
-    await apiPost('/compta/ecritures/valider-brouillons', {
-      annee: Math.round(num(formData, 'annee')),
-    });
-  } catch (error) {
-    fail(target, 'validerTousBrouillons', error);
   }
   done(target);
 }

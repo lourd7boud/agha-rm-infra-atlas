@@ -1,6 +1,8 @@
 // Paramètres fiscaux — profil légal/fiscal complet de la société (pilote les
 // calculs IS/CM/TVA et la fiche légale) + gestion des exercices comptables.
 import { apiGet } from '@/lib/api';
+import { auth } from '@/auth';
+import { TvaConfiguration } from './TvaConfiguration';
 import { fmtMad, type ComptaProfil, type Exercice } from '@/lib/compta';
 import { createExercice, setExerciceStatut, updateProfil } from '../actions';
 import { ComptaHeader, SectionCard, StatusBanners, StatutBadge, inputClass } from '../ui';
@@ -13,6 +15,8 @@ export default async function ParametresPage({
   searchParams: Promise<{ saved?: string; error?: string; code?: string }>;
 }) {
   const params = await searchParams;
+  const session = await auth();
+  const canConfigure = session?.roles?.some((role) => ['direction', 'comptable'].includes(role)) ?? false;
   const [profil, exercices] = await Promise.all([
     apiGet<ComptaProfil>('/compta/profil'),
     apiGet<Exercice[]>('/compta/exercices'),
@@ -48,6 +52,7 @@ export default async function ParametresPage({
         subtitle="Le profil pilote tous les calculs (taux IS, cotisation minimale, régime TVA) et la fiche légale affichée au tableau de bord."
       />
       <StatusBanners searchParams={params} />
+      <TvaConfiguration value={profil.faitGenerateurTva} canConfigure={canConfigure} />
 
       <div className="grid gap-6 xl:grid-cols-3">
         <div className="xl:col-span-2">
