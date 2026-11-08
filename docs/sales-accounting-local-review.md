@@ -59,8 +59,8 @@ The fresh dump also passed a complete restore with `--exit-on-error` in a separa
 PostgreSQL database: the same 65 projects, 109,800 tenders and 65 pre-release
 migrations were recovered. Temporary database containers/volume, intermediate
 images and the redundant older dump were removed afterwards. The verified fresh
-dump remains outside Docker. Final Core/Worker/Web revision labels all match the
-application source above; health and the normal account's project/tender browser
+dump remains outside Docker. At the sales/accounting deployment, Core/Worker/Web
+revision labels matched the application source above; health and the normal account's project/tender browser
 navigation passed after the final container recreation.
 Unused Docker build cache cleanup reported 7.935 GB reclaimed inside Docker.
 The main checkout was fast-forwarded to this reviewed branch and its dependencies
@@ -89,6 +89,16 @@ default extraction/enrichment/assistant route without substituting another paid
 provider. Deterministic portal parsing remains available. Dedicated Claude chat,
 expert and pricing configuration is preserved. No paid generation request was
 used to test those accounts, and their provider availability is not newly asserted.
+The follow-up Core/Worker image is `release-fc474b7`, source
+`fc474b7a3f3c3db8ff35a660ff59f5ec912c9ec6`; Web remains unchanged at `aa364d8`.
+Both services were recreated with the persistent local environment flag and passed
+health checks. Factory verification in a network-isolated candidate and the live
+Core returned default=null with separate chat/expert/pricing Anthropic clients.
+Post-restart logs confirm explicit disablement without Gemini request errors.
+Four switch regressions, the related routing/notice suite (32 tests) and consumer
+regressions (60 tests, overlapping the notice suite) passed; Core typecheck passed.
+The authenticated subscription endpoints were not called. No database migration
+or financial setting change was needed for this provider configuration update.
 
 A pre-migration restore discards later writes. Once issued documents exist, use a
 reviewed recovery/forward-fix procedure instead of blindly replacing the database
