@@ -59,6 +59,13 @@ describe('SalesController compliant issue workflow', () => {
     expect(issuedQuote.reference).toBe('DEV-2026-000001');
     expect(issuedDelivery.reference).toBe('BL-2026-000001');
     expect(issuedInvoice.reference).toBe('FAC-2026-000001');
+    expect(issuedInvoice.legalSnapshot?.client).toMatchObject({
+      name: client.name,
+      address: client.address,
+      ice: client.ice,
+    });
+    expect(issuedQuote.legalSnapshot?.client?.name).toBe(client.name);
+    expect(issuedDelivery.legalSnapshot?.client?.name).toBe(client.name);
     const aggregate = await controller.getInvoiceAggregate(invoice.id);
     expect(aggregate.invoice.reference).toBe('FAC-2026-000001');
     expect(aggregate.settlement.outstandingCents).toBe(120_000);

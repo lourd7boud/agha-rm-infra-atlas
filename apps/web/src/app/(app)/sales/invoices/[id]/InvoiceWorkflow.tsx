@@ -10,7 +10,6 @@ import {
   type InvoiceAggregate,
 } from '@/lib/sales';
 import {
-  INITIAL_SALES_ACTION_STATE,
   createInvoiceCreditNote,
   deleteInvoiceDraft,
   issueInvoice,
@@ -26,6 +25,8 @@ interface InvoiceWorkflowProps {
   client: ClientRecord;
   idempotencySeed: string;
 }
+
+const INITIAL_SALES_ACTION_STATE: SalesActionState = { status: 'idle' };
 
 function ActionMessage({ state }: { state: SalesActionState }) {
   return (

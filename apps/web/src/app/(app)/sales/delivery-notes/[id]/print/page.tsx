@@ -1,5 +1,8 @@
 import { apiGet } from '@/lib/api';
 import { PrintSheet } from '@/components/sales/PrintSheet';
+import { LegalDocumentNotice, LegalSellerHeader } from '@/components/sales/LegalSellerHeader';
+import { legalParties, sellerFromProfile } from '@/lib/legal-document';
+import type { ComptaProfil } from '@/lib/compta';
 import {
   fmtDate,
   fmtQtyUnit,
@@ -7,11 +10,6 @@ import {
   type ClientRecord,
   type DeliveryNoteRecord,
 } from '@/lib/sales';
-
-const COMPANY = {
-  name: 'AGHA RM INFRA',
-  tagline: 'Travaux & Infrastructure',
-};
 
 export default async function DeliveryNotePrintPage({
   params,
@@ -25,6 +23,9 @@ export default async function DeliveryNotePrintPage({
   const format = parsePrintFormat(formatParam);
   const note = await apiGet<DeliveryNoteRecord>(`/sales/delivery-notes/${id}`);
   const client = await apiGet<ClientRecord>(`/sales/clients/${note.clientId}`);
+  const fallbackSeller = note.legalSnapshot?.legalName ? undefined
+    : sellerFromProfile(await apiGet<ComptaProfil>('/compta/profil'));
+  const document = legalParties(note.legalSnapshot, client, fallbackSeller);
   const detailed = format === 'detaille';
   const toggleFormat = detailed ? 'simple' : 'detaille';
 
@@ -35,11 +36,12 @@ export default async function DeliveryNotePrintPage({
       toggleHref={`/sales/delivery-notes/${note.id}/print?format=${toggleFormat}`}
       toggleLabel={detailed ? 'Format simple' : 'Format détaillé'}
     >
+      <LegalDocumentNotice
+        watermark={note.status === 'brouillon' ? 'BROUILLON — NON VALABLE' : undefined}
+        compatibilityFallback={document.compatibilityFallback}
+      />
       <div className="flex items-start justify-between gap-6">
-        <div>
-          <p className="text-lg font-black tracking-tight">{COMPANY.name}</p>
-          <p className="text-sm text-[#555]">{COMPANY.tagline}</p>
-        </div>
+        <LegalSellerHeader seller={document.seller} />
         <div className="text-right">
           <p className="text-xl font-black tracking-tight">BON DE LIVRAISON</p>
           <p className="font-mono text-sm">{note.reference}</p>
@@ -53,12 +55,12 @@ export default async function DeliveryNotePrintPage({
         <p className="text-[11px] font-semibold uppercase tracking-wider text-[#777]">
           Livré à
         </p>
-        <p className="mt-1 font-semibold">{client.name}</p>
-        {detailed && client.ice && (
-          <p className="text-sm text-[#555]">ICE : {client.ice}</p>
+        <p className="mt-1 font-semibold">{document.client.name}</p>
+        {detailed && document.client.ice && (
+          <p className="text-sm text-[#555]">ICE : {document.client.ice}</p>
         )}
-        {client.address && <p className="text-sm text-[#555]">{client.address}</p>}
-        {client.city && <p className="text-sm text-[#555]">{client.city}</p>}
+        {document.client.address && <p className="text-sm text-[#555]">{document.client.address}</p>}
+        {document.client.city && <p className="text-sm text-[#555]">{document.client.city}</p>}
         {detailed && client.phone && (
           <p className="text-sm text-[#555]">Tél : {client.phone}</p>
         )}

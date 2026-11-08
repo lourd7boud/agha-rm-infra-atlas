@@ -23,6 +23,13 @@ export interface LegalSellerSnapshot {
   taxId: string;
   tradeRegister: string;
   professionalTaxId?: string;
+  client?: {
+    name: string;
+    clientType: 'professionnel' | 'particulier';
+    address?: string;
+    city?: string;
+    ice?: string;
+  };
 }
 
 export type AccountingProjectionStatus = 'pending' | 'projected' | 'blocked';
@@ -352,7 +359,7 @@ export interface SalesRepository {
 
   /** Creates a quote with its lines; totals folded via sales.domain. */
   createQuote(input: CreateQuote): Promise<QuoteRecord>;
-  issueQuote(id: string, actor: string, issuedAt: Date): Promise<QuoteRecord>;
+  issueQuote(id: string, actor: string, issuedAt: Date, snapshot?: LegalSellerSnapshot): Promise<QuoteRecord>;
   /** One DB page of quotes (projected, no lines) + the total matching count. */
   listQuotes(
     filter: QuoteFilter,
@@ -368,6 +375,7 @@ export interface SalesRepository {
     id: string,
     actor: string,
     issuedAt: Date,
+    snapshot?: LegalSellerSnapshot,
   ): Promise<DeliveryNoteRecord>;
   /** One DB page of delivery notes (projected, lineCount only) + total count. */
   listDeliveryNotes(

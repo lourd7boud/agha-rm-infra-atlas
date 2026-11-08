@@ -186,6 +186,15 @@ export interface LegalSellerSnapshot {
   taxId: string;
   tradeRegister: string;
   professionalTaxId?: string;
+  client?: LegalClientSnapshot;
+}
+
+export interface LegalClientSnapshot {
+  name: string;
+  clientType: ClientType;
+  address?: string;
+  city?: string;
+  ice?: string;
 }
 
 export interface InvoiceRecord {

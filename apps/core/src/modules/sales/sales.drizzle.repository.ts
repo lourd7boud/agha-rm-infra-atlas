@@ -307,6 +307,7 @@ export class DrizzleSalesRepository implements SalesRepository {
     id: string,
     actor: string,
     issuedAt: Date,
+    legalSnapshot?: LegalSellerSnapshot,
   ): Promise<QuoteRecord> {
     return this.db.transaction(async (tx) => {
       await tx.execute(sql`select id from ${quotes} where id = ${id} for update`);
@@ -322,7 +323,7 @@ export class DrizzleSalesRepository implements SalesRepository {
         throw new Error('Seul un devis brouillon peut être émis.');
       }
       const reference = await this.nextReference(tx, 'devis', existing.quoteDate);
-      const snapshot = { quoteId: id, lines: lineRows };
+      const snapshot = { quoteId: id, lines: lineRows, legalSnapshot };
       const [updated] = await tx
         .update(quotes)
         .set({
@@ -330,7 +331,7 @@ export class DrizzleSalesRepository implements SalesRepository {
           status: 'envoye',
           issuedAt,
           issuedBy: actor,
-          legalSnapshot: {},
+          legalSnapshot: legalSnapshot ? { ...legalSnapshot } : {},
           contentHash: contentHash(snapshot),
           version: existing.version + 1,
         })
@@ -433,6 +434,7 @@ export class DrizzleSalesRepository implements SalesRepository {
     id: string,
     actor: string,
     issuedAt: Date,
+    legalSnapshot?: LegalSellerSnapshot,
   ): Promise<DeliveryNoteRecord> {
     return this.db.transaction(async (tx) => {
       await tx.execute(
@@ -461,8 +463,8 @@ export class DrizzleSalesRepository implements SalesRepository {
           status: 'livre',
           issuedAt,
           issuedBy: actor,
-          legalSnapshot: {},
-          contentHash: contentHash({ deliveryNoteId: id, lines: lineRows }),
+          legalSnapshot: legalSnapshot ? { ...legalSnapshot } : {},
+          contentHash: contentHash({ deliveryNoteId: id, lines: lineRows, legalSnapshot }),
           version: existing.version + 1,
         })
         .where(eq(deliveryNotes.id, id))
@@ -548,11 +550,27 @@ export class DrizzleSalesRepository implements SalesRepository {
       }
       const reference = await this.nextReference(tx, 'facture', existing.invoiceDate);
       const [client] = await tx
-        .select({ name: clients.name })
+        .select({
+          name: clients.name,
+          clientType: clients.clientType,
+          address: clients.address,
+          city: clients.city,
+          ice: clients.ice,
+        })
         .from(clients)
         .where(eq(clients.id, existing.clientId))
         .limit(1);
       if (!client) throw new Error('Client de la facture introuvable.');
+      const snapshot = {
+        ...legalSnapshot,
+        client: {
+          name: client.name,
+          clientType: client.clientType,
+          address: client.address ?? undefined,
+          city: client.city ?? undefined,
+          ice: client.ice ?? undefined,
+        },
+      };
       const nextVersion = existing.version + 1;
       const [updated] = await tx
         .update(invoices)
@@ -561,8 +579,8 @@ export class DrizzleSalesRepository implements SalesRepository {
           status: 'emise',
           issuedAt,
           issuedBy: actor,
-          legalSnapshot: legalSnapshot as unknown as Record<string, unknown>,
-          contentHash: contentHash({ invoiceId: id, legalSnapshot, lines: lineRows }),
+          legalSnapshot: snapshot,
+          contentHash: contentHash({ invoiceId: id, legalSnapshot: snapshot, lines: lineRows }),
           version: nextVersion,
         })
         .where(eq(invoices.id, id))

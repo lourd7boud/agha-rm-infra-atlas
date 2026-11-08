@@ -1,5 +1,8 @@
 import { apiGet } from '@/lib/api';
 import { PrintSheet } from '@/components/sales/PrintSheet';
+import { LegalDocumentNotice, LegalSellerHeader } from '@/components/sales/LegalSellerHeader';
+import { buildInvoiceLegalDocument, sellerFromProfile } from '@/lib/legal-document';
+import type { ComptaProfil } from '@/lib/compta';
 import {
   fmtDate,
   fmtMad,
@@ -9,11 +12,6 @@ import {
   type ClientRecord,
   type InvoiceRecord,
 } from '@/lib/sales';
-
-const COMPANY = {
-  name: 'AGHA RM INFRA',
-  tagline: 'Travaux & Infrastructure',
-};
 
 export default async function InvoicePrintPage({
   params,
@@ -26,7 +24,11 @@ export default async function InvoicePrintPage({
   const { format: formatParam } = await searchParams;
   const format = parsePrintFormat(formatParam);
   const invoice = await apiGet<InvoiceRecord>(`/sales/invoices/${id}`);
-  const client = await apiGet<ClientRecord>(`/sales/clients/${invoice.clientId}`);
+  const liveClient = await apiGet<ClientRecord>(`/sales/clients/${invoice.clientId}`);
+  const fallbackSeller = invoice.legalSnapshot?.legalName ? undefined
+    : sellerFromProfile(await apiGet<ComptaProfil>('/compta/profil'));
+  const document = buildInvoiceLegalDocument(invoice, liveClient, fallbackSeller);
+  const client = document.client;
   const detailed = format === 'detaille';
   const toggleFormat = detailed ? 'simple' : 'detaille';
 
@@ -37,11 +39,9 @@ export default async function InvoicePrintPage({
       toggleHref={`/sales/invoices/${invoice.id}/print?format=${toggleFormat}`}
       toggleLabel={detailed ? 'Format simple' : 'Format détaillé'}
     >
+      <LegalDocumentNotice watermark={document.watermark} compatibilityFallback={document.compatibilityFallback} />
       <div className="flex items-start justify-between gap-6">
-        <div>
-          <p className="text-lg font-black tracking-tight">{COMPANY.name}</p>
-          <p className="text-sm text-[#555]">{COMPANY.tagline}</p>
-        </div>
+        <LegalSellerHeader seller={document.seller} />
         <div className="text-right">
           <p className="text-xl font-black tracking-tight">FACTURE</p>
           <p className="font-mono text-sm">{invoice.reference}</p>
@@ -61,7 +61,7 @@ export default async function InvoicePrintPage({
           Facturé à
         </p>
         <p className="mt-1 font-semibold">{client.name}</p>
-        {detailed && client.ice && (
+        {client.ice && (
           <p className="text-sm text-[#555]">ICE : {client.ice}</p>
         )}
         {client.address && <p className="text-sm text-[#555]">{client.address}</p>}
@@ -74,7 +74,7 @@ export default async function InvoicePrintPage({
             <th style={{ width: '6%' }}>N°</th>
             <th>Désignation</th>
             <th style={{ width: '14%', textAlign: 'right' }}>Quantité</th>
-            {detailed && (
+            {(
               <th style={{ width: '16%', textAlign: 'right' }}>P.U. HT</th>
             )}
             <th style={{ width: '18%', textAlign: 'right' }}>Total HT</th>
@@ -88,7 +88,7 @@ export default async function InvoicePrintPage({
               <td style={{ textAlign: 'right' }} className="font-mono tabular-nums">
                 {fmtQtyUnit(line.quantity, line.unit)}
               </td>
-              {detailed && (
+              {(
                 <td
                   style={{ textAlign: 'right' }}
                   className="font-mono tabular-nums"
@@ -144,12 +144,13 @@ export default async function InvoicePrintPage({
       <p className="mt-10 text-xs text-[#777]">
         Arrêtée la présente facture à la somme de {fmtMad(invoice.totalTtcMad)} TTC.
       </p>
+      <p className="mt-3 text-sm">Conditions de paiement : {document.paymentTerms} · Devise : MAD</p>
 
       <div className="mt-10 flex justify-end text-sm">
         <div style={{ width: '45%' }}>
           <p className="text-[#777]">Cachet &amp; signature</p>
           <div className="mt-16 border-t border-[#999] pt-1 text-xs text-[#777]">
-            {COMPANY.name}
+            {document.seller?.legalName}
           </div>
         </div>
       </div>

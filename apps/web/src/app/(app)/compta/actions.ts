@@ -62,8 +62,6 @@ export interface ComptaActionState {
   message?: string;
 }
 
-export const INITIAL_COMPTA_ACTION_STATE: ComptaActionState = { status: 'idle' };
-
 function selectedIds(formData: FormData): string[] {
   const direct = formData
     .getAll('ids')

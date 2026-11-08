@@ -8,8 +8,6 @@ export interface SalesActionState {
   message?: string;
 }
 
-export const INITIAL_SALES_ACTION_STATE: SalesActionState = { status: 'idle' };
-
 type SalesOperation =
   | 'issueInvoice'
   | 'updateInvoice'

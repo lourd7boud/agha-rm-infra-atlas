@@ -249,6 +249,7 @@ export class InMemorySalesRepository implements SalesRepository {
     id: string,
     actor: string,
     issuedAt: Date,
+    snapshot?: LegalSellerSnapshot,
   ): Promise<QuoteRecord> {
     const existing = this.quotes.find((quote) => quote.id === id);
     if (!existing) throw new Error('Devis introuvable.');
@@ -259,6 +260,7 @@ export class InMemorySalesRepository implements SalesRepository {
     const updated: QuoteRecord = {
       ...existing,
       reference: this.nextReference('devis', existing.quoteDate),
+      legalSnapshot: snapshot ? structuredClone(snapshot) : undefined,
       status: 'envoye',
       issuedAt,
       issuedBy: actor,
@@ -329,6 +331,7 @@ export class InMemorySalesRepository implements SalesRepository {
     id: string,
     actor: string,
     issuedAt: Date,
+    snapshot?: LegalSellerSnapshot,
   ): Promise<DeliveryNoteRecord> {
     const existing = this.deliveryNotes.find((note) => note.id === id);
     if (!existing) throw new Error('Bon de livraison introuvable.');
@@ -339,6 +342,7 @@ export class InMemorySalesRepository implements SalesRepository {
     const updated: DeliveryNoteRecord = {
       ...existing,
       reference: this.nextReference('bl', existing.deliveryDate),
+      legalSnapshot: snapshot ? structuredClone(snapshot) : undefined,
       status: 'livre',
       issuedAt,
       issuedBy: actor,
@@ -401,13 +405,23 @@ export class InMemorySalesRepository implements SalesRepository {
     if (existing.status !== 'brouillon') {
       throw new Error('Seule une facture brouillon peut être émise.');
     }
+    const client = this.clients.find((candidate) => candidate.id === existing.clientId);
     const updated: InvoiceRecord = {
       ...existing,
       reference: this.nextReference('facture', existing.invoiceDate),
       status: 'emise',
       issuedAt,
       issuedBy: actor,
-      legalSnapshot: { ...legalSnapshot },
+      legalSnapshot: {
+        ...legalSnapshot,
+        client: client ? {
+          name: client.name,
+          clientType: client.clientType,
+          address: client.address,
+          city: client.city,
+          ice: client.ice,
+        } : legalSnapshot.client,
+      },
       version: existing.version + 1,
     };
     this.invoices = this.invoices.map((invoice) =>

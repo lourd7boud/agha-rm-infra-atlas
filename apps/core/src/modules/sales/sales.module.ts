@@ -28,6 +28,7 @@ import { InMemorySalesRepository } from './sales.repository';
 import { SalesAccountingEventModule } from './sales-accounting-event.module';
 import {
   SALES_REPOSITORY,
+  type LegalSellerSnapshot,
   type SalesRepository,
 } from './sales.types';
 
@@ -165,6 +166,29 @@ export class SalesController {
     return actor;
   }
 
+  private async partiesSnapshot(clientId: string): Promise<LegalSellerSnapshot> {
+    const [profile, client] = await Promise.all([
+      this.compta.getProfil(),
+      this.repository.getClient(clientId),
+    ]);
+    if (!client) throw new NotFoundException('Client introuvable');
+    return {
+      legalName: profile.raisonSociale,
+      address: profile.adresse ?? '',
+      ice: profile.ice ?? '',
+      taxId: profile.identifiantFiscal ?? '',
+      tradeRegister: profile.registreCommerce ?? '',
+      professionalTaxId: profile.taxeProfessionnelle ?? undefined,
+      client: {
+        name: client.name,
+        clientType: client.clientType,
+        address: client.address,
+        city: client.city,
+        ice: client.ice,
+      },
+    };
+  }
+
   // ── clients ─────────────────────────────────────────────────────────────────
 
   @Roles('direction', 'finance', 'marches', 'admin-si')
@@ -260,7 +284,11 @@ export class SalesController {
   @Roles('direction', 'finance', 'marches')
   @Post('quotes/:id/issue')
   async issueQuote(@Param('id') id: string, @Req() req: AuthedRequest) {
-    return this.repository.issueQuote(id, this.actor(req), new Date());
+    const quote = await this.repository.getQuote(id);
+    if (!quote) throw new NotFoundException('Devis introuvable');
+    return this.repository.issueQuote(
+      id, this.actor(req), new Date(), await this.partiesSnapshot(quote.clientId),
+    );
   }
 
   @Roles('direction', 'finance', 'marches', 'admin-si')
@@ -316,7 +344,11 @@ export class SalesController {
   @Roles('direction', 'finance', 'marches')
   @Post('delivery-notes/:id/issue')
   async issueDeliveryNote(@Param('id') id: string, @Req() req: AuthedRequest) {
-    return this.repository.issueDeliveryNote(id, this.actor(req), new Date());
+    const note = await this.repository.getDeliveryNote(id);
+    if (!note) throw new NotFoundException('Bon de livraison introuvable');
+    return this.repository.issueDeliveryNote(
+      id, this.actor(req), new Date(), await this.partiesSnapshot(note.clientId),
+    );
   }
 
   @Roles('direction', 'finance', 'marches', 'travaux', 'admin-si')
