@@ -24,9 +24,9 @@ guards production reconciliation dependency injection.
 
 ## Verification
 
-- Full workspace suite: Core 1,373, Web 158, signing bridge 10 and preview 3 passed.
-  The later production wiring correction passed all 8 focused controller/Nest
-  checks; workspace typechecks passed again.
+- Final full workspace suite on the synchronized main checkout: Core 1,374,
+  Web 158, signing bridge 10 and preview 3 passed. The production wiring correction
+  also passed all 8 focused controller/Nest checks; workspace typechecks passed.
 - Dedicated PostgreSQL verification: all 29 formerly skipped repository cases,
   2 fresh/legacy migration regressions and 5 sales/accounting workflows passed.
   Coverage includes concurrency, rejected overpayment, duplicate refunds,
@@ -62,6 +62,15 @@ images and the redundant older dump were removed afterwards. The verified fresh
 dump remains outside Docker. Final Core/Worker/Web revision labels all match the
 application source above; health and the normal account's project/tender browser
 navigation passed after the final container recreation.
+Unused Docker build cache cleanup reported 7.935 GB reclaimed inside Docker.
+The main checkout was fast-forwarded to this reviewed branch and its dependencies
+were synchronized with the frozen lockfile; both checkouts are clean.
+
+The remaining uncommitted diffs in the four older Claude worktrees were inspected.
+They are alternative NBSP/narrow-NBSP parsing corrections and fixture regressions;
+equivalent runtime fixes and the money regression already exist in commit
+`8f5ec39` and are included in this release. They do not represent unfinished new
+features. Those older worktrees were preserved, without overwriting their edits.
 
 Retained invoice `FAC-2026-000001` is clearly labelled TEST E2E. Its issued credit
 and refund compensate it fully. All seven accounting entries were explicitly
