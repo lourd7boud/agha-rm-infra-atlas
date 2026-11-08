@@ -83,9 +83,12 @@ The accountant must choose the real TVA taxable event and active account mapping
 Until then, commercial events remain available for reconciliation and are not
 auto-approved.
 
-An unrelated existing AI-provider configuration returns HTTP 404 for
-`gemini-2.5-flash` at runtime. AI extraction availability needs a separate
-provider/model configuration check; credentials/model routes were not changed.
+The user subsequently confirmed Gemini is unavailable and has not been purchased.
+The local configuration now sets `DEFAULT_LLM_ENABLED=false` to disable the stale
+default extraction/enrichment/assistant route without substituting another paid
+provider. Deterministic portal parsing remains available. Dedicated Claude chat,
+expert and pricing configuration is preserved. No paid generation request was
+used to test those accounts, and their provider availability is not newly asserted.
 
 A pre-migration restore discards later writes. Once issued documents exist, use a
 reviewed recovery/forward-fix procedure instead of blindly replacing the database

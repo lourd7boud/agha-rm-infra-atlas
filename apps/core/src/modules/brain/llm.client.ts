@@ -741,6 +741,7 @@ export class GoogleLlmClient implements LlmClient {
  */
 export function createLlmClientFromEnv(): LlmClient | null {
   const env = process.env;
+  if (env.DEFAULT_LLM_ENABLED?.trim().toLowerCase() === 'false') return null;
   const tiers = (model: string): Record<LlmTier, string> => ({
     T1: model,
     T2: env.OPENROUTER_MODEL_T2 ?? model,

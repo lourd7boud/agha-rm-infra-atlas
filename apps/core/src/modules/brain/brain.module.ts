@@ -41,7 +41,7 @@ export class BrainController {
   async extractAvisEndpoint(@Body() body: unknown) {
     if (!this.llm) {
       throw new ServiceUnavailableException(
-        'LLM non configuré (LLM_API_KEY manquant)',
+        'Extraction IA indisponible actuellement.',
       );
     }
     const parsed = extractBodySchema.safeParse(body);
@@ -56,6 +56,10 @@ const llmClientProvider = {
     const log = new Logger('BrainModule');
     const client = createLlmClientFromEnv();
     if (!client) {
+      if (process.env.DEFAULT_LLM_ENABLED?.trim().toLowerCase() === 'false') {
+        log.log('Default LLM explicitly disabled; dedicated chat/expert configuration is unchanged');
+        return null;
+      }
       log.warn(
         'No LLM provider configured (OPENROUTER_API_KEY / LLM_API_KEY) — brain endpoints disabled',
       );
