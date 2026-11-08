@@ -15,7 +15,10 @@ and removal of the old public manual invoice-status and annual approval paths.
 - Sales repository/controller focused suite: 31 passing tests.
 - Controller authorization/configuration suite: 7 passing tests.
 - Sales/accounting orchestration regression: passing.
-- Core and Web TypeScript checks and production build are run during final verification.
+- Full Core suite: 1,369 passing tests, 29 skipped (161 passing files, 7 skipped).
+- Core and Web TypeScript checks: passed.
+- Final Web production build: passed. The earlier server-action object export
+  failure was corrected before this build.
 - Browser suite: 3 skipped because dedicated test credentials/tokens were absent.
   Skips are not release verification.
 - Dependency audit: 92 findings (6 critical, 43 high, 35 moderate, 8 low).
