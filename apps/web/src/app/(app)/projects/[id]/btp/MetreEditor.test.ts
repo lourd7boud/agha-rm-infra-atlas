@@ -126,6 +126,20 @@ describe('MetreEditor — ferraillage (KG) : deux comptages distincts', () => {
     expect(html.match(/placeholder="1"/g)?.length).toBe(1);
   });
 });
+
+describe('MetreEditor — espace de travail', () => {
+  test('exposes article search and a monetary summary with different units', () => {
+    const html = plain(render(context([ACIER, BETON], [
+      metre([{ id: 's', nombre: 4, longueur: 3, diametre: 12, nombreElements: 2 }]),
+      metre([{ id: 'v', longueur: 2, largeur: 3, profondeur: 0.5 }], { bordereauLigneId: 'b2', unite: 'M³' }),
+    ])));
+    expect(html).toContain('aria-label="Rechercher un prix"');
+    expect(html).toContain('2.955,72');
+    expect(html).not.toContain('Total partiel de la période');
+    expect(html).toContain('aria-label="Dupliquer la mesure 1"');
+    expect(html).toContain('aria-label="Supprimer la mesure 1"');
+  });
+});
 describe('MetreEditor — partiel acier calculé et répétition visible', () => {
   test('partiel et répétition affichés pour une mesure acier enregistrée', () => {
     const html = plain(

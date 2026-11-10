@@ -25,17 +25,18 @@ export default async function MetreEditorPage({
   const errored = Boolean(query.error);
 
   return (
-    <div className="px-6 py-8 lg:px-10">
+    <div className="mx-auto max-w-[1800px] px-4 py-6 sm:px-6 lg:px-8">
       <Link
         href={`/projects/${id}?tab=metres`}
-        className="text-xs font-semibold text-muted hover:text-cyan"
+        className="inline-flex items-center gap-2 text-xs font-medium text-muted transition hover:text-cyan"
       >
         ← {project.reference} · Métrés
       </Link>
 
-      <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
+      <div className="mb-6 mt-5 flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-black tracking-tight">
+          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan">Suivi des travaux · Saisie des quantités</p>
+          <h1 className="text-3xl font-bold tracking-tight text-ink">
             Métré n°{periode.numero}
             {periode.isDecompteDernier && (
               <span className="ml-2 rounded-full bg-emerald-soft px-2.5 py-1 align-middle text-xs font-bold text-emerald">
@@ -43,12 +44,15 @@ export default async function MetreEditorPage({
               </span>
             )}
           </h1>
-          <p className="mt-1 text-xs text-muted">
+          <p className="mt-2 text-xs text-muted">
             {periode.libelle ?? `Période ${periode.numero}`} · {fmtDate(periode.dateDebut)} →{' '}
             {fmtDate(periode.dateFin)} · TVA {periode.tauxTva}% · retenue {periode.tauxRetenue}%
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <details className="group relative">
+            <summary className="cursor-pointer list-none rounded-lg border border-line bg-paper-2 px-4 py-2.5 text-xs font-semibold text-ink-2 transition hover:border-cyan">Exporter / Imprimer <span className="ml-2 text-faint">▾</span></summary>
+            <div className="absolute left-0 top-full z-30 mt-2 flex w-64 flex-col gap-1 rounded-xl border border-line bg-paper-2 p-2 shadow-lg sm:left-auto sm:right-0 [&_a]:rounded-lg [&_a]:border-0 [&_a]:bg-transparent [&_a]:px-3 [&_a]:py-2.5 [&_a]:text-left [&_a]:text-xs [&_a]:font-medium [&_a]:text-ink-2 [&_a:hover]:bg-sand">
           <a
             href={`/api/btp-export/${id}/attachement?periodeId=${periodeId}`}
             className="rounded-lg border border-line px-3 py-2 text-xs font-semibold text-muted transition hover:border-emerald hover:text-emerald"
@@ -72,9 +76,12 @@ export default async function MetreEditorPage({
           >
             ⬇ Métré PDF
           </a>
+            <p className="border-t border-line px-3 pt-2 text-[10px] leading-relaxed text-muted">Les exports reprennent les dernières données enregistrées.</p>
+            </div>
+          </details>
           <Link
             href={`/projects/${id}?tab=decomptes`}
-            className="rounded-lg bg-cyan-soft px-3 py-2 text-xs font-bold text-cyan transition hover:bg-cyan hover:text-paper"
+            className="rounded-lg bg-cyan-soft px-4 py-2.5 text-xs font-semibold text-cyan transition hover:bg-cyan hover:text-paper"
           >
             Voir les décomptes →
           </Link>
@@ -97,9 +104,9 @@ export default async function MetreEditorPage({
       )}
 
       {/* Réglages période */}
-      <details className="mt-5 rounded-xl border border-line bg-paper-2 shadow-sm">
-        <summary className="cursor-pointer select-none px-5 py-3 text-xs font-semibold uppercase tracking-widest text-cyan">
-          ⚙ Réglages de la période (dates, TVA, retenue, « et dernier »)
+      <details className="group mt-5 rounded-xl border border-line bg-paper-2">
+        <summary className="flex cursor-pointer select-none list-none items-center justify-between gap-3 px-4 py-3.5 text-xs text-muted">
+          <span><span className="mr-2 font-semibold text-ink-2">Paramètres de la période</span><span className="hidden sm:inline">Dates, TVA, retenue et décompte final</span></span><span className="font-semibold text-cyan group-open:hidden">Modifier ▾</span><span className="hidden font-semibold text-cyan group-open:inline">Fermer ▴</span>
         </summary>
         <form
           action={patchPeriode}
@@ -173,7 +180,7 @@ export default async function MetreEditorPage({
       {/* Éditeur */}
       <div className="mt-5">
         {context.bordereau && context.bordereau.lignes.length > 0 ? (
-          <MetreEditor projectId={id} periodeId={periodeId} context={context} action={saveMetres} />
+          <MetreEditor key={`${id}:${periodeId}`} projectId={id} periodeId={periodeId} context={context} action={saveMetres} saveFeedback={errored ? 'error' : saved ? 'saved' : undefined} />
         ) : (
           <div className="rounded-xl border border-dashed border-line bg-paper-2 px-6 py-14 text-center">
             <p className="text-sm font-semibold text-muted">Le bordereau est vide.</p>
