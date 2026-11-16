@@ -91,8 +91,11 @@ export interface DetailFields {
 export function parseMoneyMad(text: string | null | undefined): number | null {
   if (!text) return null;
   // Drop currency words and any non [digit , . space] noise, keep separators.
+  // Normalise the no-break space (U+00A0) the portal emits as a thousands
+  // separator to a plain space. Written as an escape so a formatter can't
+  // silently fold it back to a regular space (which made this a no-op before).
   const cleaned = text
-    .replace(/ /g, ' ')
+    .replace(/\u00a0/g, ' ')
     .replace(/mad|dhs?|dirhams?|ttc|ht/gi, '')
     .trim();
   const m = /\d[\d .]*(?:,\d+)?/.exec(cleaned);
