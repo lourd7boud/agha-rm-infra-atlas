@@ -1,46 +1,72 @@
 import * as cheerio from 'cheerio';
-import type { TenderProcedure } from '@atlas/contracts';
+import { parsePmmpDate, parsePmmpDeadline, type TenderProcedure } from '@atlas/contracts';
 import type { CreateTender } from '../tender/tender.repository';
-import { firstDetailLink } from './detail.parser';
+import { firstDetailLink, parseMoneyMad } from './detail.parser';
+import { pmmpIdentity } from './watch-audit';
 
-// Morocco is UTC+1 year-round (since 2018); PMMP shows local times.
-// Ramadan clock changes are ignored deliberately — one hour of slack is
-// always reclaimed by the J-1 submission milestone.
-const MOROCCO_UTC_OFFSET_HOURS = 1;
+export { parsePmmpDate } from '@atlas/contracts';
 
 const PROCEDURE_LABELS: ReadonlyArray<[needle: string, value: TenderProcedure]> = [
+  ['concours architectural', 'concours_architectural'],
+  ['consultation architecturale', 'consultation_architecturale'],
+  ['partenariat public-prive', 'partenariat_public_prive'],
+  ["manifestation d'interet", 'manifestation_interet'],
+  ['avec preselection', 'preselection'],
+  ['demande de cotation', 'demande_cotation'],
+  ['dialogue competitif', 'dialogue_competitif'],
+  ['enchere electronique', 'enchere_electronique'],
   ["appel d'offres ouvert", 'AOO'],
   ["appel d'offres restreint", 'AOR'],
   ['concours', 'concours'],
-  ['négoci', 'negocie'],
+  ['negoci', 'negocie'],
   ['bons de commande', 'bons_de_commande'],
 ];
 
 export function mapProcedure(label: string): TenderProcedure | null {
-  const normalized = label.toLowerCase();
+  const normalized = label.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[’‘ʼ]/g, "'").replace(/[‐‑‒–—−]/g, '-').replace(/\s+/g, ' ').trim().toLowerCase();
   const match = PROCEDURE_LABELS.find(([needle]) => normalized.includes(needle));
   return match ? match[1] : null;
-}
-
-/** Parses "DD/MM/YYYY HH:mm" (PMMP local time) into a UTC Date. */
-export function parsePmmpDate(text: string): Date | null {
-  const match = /^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})$/.exec(text.trim());
-  if (!match) return null;
-  const [, day, month, year, hour, minute] = match;
-  const utcMs = Date.UTC(
-    Number(year),
-    Number(month) - 1,
-    Number(day),
-    Number(hour) - MOROCCO_UTC_OFFSET_HOURS,
-    Number(minute),
-  );
-  const date = new Date(utcMs);
-  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 export interface ParseOutcome {
   tenders: readonly CreateTender[];
   skippedRows: number;
+  layout?: 'cards' | 'table' | 'fixture';
+  portalTotal?: number;
+  sourceIdentities?: readonly (string | null)[];
+}
+
+/** PMMP redesign: cards keep PRADO identities/pager but no result table. */
+function parseCards($: cheerio.CheerioAPI, baseUrl: string, captureIdentities: boolean): ParseOutcome {
+  const tenders: CreateTender[] = [];
+  const sourceIdentities: (string | null)[] = [];
+  let skippedRows = 0;
+  $('.tender_item').each((_, card) => {
+    const row = $(card);
+    if (captureIdentities) {
+      const identities = row.find('a[href*="refConsultation="][href*="orgAcronyme="]').toArray();
+      const identity = identities.map((link) => pmmpIdentity($(link).attr('href') ?? '', baseUrl)).find(Boolean);
+      sourceIdentities.push(identity ?? null);
+    }
+    const reference = cleanCell(row.find('[id$="_referencem"]').first().text());
+    const badge = row.find('.verticalText [title]').first();
+    const procedure = mapProcedure(badge.attr('title') ?? row.find('.verticalText').text());
+    const objet = panelValue(row.find('.p-objet').first());
+    const buyerName = panelValue(row.find('.title.p-card .a-card').first());
+    const location = panelValue(row.find('[id$="panelBlocLieuxExec"]').first()) || undefined;
+    const deadlineAt = parsePmmpDeadline(row.find('.leftColumn').first().text().replace(/\s+/g, ' '));
+    const sourceUrl = resolveSourceUrl(row.html() ?? '', undefined, baseUrl);
+    const estimationMad = parseMoneyMad(row.find('[id$="_estimationLabel"]').first().text());
+    if (!reference || !procedure || !objet || !buyerName || !deadlineAt || !sourceUrl) {
+      skippedRows += 1;
+      return;
+    }
+    tenders.push({ reference, procedure, objet, buyerName, location, deadlineAt, sourceUrl,
+      ...(estimationMad != null ? { estimationMad } : {}),
+    });
+  });
+  return { tenders, skippedRows, layout: 'cards', ...(captureIdentities ? { sourceIdentities } : {}) };
 }
 
 /**
@@ -240,15 +266,18 @@ function parseLiveLayout($: cheerio.CheerioAPI, baseUrl: string): ParseOutcome {
  * so a portal markup change degrades to the other path instead of silently
  * yielding nothing. Rows that don't match are counted, never dropped.
  */
-export function parsePmmpResults(html: string, baseUrl: string): ParseOutcome {
+export function parsePmmpResults(html: string, baseUrl: string, captureIdentities = false): ParseOutcome {
   const $ = cheerio.load(html);
+  const rawTotal = $('[id$="resultSearch_nombreElement"]').first().text().replace(/\s/g, '');
+  const portalTotal = /^\d+$/.test(rawTotal) ? Number(rawTotal) : undefined;
+  if ($('.tender_item').length > 0) return { ...parseCards($, baseUrl, captureIdentities), portalTotal };
   const fixture = parseFixtureLayout($, baseUrl);
-  if (fixture.tenders.length > 0) return fixture;
+  if (fixture.tenders.length > 0) return { ...fixture, layout: 'fixture', portalTotal };
 
   const live = parseLiveLayout($, baseUrl);
-  if (live.tenders.length > 0) return live;
+  if (live.tenders.length > 0) return { ...live, layout: 'table', portalTotal };
 
   // Neither layout matched: report the union of skipped rows so coverage
   // surfaces a parser miss instead of a false "0 tenders, all fine".
-  return { tenders: [], skippedRows: fixture.skippedRows + live.skippedRows };
+  return { tenders: [], skippedRows: fixture.skippedRows + live.skippedRows, portalTotal };
 }

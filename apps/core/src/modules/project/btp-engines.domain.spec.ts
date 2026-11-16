@@ -446,17 +446,17 @@ describe('révision engine', () => {
 describe('délais & pénalités', () => {
   it('délai effectif = OSC + mois + jours d’arrêt', () => {
     const info = computeDelaiInfo({
-      ordreServiceDate: new Date(2026, 0, 1),
+      ordreServiceDate: new Date('2026-01-01T00:00:00Z'),
       delaiMois: 6,
       arrets: [{ dateArret: '2026-02-01', dateReprise: '2026-02-11' }],
       receptionProvisoire: null,
       receptionDefinitive: null,
-      today: new Date(2026, 2, 1),
+      today: new Date('2026-03-01T00:00:00Z'),
     });
-    expect(info.delaiJours).toBe(180);
+    expect(info.delaiJours).toBe(181);
     expect(info.joursArret).toBe(10);
-    expect(info.dateFinInitiale?.getMonth()).toBe(6); // juillet
-    expect(info.dateFinEffective?.getDate()).toBe(11);
+    expect(info.dateFinInitiale?.getUTCMonth()).toBe(6); // juillet
+    expect(info.dateFinEffective?.getUTCDate()).toBe(12);
     expect(info.status).toBe('normal');
   });
 

@@ -26,7 +26,9 @@ export const projects = project.table('project', {
   name: text('name').notNull(),
   buyerName: text('buyer_name').notNull(),
   montantMarcheMad: numeric('montant_marche_mad', { precision: 14, scale: 2 }).notNull(),
+  montantMarcheInitialMad: numeric('montant_marche_initial_mad', { precision: 14, scale: 2 }),
   ordreServiceDate: date('ordre_service_date', { mode: 'date' }),
+  executionStartDate: date('execution_start_date', { mode: 'date' }),
   delaiMois: numeric('delai_mois', { precision: 4, scale: 1 }),
   status: text('status').notNull().default('preparation'),
   // ── Fields ported from the BTP construction-management app (marché de travaux
@@ -38,6 +40,7 @@ export const projects = project.table('project', {
   typeMarche: text('type_marche'), // 'normal' | 'negocie'
   modePassation: text('mode_passation'),
   dateOuverture: date('date_ouverture', { mode: 'date' }),
+  dateLimiteRemiseOffres: date('date_limite_remise_offres', { mode: 'date' }),
   receptionProvisoire: date('reception_provisoire', { mode: 'date' }),
   receptionDefinitive: date('reception_definitive', { mode: 'date' }),
   achevementTravaux: date('achevement_travaux', { mode: 'date' }),
@@ -134,6 +137,8 @@ export const avenants = project.table(
     modifications: jsonb('modifications').notNull().default('[]'),
     // [{ id, numero, designation, unite, quantite, prixUnitaire, montant }]
     prixNouveaux: jsonb('prix_nouveaux').notNull().default('[]'),
+    bordereauImpact: jsonb('bordereau_impact'),
+    bordereauImpactOrder: integer('bordereau_impact_order'),
     observations: text('observations'),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -142,6 +147,8 @@ export const avenants = project.table(
   (table) => [
     // Avenants are always read per chantier — keep that list query off a seq scan.
     index('avenant_project_id_idx').on(table.projectId),
+    uniqueIndex('avenant_bordereau_impact_order_uq').on(table.projectId, table.bordereauImpactOrder)
+      .where(sql`${table.bordereauImpactOrder} is not null`),
   ],
 );
 
@@ -240,6 +247,8 @@ export const chantierAttachements = project.table(
       .notNull()
       .references(() => projects.id),
     date: date('date', { mode: 'date' }).notNull(),
+    // Legacy dates have no recorded meaning. Only an explicitly declared execution day supports monthly allocation.
+    isExecutionDate: boolean('is_execution_date').notNull().default(false),
     ligneId: text('ligne_id').notNull(),
     numeroPrix: text('numero_prix'),
     designation: text('designation').notNull(),
@@ -331,6 +340,7 @@ export const periodes = project.table(
     libelle: text('libelle'),
     dateDebut: date('date_debut', { mode: 'date' }),
     dateFin: date('date_fin', { mode: 'date' }),
+    revisionMonthlyHt: jsonb('revision_monthly_ht'),
     tauxTva: numeric('taux_tva', { precision: 5, scale: 2 }).notNull().default('20'),
     tauxRetenue: numeric('taux_retenue', { precision: 5, scale: 2 }).notNull().default('10'),
     // "Décompte et dernier": flags the contract's FINAL décompte — switches the
@@ -412,7 +422,7 @@ export const decomptes = project.table(
     tauxTva: numeric('taux_tva', { precision: 5, scale: 2 }).notNull().default('20'),
     // Cumulative gross work to date (HT), before révision.
     totalHtMad: numeric('total_ht_mad', { precision: 15, scale: 2 }).notNull().default('0'),
-    // Révision des prix applied on the décompte dernier (0 otherwise).
+    // Cumulative revision carried into this statement's HT, TVA and TTC.
     revisionMontantMad: numeric('revision_montant_mad', { precision: 15, scale: 2 })
       .notNull()
       .default('0'),
@@ -478,6 +488,8 @@ export const revisionIndexes = project.table('revision_index', {
   source: text('source'),
   notes: text('notes'),
   status: text('status').notNull().default('provisoire'), // provisoire|definitif
+  publishedOn: date('published_on', { mode: 'string' }),
+  previousPublications: jsonb('previous_publications').notNull().default('[]'),
   createdBy: text('created_by'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -499,6 +511,32 @@ export const revisionIndexAudit = project.table(
   (table) => [index('revision_index_audit_month_idx').on(table.monthDate)],
 );
 
+export const revisionIndexImports = project.table('revision_index_import', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  previousImportId: uuid('previous_import_id'),
+  sourceUrl: text('source_url').notNull(),
+  filename: text('filename').notNull(),
+  sha256: text('sha256').notNull(),
+  storageKey: text('storage_key').notNull(),
+  observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+  sourceLastModified: text('source_last_modified'),
+  documentDate: date('document_date', { mode: 'string' }),
+  reference: text('reference'),
+  status: text('status').notNull().default('extracting'),
+  issues: jsonb('issues').notNull().default('[]'),
+  months: jsonb('months').notNull().default('[]'),
+  ocrPages: jsonb('ocr_pages').notNull().default('[]'),
+  failure: text('failure'),
+  leaseToken: uuid('lease_token'),
+  leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+  appliedDigest: text('applied_digest'),
+  appliedRequest: jsonb('applied_request'),
+  appliedResult: jsonb('applied_result'),
+  appliedAt: timestamp('applied_at', { withTimezone: true }),
+  createdBy: text('created_by'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index('revision_index_import_sha_idx').on(table.sha256), index('revision_index_import_observed_idx').on(table.observedAt)]);
+
 // Per-chantier révision configuration (chosen formula + base-period indexes).
 export const projectRevisionConfig = project.table('project_revision_config', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -509,6 +547,9 @@ export const projectRevisionConfig = project.table('project_revision_config', {
   formulaId: uuid('formula_id').references(() => revisionFormulas.id),
   baseIndexes: jsonb('base_indexes').notNull().default('{}'),
   baseDate: date('base_date', { mode: 'date' }),
+  contractDeadline: date('contract_deadline', { mode: 'date' }),
+  delayAttributable: boolean('delay_attributable'),
+  postingMode: text('posting_mode', { enum: ['each_decompte', 'final_only'] }).notNull().default('each_decompte'),
   isEnabled: boolean('is_enabled').notNull().default(true),
   notes: text('notes'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -560,6 +601,9 @@ export const ordresService = project.table(
     motif: text('motif'),
     dateEmission: date('date_emission', { mode: 'date' }),
     dateEffet: date('date_effet', { mode: 'date' }),
+    arretScope: text('arret_scope').$type<'total' | 'partiel'>(),
+    repriseArretId: text('reprise_arret_id'),
+    calendarEffectAppliedAt: timestamp('calendar_effect_applied_at', { withTimezone: true }),
     dateFin: date('date_fin', { mode: 'date' }),
     delaiJours: integer('delai_jours'),
     impactFinancierMad: numeric('impact_financier_mad', { precision: 15, scale: 2 })

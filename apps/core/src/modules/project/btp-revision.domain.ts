@@ -1,17 +1,10 @@
-// Révision des prix engine — faithful port of the source app's generic,
-// data-driven priceRevisionEngine.v2.ts.
-//
-// Excel compliance (verified against the source):
-//   • ratio per index      : TRUNC(current/base, 4)
-//   • month coefficient    : TRUNC(fixedPart + Σ weight·ratio − 1, 4)
-//   • weighted coefficient : TRUNC(Σ(days×monthCoef) / totalDays, 4)
-//   • montant révision     : TRUNC(montantAReviser × coefficient, 2)
-// Application rule (source-app specific): the révision is APPLIED only on the
-// décompte flagged "et dernier", on its cumulative HT, with the coefficient
-// weighted per month across the période span.
+// Révision des prix. Legacy Excel helpers precede the monthly settlement
+// workflow implementing the calculation and publication rules of 3-302-15.
 import { Decimal, toDecimal } from './btp-finance.domain';
+import { compareOfficialIndexReferences } from './btp-index-sync.domain';
 
 export type IndexValues = Record<string, number>;
+export type RevisionPostingMode = 'each_decompte' | 'final_only';
 
 export interface RevisionFormulaSpec {
   id?: string;
@@ -83,6 +76,7 @@ export function calculateMonthCoefficient(
   currentIndexes: IndexValues,
   baseIndexes: IndexValues,
   formula: RevisionFormulaSpec,
+  precision: 'variation' | 'coefficient' = 'variation',
 ): CoefficientResult {
   let sum = toDecimal(formula.fixedPart);
   const indexContributions: Record<string, IndexContribution> = {};
@@ -109,7 +103,9 @@ export function calculateMonthCoefficient(
       contribution: contribution.toNumber(),
     };
   }
-  const coefficient = sum.minus(1);
+  const coefficient = precision === 'coefficient'
+    ? sum.toDecimalPlaces(4, Decimal.ROUND_DOWN).minus(1)
+    : sum.minus(1);
   return {
     display: truncTo(coefficient, 4),
     breakdown: { fixedPart: formula.fixedPart, indexContributions, sum: sum.toNumber() },
@@ -213,7 +209,217 @@ export function validateFormula(formula: RevisionFormulaSpec): {
   valid: boolean;
   total: number;
 } {
-  const weightsSum = Object.values(formula.weights).reduce((sum, w) => sum + w, 0);
-  const total = formula.fixedPart + weightsSum;
-  return { valid: Math.abs(total - 1) < 0.0001, total };
+  const weights = Object.values(formula.weights);
+  const total = weights.reduce((sum, weight) => sum.plus(weight), toDecimal(formula.fixedPart));
+  return {
+    valid: formula.fixedPart >= 0.15 && formula.fixedPart <= 1 &&
+      truncTo(formula.fixedPart, 4) === formula.fixedPart &&
+      weights.length > 0 && weights.every((weight) => weight > 0 && weight <= 1) && total.eq(1),
+    total: total.toNumber(),
+  };
+}
+
+export interface PublishedIndexes {
+  values: IndexValues;
+  status: string;
+  source: string | null;
+  publishedOn: string | null;
+}
+
+export type RevisionPublications = Map<string, PublishedIndexes | PublishedIndexes[]>;
+
+export interface RevisionMonth {
+  month: string;
+  days: number;
+  ht: number;
+  coefficient: number | null;
+  amount: number | null;
+  publication: PublishedIndexes | null;
+  breakdown: CoefficientResult['breakdown'] | null;
+  missing: string[];
+  contractCoefficient?: number;
+  contractPublication?: PublishedIndexes;
+  priceBasis?: { label: string; date: string | null; formula: string | null; publication: PublishedIndexes | null; method: 'monthly' | 'calendar'; allocationSource?: 'attachements' };
+}
+
+export interface RevisionPeriod {
+  amount: number | null;
+  ht: number;
+  start: string | null;
+  end: string | null;
+  method: 'monthly' | 'calendar';
+  allocationSource?: 'attachements';
+  months: RevisionMonth[];
+  issues: string[];
+}
+
+export interface RevisionTrace {
+  version: 1;
+  cutoff: string;
+  basePublication: PublishedIndexes | null;
+  period: RevisionPeriod;
+  recognized: { numero: number; period: RevisionPeriod }[];
+  cumulative: number;
+  movement: number;
+  status: 'pending' | 'calculated';
+  postingMode?: RevisionPostingMode;
+  calculatedCumulative?: number | null;
+  availableCumulative?: number;
+  deferred?: boolean;
+  pendingPeriods: { numero: number; period: RevisionPeriod }[];
+}
+
+export function readRevisionTrace(value: unknown): RevisionTrace | null {
+  return value && typeof value === 'object' && 'version' in value && value.version === 1
+    ? value as RevisionTrace : null;
+}
+
+export function revisionDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+export function revisionDayAfter(date: Date): Date {
+  return new Date(date.getTime() + 86_400_000);
+}
+
+/** Effective OS date when specified, otherwise the day after OS notification. */
+export function chantierStart(project: { executionStartDate?: Date | null; ordreServiceDate: Date | null }): Date | null {
+  return project.executionStartDate ?? (project.ordreServiceDate ? revisionDayAfter(project.ordreServiceDate) : null);
+}
+
+export function usableIndex(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+export function selectPublishedIndexes(
+  publications: RevisionPublications,
+  month: string,
+  codes: string[],
+  cutoff: string,
+  allowProvisional: boolean,
+  allowUndated = false,
+): PublishedIndexes | null {
+  const entry = publications.get(month);
+  const candidates = Array.isArray(entry) ? entry : entry ? [entry] : [];
+  return candidates.filter((row) =>
+    row.source?.trim() && (row.publishedOn ? row.publishedOn <= cutoff : allowUndated) &&
+    (row.status === 'definitif' || (allowProvisional && row.status === 'provisoire')) &&
+    codes.every((code) => usableIndex(row.values[code])),
+  ).sort((a, b) =>
+    Number(!!b.publishedOn) - Number(!!a.publishedOn) ||
+    Number(b.status === 'definitif') - Number(a.status === 'definitif') ||
+    compareOfficialIndexReferences(b.source, a.source) ||
+    (b.publishedOn ?? '').localeCompare(a.publishedOn ?? ''),
+  )[0] ?? null;
+}
+
+/** Arrêté 3-302-15, art. 8, 12, 14, 18. Calendar dates are UTC date-only. */
+export function calculateRevisionPeriod(input: {
+  formula: RevisionFormulaSpec | null;
+  baseIndexes: IndexValues;
+  monthlyIndexes: RevisionPublications;
+  start: Date | null;
+  end: Date | null;
+  amount: number;
+  cutoff: string;
+  allowProvisional: boolean;
+  allowUndatedIndexes?: boolean;
+  monthlyHt?: Record<string, number>;
+  allocationSource?: 'attachements';
+  contractDeadline?: Date | null;
+  issues?: string[];
+}): RevisionPeriod {
+  const { start, end, formula, baseIndexes, monthlyIndexes, monthlyHt, contractDeadline } = input;
+  const issues = [...(input.issues ?? [])];
+  const result: RevisionPeriod = {
+    amount: null, ht: input.amount, start: start && revisionDate(start), end: end && revisionDate(end),
+    method: monthlyHt ? 'monthly' : 'calendar', months: [], issues,
+    ...(input.allocationSource ? { allocationSource: input.allocationSource } : {}),
+  };
+  if (input.amount === 0 && !monthlyHt) return { ...result, amount: issues.length ? null : 0 };
+  if (!start || !end || start > end) issues.push('Dates réelles d’exécution à vérifier.');
+  if (!formula || !validateFormula(formula).valid) issues.push('Formule du CPS à vérifier.');
+  const codes = Object.keys(formula?.weights ?? {});
+  const missingBase = codes.filter((code) => !usableIndex(baseIndexes[code]));
+  if (missingBase.length) issues.push(`Indices de base manquants · ${missingBase.join(', ')}.`);
+  if (issues.length || !start || !end || !formula) return result;
+
+  const days = (from: Date, to: Date) => Math.round((to.getTime() - from.getTime()) / 86_400_000) + 1;
+  const totalDays = days(start, end);
+  const segments: { month: string; days: number; late: boolean }[] = [];
+  for (let from = start; from <= end;) {
+    const month = revisionDate(from).slice(0, 7);
+    const monthEnd = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 0));
+    const late = !!contractDeadline && month > revisionDate(contractDeadline).slice(0, 7);
+    const to = new Date(Math.min(end.getTime(), monthEnd.getTime()));
+    segments.push({ month, days: days(from, to), late });
+    from = revisionDayAfter(to);
+  }
+
+  if (monthlyHt && (
+    Object.entries(monthlyHt).some(([month, value]) =>
+      !Number.isFinite(value) || !segments.some((segment) => segment.month === month)) ||
+    segments.some(({ month }) => !Object.hasOwn(monthlyHt, month)) ||
+    !Object.values(monthlyHt).reduce((sum, value) => sum.plus(value), new Decimal(0)).eq(input.amount)
+  )) {
+    issues.push('La ventilation mensuelle doit couvrir le HT de la période.');
+    return result;
+  }
+  let allocated = new Decimal(0);
+  let elapsedDays = 0;
+  let revision = new Decimal(0);
+  const publicationFor = (month: string) =>
+    selectPublishedIndexes(monthlyIndexes, month, codes, input.cutoff, input.allowProvisional, input.allowUndatedIndexes);
+  result.months = segments.map((segment) => {
+    const { month, late } = segment;
+    elapsedDays += segment.days;
+    const ht = monthlyHt ? toDecimal(monthlyHt[month]) :
+      toDecimal(input.amount).times(elapsedDays).dividedBy(totalDays).toDecimalPlaces(2).minus(allocated);
+    allocated = allocated.plus(ht);
+    if (ht.isZero()) return {
+      month, days: segment.days, ht: 0, coefficient: null, amount: 0, publication: null,
+      breakdown: null, missing: [],
+    };
+    const publication = publicationFor(month);
+    const contractMonth = late && contractDeadline ? revisionDate(contractDeadline).slice(0, 7) : null;
+    const contract = contractMonth ? publicationFor(contractMonth) : null;
+    const missing: string[] = [];
+    if (!publication) missing.push(month);
+    if (contractMonth && !contract && contractMonth !== month) missing.push(contractMonth);
+    const computed = publication && calculateMonthCoefficient(publication.values, baseIndexes, formula, 'coefficient');
+    const contractCoefficient = contract
+      ? calculateMonthCoefficient(contract.values, baseIndexes, formula, 'coefficient').display : undefined;
+    const coefficient = computed && missing.length === 0
+      ? Math.min(computed.display, contractCoefficient ?? Infinity) : null;
+    const amount = coefficient === null ? null : truncTo(ht.times(coefficient), 2);
+    if (amount !== null) revision = revision.plus(amount);
+    return {
+      month, days: segment.days, ht: ht.toNumber(), coefficient, amount, publication,
+      breakdown: computed?.breakdown ?? null, missing, contractCoefficient,
+      ...(contract ? { contractPublication: contract } : {}),
+    };
+  });
+  if (result.months.every((month) => month.amount !== null)) result.amount = revision.toNumber();
+  return result;
+}
+
+export function settleRevision(
+  periods: RevisionPeriod[],
+  prior: number,
+  final: boolean,
+  options: { postingMode?: RevisionPostingMode; isLast?: boolean } = {},
+) {
+  const pending = periods.some((period) => period.amount === null);
+  const available = periods.reduce((sum, period) => sum.plus(period.amount ?? 0), new Decimal(0));
+  const deferred = options.postingMode === 'final_only' && !options.isLast;
+  const cumulative = deferred || (final && pending) ? toDecimal(prior) : available;
+  return {
+    cumulative: cumulative.toNumber(),
+    movement: cumulative.minus(prior).toNumber(),
+    postingMode: options.postingMode ?? 'each_decompte',
+    calculatedCumulative: pending ? null : available.toNumber(),
+    availableCumulative: available.toNumber(),
+    deferred,
+    status: pending ? 'pending' as const : 'calculated' as const,
+  };
 }

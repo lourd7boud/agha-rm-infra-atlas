@@ -1,10 +1,12 @@
-import { apiGet } from '@/lib/api';
+import { apiGet, AtlasSessionExpiredError, AtlasApiError } from '@/lib/api';
 import { isRedirectError } from '@/lib/next-redirect';
 import type { TenderInventory } from '@/lib/tenders';
 import { TendersExplorer } from './TendersExplorer';
 import { TendersQueryProvider } from './Providers';
 import type { SortKey, SortState } from './DataTable';
 import { PAGE_SIZE } from './tenders-query';
+import { RadarHealth } from './RadarHealth';
+import { InventoryUnavailable } from './InventoryUnavailable';
 
 interface PreloadedList {
   id: string;
@@ -110,7 +112,8 @@ export default async function TendersPage({
       // An expired session must redirect to /login (re-auth), NOT be swallowed
       // into the degrade panel — only a genuine fetch failure returns null.
       (error) => {
-        if (isRedirectError(error)) throw error;
+        if (isRedirectError(error) || error instanceof AtlasSessionExpiredError ||
+            (error instanceof AtlasApiError && error.status === 403)) throw error;
         return null;
       },
     ),
@@ -148,21 +151,7 @@ export default async function TendersPage({
   ]);
   if (!inventory) {
     return (
-      <div className="mx-auto max-w-xl px-4 py-24 text-center">
-        <h1 className="text-xl font-semibold text-ink">
-          Catalogue momentanément indisponible
-        </h1>
-        <p className="mt-2 text-sm text-muted">
-          Le serveur met plus de temps que prévu à répondre. Les données sont
-          intactes — réessayez dans quelques secondes.
-        </p>
-        <a
-          href="/tenders"
-          className="mt-6 inline-block rounded-md bg-cyan px-4 py-2 text-sm font-semibold text-paper hover:opacity-90"
-        >
-          Réessayer
-        </a>
-      </div>
+      <div><RadarHealth /><InventoryUnavailable /></div>
     );
   }
   // Seed the explorer's filter state from URL params (so the search box shows

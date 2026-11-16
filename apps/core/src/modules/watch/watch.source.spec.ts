@@ -129,6 +129,28 @@ describe('HttpPortalSource pagination', () => {
 });
 
 describe('PradoPortalSource (Atexo MPE stateful pagination)', () => {
+  test('treats the observed 433 response as a block without retries', async () => {
+    let requests = 0;
+    const source = new PradoPortalSource('https://portal/search', {
+      fetchImpl: (async () => { requests++; return errResponse(433); }) as typeof fetch,
+      sleep: async () => {},
+    });
+    await expect(source.fetch()).rejects.toMatchObject({ name: 'PortalBlockedError', status: 433 });
+    expect(requests).toBe(1);
+  });
+
+  test('negotiates only an advertised page size in the redesigned portal', async () => {
+    const posts: URLSearchParams[] = [];
+    const source = new PradoPortalSource('https://portal/search', {
+      pageSize: 500,
+      fetchImpl: (async (_url, init) => {
+        if (init?.method === 'POST') posts.push(init.body as URLSearchParams);
+        return okResponse('<input name="PRADO_PAGESTATE" value="s"/><select name="ctl0$CONTENU_PAGE$resultSearch$listePageSizeTop"><option value="10">10</option><option value="20">20</option><option value="50">50</option></select>');
+      }) as typeof fetch,
+    });
+    await source.fetch();
+    expect(posts[0]?.get('ctl0$CONTENU_PAGE$resultSearch$listePageSizeTop')).toBe('50');
+  });
   const pradoPage = (
     pagestate: string,
     refs: readonly string[],

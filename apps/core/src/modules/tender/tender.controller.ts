@@ -111,6 +111,8 @@ import {
   type InventoryFilters,
 } from './inventory.domain';
 import { readPortalDetail } from './portal-detail';
+import { buildSamirReview } from './samir-review';
+import { comparedArchiveSha256, readSavedDossierRevision } from './dossier-revision-check';
 import {
   INTEL_REPOSITORY,
   type IntelRepository,
@@ -418,6 +420,62 @@ export class TenderController {
     }
   }
 
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 6 } })
+  @Get('tenders/:id/dossier/file-evidence')
+  async dossierFileEvidence(
+    @Param('id') id: string,
+    @Query('name') name: string,
+    @Req() request: AbortAwareRequest,
+  ) {
+    if (!name) throw new BadRequestException('Paramètre "name" requis');
+    const abort = bindRequestAbort(request);
+    try {
+      return await this.dossierService.inspectCachedFile(id, name, abort.signal);
+    } finally {
+      abort.dispose();
+    }
+  }
+
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 1 } })
+  @Post('tenders/:id/dossier/file-ocr')
+  async dossierFileOcr(
+    @Param('id') id: string,
+    @Query('name') name: string,
+    @Req() request: AbortAwareRequest,
+  ) {
+    if (!name) throw new BadRequestException('Paramètre "name" requis');
+    const abort = bindRequestAbort(request);
+    try { return await this.dossierService.ocrCachedFile(id, name, abort.signal); }
+    finally { abort.dispose(); }
+  }
+
+  @Roles('marches', 'direction', 'admin-si')
+  @Get('tenders/:id/dossier/revision')
+  async savedDossierRevision(@Param('id') id: string) {
+    return this.dossierService.savedRevision(id);
+  }
+
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 12 } })
+  @Get('tenders/:id/dossier/decision-excerpts')
+  async dossierDecisionExcerpts(@Param('id') id: string, @Req() request: AbortAwareRequest) {
+    const abort = bindRequestAbort(request);
+    try { return await this.dossierService.decisionExcerpts(id, abort.signal); }
+    finally { abort.dispose(); }
+  }
+
+  @Roles('marches', 'direction', 'admin-si')
+  @Throttle({ default: { ttl: 60_000, limit: 1 } })
+  @Post('tenders/:id/dossier/revision')
+  async checkDossierRevision(@Param('id') id: string, @Query('mode') mode: string | undefined, @Req() request: AbortAwareRequest) {
+    if (mode !== undefined && mode !== 'account') throw new BadRequestException('Mode de retrait invalide');
+    const abort = bindRequestAbort(request);
+    try { return await this.dossierService.checkRevision(id, abort.signal, mode === 'account'); }
+    finally { abort.dispose(); }
+  }
+
   /** "Voir le fichier source" — extracts ONE file from the cached DCE ZIP and
    *  returns it base64-encoded (Bordereau.xlsx behind the BPU, CPS pdf…). The
    *  web BFF decodes + streams binary with the right Content-Type so the
@@ -462,6 +520,7 @@ export class TenderController {
   async dossierFileRaw(
     @Param('id') id: string,
     @Query('name') name: string,
+    @Query('sha256') sha256: string | undefined,
     @Req() request: AbortAwareRequest,
     @Res({ passthrough: true }) response: HeaderResponse,
   ): Promise<StreamableFile> {
@@ -469,7 +528,7 @@ export class TenderController {
     const abort = bindRequestAbort(request);
     let release: (() => void) | undefined;
     try {
-      const leased = await this.dossierService.acquireDossierFile(id, name, abort.signal);
+      const leased = await this.dossierService.acquireDossierFile(id, name, abort.signal, { expectedSha256: sha256 });
       release = leased.release;
       const file = leased.file;
       const disposition = isDceRawInlineSafe(file.filename) ? 'inline' : 'attachment';
@@ -839,11 +898,20 @@ export class TenderController {
   @Get('tenders/:id')
   async detail(@Param('id') id: string) {
     const record = await this.findOr404(id);
+    const comparedSha256 = comparedArchiveSha256(readSavedDossierRevision(record.raw, record.sourceUrl));
+    const archive = await this.dossierService.inspectCachedArchive(record.id, record.raw, comparedSha256);
+    const samirReview = buildSamirReview(record, archive);
+    const mismatch = samirReview.source.state === 'mismatched_snapshot';
+    const raw = mismatch && record.raw ? { ...record.raw } : record.raw;
+    if (mismatch && raw) delete raw.detail;
     return {
       ...present(record),
+      raw,
       // Portal-first "fiche du portail" — the published detail block harvested
       // into raw.detail, typed for the drawer (rendered with a "Portail" badge).
-      portalDetail: readPortalDetail(record.raw) ?? undefined,
+      portalDetail: mismatch ? null : readPortalDetail(record.raw) ?? undefined,
+      ...(mismatch ? { portalDetailDeadline: null } : {}),
+      samirReview,
       plan: buildBackPlan(record.deadlineAt, new Date()),
     };
   }
@@ -983,8 +1051,11 @@ export class TenderController {
   @Get('tenders/:id/competitor-intel')
   async competitorIntel(@Param('id') id: string) {
     const tender = await this.findOr404(id);
+    const now = new Date();
+    const ambiguousResultReference = tender.deadlineAt < now
+      && await this.repository.hasAmbiguousResultReference(tender);
     return competitorIntelCache.getOrCompute(
-      id,
+      `${id}:${ambiguousResultReference}`,
       COMPETITOR_INTEL_CACHE_TTL_MS,
       async () => {
         // Scoped read: only THIS buyer's bids, filtered in Postgres — never the
@@ -998,9 +1069,10 @@ export class TenderController {
             reference: tender.reference,
             buyerName: tender.buyerName,
             deadlineAt: tender.deadlineAt,
+            ambiguousResultReference,
           },
           bids,
-          new Date(),
+          now,
         );
       },
     );

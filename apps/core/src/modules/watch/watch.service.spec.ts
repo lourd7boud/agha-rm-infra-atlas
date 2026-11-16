@@ -1,8 +1,11 @@
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { load } from 'cheerio';
 import { describe, expect, test, vi } from 'vitest';
 import { InMemoryTenderRepository } from '../tender/tender.repository';
 import { InMemorySnapshotRepository } from './snapshot.repository';
 import { WatchService } from './watch.service';
+import { WatchAuditCapture } from './watch-audit';
 import {
   FixturePortalSource,
   type PortalPage,
@@ -26,7 +29,7 @@ class PagedFakeSource implements PortalSource {
   async fetch(page = 1): Promise<PortalPage> {
     this.requested.push(page);
     const html = this.pages[page - 1] ?? '<html><body></body></html>';
-    return { html, sourceUrl: `https://portal/?p=${page}` };
+    return { html, sourceUrl: `https://portal/?p=${page}`, endOfResults: page > this.pages.length };
   }
 }
 
@@ -64,11 +67,66 @@ function rowsTable(rows: ReadonlyArray<[ref: string, objet: string]>): string {
 }
 
 describe('WatchService.runOnce', () => {
+  test('does not turn an existing cooldown into a fresh portal block', async () => {
+    let reportedBlocks = 0;
+    const source: PortalSource = { fetch: async () => { const error = new Error('paused'); error.name = 'PortalPausedError'; throw error; } };
+    const summary = await new WatchService(source, new InMemoryTenderRepository()).runOnce({
+      discoveryOnly: true, onBlocked: async () => { reportedBlocks++; },
+    });
+    expect(summary).toMatchObject({ status: 'blocked', errors: 0 });
+    expect(reportedBlocks).toBe(0);
+  });
+  test('stops between pages when another portal worker signals a cooldown', async () => {
+    const source = new PagedFakeSource([rowsTable([['A', 'one']]), rowsTable([['B', 'two']])]);
+    let pause = false;
+    const summary = await new WatchService(source, new InMemoryTenderRepository(), null, { maxPages: 5 }).runOnce({
+      shouldPause: async () => pause, progress: async () => { pause = true; }, discoveryOnly: true,
+    });
+    expect(source.requested).toEqual([1]);
+    expect(summary.status).toBe('blocked');
+  });
+  test('keeps imported rows when the official closure interrupts a sweep', async () => {
+    const source = new PagedFakeSource([rowsTable([['A', 'one']]), rowsTable([['B', 'two']])]);
+    const repository = new InMemoryTenderRepository();
+    const reopening = new Date('2026-11-12T07:30:00Z');
+    const onBlocked = vi.fn();
+    const summary = await new WatchService(source, repository, null, { maxPages: 5 }).runOnce({
+      discoveryOnly: true,
+      scheduledReopen: () => source.requested.length ? reopening : null,
+      onBlocked,
+    });
+    expect(source.requested).toEqual([1]);
+    expect(await repository.findAll()).toHaveLength(1);
+    expect(summary).toMatchObject({ status: 'partial', stopReason: 'scheduled_closure', errors: 0, inserted: 1 });
+    expect(onBlocked).not.toHaveBeenCalled();
+  });
+  test('a blank HTTP-200 response after a real page is a parser failure, not completion', async () => {
+    const summary = await new WatchService(new PagedFakeSource([rowsTable([['A', 'one']]), '']), new InMemoryTenderRepository(), null, { maxPages: 5 }).runOnce();
+    expect(summary).toMatchObject({ status: 'partial', stopReason: 'parser_mismatch', errors: 1 });
+  });
+  test('a recognized zero-result page records a successful source read', async () => {
+    const snapshots = new InMemorySnapshotRepository();
+    const summary = await new WatchService(new PagedFakeSource(['<span id="ctl0_CONTENU_PAGE_resultSearch_nombreElement">0</span>']), new InMemoryTenderRepository(), snapshots).runOnce();
+    expect(summary.status).toBe('complete');
+    expect((await snapshots.coverage())[0]?.lastParseOk).toBe(true);
+  });
+  test('reports an unrecognized HTTP-200 page as a failed crawl', async () => {
+    const source = new PagedFakeSource(['<html>maintenance</html>']);
+    const summary = await new WatchService(source, new InMemoryTenderRepository()).runOnce();
+    expect(summary).toMatchObject({ status: 'failed', stopReason: 'parser_mismatch', errors: 1 });
+  });
+
+  test('reports the portal count and incomplete coverage when capped', async () => {
+    const html = readFileSync(join(process.cwd(), 'src/modules/watch/fixtures/pmmp-cards-2026.html'), 'utf8');
+    const summary = await new WatchService(new PagedFakeSource([html]), new InMemoryTenderRepository(), null, { maxPages: 1 }).runOnce();
+    expect(summary).toMatchObject({ fetched: 10, portalTotal: 4810, uniqueSeen: 10, status: 'partial', stopReason: 'page_limit' });
+  });
+
   test('ingests every parsed tender on first run', async () => {
     const repository = new InMemoryTenderRepository();
     const summary = await makeService(repository).runOnce();
 
-    expect(summary).toEqual({
+    expect(summary).toMatchObject({
       fetched: 3,
       inserted: 3,
       duplicates: 0,
@@ -267,6 +325,58 @@ describe('WatchService.runOnce', () => {
     expect(await repository.findAll()).toHaveLength(2);
   });
 
+  test('keeps stored announcements searchable through an interruption and imports missed cards on retry', async () => {
+    const repository = new InMemoryTenderRepository();
+    const fixture = readFileSync(join(process.cwd(), 'src/modules/watch/fixtures/pmmp-cards-2026.html'), 'utf8');
+    const $ = load(fixture);
+    const cards = $('.tender_item').toArray().map((card) => $.html(card));
+    const pages = [cards.slice(0, 5).join(''), cards.slice(5).join('')];
+    const options = { maxPages: 5, delayMs: 0 };
+    const first = new WatchService(new FlakyPagedSource(pages, 2), repository, null, options);
+    const interrupted = await first.runOnce({ discoveryOnly: true });
+    expect(interrupted).toMatchObject({ status: 'partial', stopReason: 'fetch_failed', inserted: 5 });
+    const retained = await repository.findInventoryPage({}, {}, new Date('2026-11-09T00:00:00Z'), []);
+    expect(retained.items).toHaveLength(5);
+
+    const resumed = new WatchService(new PagedFakeSource(pages), repository, null, options);
+    expect(await resumed.runOnce({ discoveryOnly: true })).toMatchObject({ status: 'complete', inserted: 5, errors: 0 });
+    const result = await repository.findInventoryPage({}, {}, new Date('2026-11-09T00:00:00Z'), []);
+    expect(result.items).toHaveLength(10);
+    expect(new Set(result.items.map((item) => item.sourceUrl)).size).toBe(10);
+    expect(result.items.map((item) => item.id)).toEqual(expect.arrayContaining(retained.items.map((item) => item.id)));
+  });
+
+  test('keeps source identities of skipped and repeated cards for reconciliation', async () => {
+    const html = readFileSync(join(process.cwd(), 'src/modules/watch/fixtures/pmmp-cards-2026.html'), 'utf8');
+    const $ = load(html);
+    const cards = $('.tender_item').toArray().map((card) => $.html(card));
+    const source = new PagedFakeSource([cards[0]!, cards[0]! + cards[1]!.replace(/_referencem/g, '_unreadable')]);
+    const audit = new WatchAuditCapture('https://portal/?scope=active');
+    const service = new WatchService(source, new InMemoryTenderRepository(), null, { maxPages: 5 });
+    const summary = await service.runOnce({ discoveryOnly: true, audit });
+    expect(summary.status).toBe('partial');
+    expect(audit.finish().pages).toMatchObject([
+      { page: 1, sourceRows: ['1053059/i1t'], parsed: ['1053059/i1t'], skippedRows: 0 },
+      { page: 2, sourceRows: ['1053059/i1t', '1050297/d4q'], parsed: ['1053059/i1t'], skippedRows: 1 },
+    ]);
+  });
+
+  test('keeps separate official consultations even when the buyer reuses its reference', async () => {
+    const html = readFileSync(join(process.cwd(), 'src/modules/watch/fixtures/pmmp-cards-2026.html'), 'utf8');
+    const $ = load(html);
+    const first = $.html($('.tender_item').first());
+    const republished = first.replaceAll('1053059', '1053060').replace('Jeu 07 Jan 2027', 'Ven 08 Jan 2027');
+    const repo = new InMemoryTenderRepository();
+    const service = new WatchService(new PagedFakeSource([first + republished]), repo, null, { maxPages: 2 });
+
+    expect(await service.runOnce({ discoveryOnly: true })).toMatchObject({ status: 'complete', inserted: 2, uniqueSeen: 2 });
+    const rows = await repo.findAll();
+    expect(rows.map(({ reference }) => reference)).toEqual(['01/2027', '01/2027']);
+    expect(rows.map(({ sourceUrl }) => sourceUrl)).toEqual([expect.stringContaining('1053059'), expect.stringContaining('1053060')]);
+    expect(await service.runOnce({ discoveryOnly: true })).toMatchObject({ inserted: 0, duplicates: 2 });
+    expect(await repo.findAll()).toHaveLength(2);
+  });
+
   test('inserts a polite delay between pages but not after the last', async () => {
     const sleep = vi.fn(async () => {});
     const source = new PagedFakeSource([
@@ -431,7 +541,7 @@ describe('WatchService snapshot/coverage', () => {
         .mockResolvedValue({ linksFound: 1, fetched: 0, matched: 0, enriched: 0, errors: 1, stoppedEarly: true }),
       backfillMissing: vi
         .fn()
-        .mockResolvedValue({ linksFound: 0, fetched: 0, matched: 0, enriched: 0, errors: 0 }),
+        .mockResolvedValue({ linksFound: 1, fetched: 0, matched: 0, enriched: 0, errors: 1, stoppedEarly: true }),
     };
     const resultCrawler = {
       crawlOnce: vi.fn().mockResolvedValue({ resultsFound: 0, notices: 0, extracted: 0, stored: 0, errors: 0 }),
@@ -447,9 +557,9 @@ describe('WatchService snapshot/coverage', () => {
         resultCrawler as never,
       );
       await service.runOnce();
-      expect(detailCrawler.crawlOnce).toHaveBeenCalled();
+      expect(detailCrawler.crawlOnce).not.toHaveBeenCalled();
       // The detail stage reported a block → the later portal stages are skipped.
-      expect(detailCrawler.backfillMissing).not.toHaveBeenCalled();
+      expect(detailCrawler.backfillMissing).toHaveBeenCalled();
       expect(resultCrawler.crawlOnce).not.toHaveBeenCalled();
     } finally {
       delete process.env.WATCH_RESULT_LIMIT;

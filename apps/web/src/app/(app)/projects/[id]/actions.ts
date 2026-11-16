@@ -7,8 +7,9 @@
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { apiDelete, apiGet, apiPatch, apiPost, AtlasApiError } from '@/lib/api';
-import { apiPut, apiUpload, type BtpProject } from '@/lib/btp';
+import { apiPut, apiUpload, type Bordereau, type BordereauLigne, type BtpProject } from '@/lib/btp';
 import { isRedirectError } from '@/lib/next-redirect';
+import { AvenantInputError, parseAvenantBordereauImpact } from './btp/avenant-form-data';
 
 function str(formData: FormData, name: string): string {
   const value = formData.get(name);
@@ -76,7 +77,13 @@ export async function updateFiche(formData: FormData) {
       assistanceTechnique: str(formData, 'assistanceTechnique'),
       maitreOeuvre: str(formData, 'maitreOeuvre'),
       dateOuverture: opt(formData, 'dateOuverture') ?? null,
+      ...(formData.has('dateLimiteRemiseOffres')
+        ? { dateLimiteRemiseOffres: opt(formData, 'dateLimiteRemiseOffres') ?? null }
+        : {}),
       ordreServiceDate: opt(formData, 'osc') ?? null,
+      ...(formData.has('executionStartDate')
+        ? { executionStartDate: opt(formData, 'executionStartDate') ?? null }
+        : {}),
       delaiMois: num(formData, 'delaiMois') ?? null,
       receptionProvisoire: opt(formData, 'receptionProvisoire') ?? null,
       receptionDefinitive: opt(formData, 'receptionDefinitive') ?? null,
@@ -122,7 +129,7 @@ export async function addArret(formData: FormData) {
         motif: opt(formData, 'motif') ?? null,
       },
     ];
-    await apiPatch(`/btp/projects/${id}`, { arrets });
+    await apiPatch(`/btp/projects/${id}`, { arrets, expectedArrets: project.arrets });
   } catch (error) {
     fail(target, 'addArret', error);
   }
@@ -140,7 +147,7 @@ export async function setArretReprise(formData: FormData) {
     const arrets = (project.arrets ?? []).map((arret) =>
       arret.id === arretId ? { ...arret, dateReprise: dateReprise || null } : arret,
     );
-    await apiPatch(`/btp/projects/${id}`, { arrets });
+    await apiPatch(`/btp/projects/${id}`, { arrets, expectedArrets: project.arrets });
   } catch (error) {
     fail(target, 'setArretReprise', error);
   }
@@ -155,7 +162,7 @@ export async function removeArret(formData: FormData) {
   try {
     const project = await apiGet<BtpProject>(`/btp/projects/${id}`);
     const arrets = (project.arrets ?? []).filter((arret) => arret.id !== arretId);
-    await apiPatch(`/btp/projects/${id}`, { arrets });
+    await apiPatch(`/btp/projects/${id}`, { arrets, expectedArrets: project.arrets });
   } catch (error) {
     fail(target, 'removeArret', error);
   }
@@ -245,6 +252,16 @@ export async function patchPeriode(formData: FormData) {
   }
   if (opt(formData, 'statut')) patch.statut = opt(formData, 'statut');
   if (formData.has('observations')) patch.observations = str(formData, 'observations');
+  if (formData.has('revisionMonthlyMode')) {
+    const allocations = Object.fromEntries(
+      [...formData.keys()].filter((key) => key.startsWith('revision-month:'))
+        .flatMap((key) => {
+          const value = num(formData, key);
+          return value === undefined ? [] : [[key.slice('revision-month:'.length), value]];
+        }),
+    );
+    patch.revisionMonthlyHt = str(formData, 'revisionMonthlyMode') === 'monthly' ? allocations : null;
+  }
   try {
     await apiPatch(`/btp/projects/${id}/periodes/${periodeId}`, patch);
   } catch (error) {
@@ -313,23 +330,40 @@ export async function patchDecompte(formData: FormData) {
 
 export async function saveRevisionConfig(formData: FormData) {
   const id = str(formData, 'projectId');
-  const target = `/projects/${id}?tab=revision`;
-  let baseIndexes: Record<string, number> | undefined;
-  const rawBase = str(formData, 'baseIndexes');
-  if (rawBase) {
-    try {
-      baseIndexes = JSON.parse(rawBase) as Record<string, number>;
-    } catch {
-      fail(target, 'saveRevisionConfig', new AtlasApiError('revision', 400));
-    }
-  }
+  const target = `/projects/${id}?section=admin&tab=revision`;
+  const baseIndexes = Object.fromEntries(
+    [...formData.keys()].filter((key) => key.startsWith('base-index:')).flatMap((key) => {
+      const value = num(formData, key);
+      return value === undefined ? [] : [[key.slice('base-index:'.length), value]];
+    }),
+  );
+  const delay = opt(formData, 'delayAttributable');
   try {
-    await apiPut(`/btp/projects/${id}/revision/config`, {
-      formulaId: opt(formData, 'formulaId') ?? null,
-      baseIndexes,
-      baseDate: opt(formData, 'baseDate') ?? null,
-      isEnabled: str(formData, 'isEnabled') === 'on',
-      notes: opt(formData, 'notes') ?? null,
+    const disable = str(formData, 'revisionAction') === 'disable';
+    const registryBase = str(formData, 'revisionAction') === 'registry-base';
+    const inline = !disable && !registryBase && str(formData, 'formulaMode') === 'inline';
+    const entries = new Map<string, number>();
+    if (inline) {
+      const codes = formData.getAll('formula-code');
+      const values = formData.getAll('formula-weight');
+      for (const [index, rawCode] of codes.entries()) {
+        const code = String(rawCode).trim();
+        const value = String(values[index] ?? '').trim();
+        if (!code && !value) continue;
+        if (!code || !value || entries.has(code)) throw new AtlasApiError('revision/config', 400);
+        entries.set(code, Number((Number(value.replace(',', '.')) / 100).toFixed(4)));
+      }
+    }
+    const fixedPercent = num(formData, 'formula-fixed');
+    await apiPut(`/btp/projects/${id}/revision/config`, registryBase ? { baseIndexes: {} } : {
+      ...(formData.has('postingMode') ? { postingMode: opt(formData, 'postingMode') } : {}),
+      ...(disable ? { isEnabled: false } : inline
+        ? { formula: { fixedPart: fixedPercent == null ? null : Number((fixedPercent / 100).toFixed(4)), weights: Object.fromEntries(entries) } }
+        : { formulaId: opt(formData, 'formulaId') }),
+      ...(formData.has('save-base-indexes') ? { baseIndexes } : {}),
+      ...(formData.has('baseDate') ? { baseDate: opt(formData, 'baseDate') ?? null } : {}),
+      ...(formData.has('contractDeadline') ? { contractDeadline: opt(formData, 'contractDeadline') ?? null } : {}),
+      ...(formData.has('delayAttributable') ? { delayAttributable: delay ? delay === 'yes' : null } : {}),
     });
   } catch (error) {
     fail(target, 'saveRevisionConfig', error);
@@ -340,24 +374,65 @@ export async function saveRevisionConfig(formData: FormData) {
 
 // ─── Avenants ────────────────────────────────────────────────────────────────
 
-export async function createAvenant(formData: FormData) {
+export async function loadAvenantBordereau(projectId: string, dateEffet: string): Promise<{ lines: BordereauLigne[] } | { error: string }> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateEffet)) return { error: 'Renseignez une date d’effet valide.' };
+  try {
+    const bordereau = await apiGet<Bordereau>(`/btp/projects/${encodeURIComponent(projectId)}/bordereau?asOf=${encodeURIComponent(dateEffet)}`);
+    return { lines: bordereau.lignes.map((line) => ({ ...line, id: line.id ?? String(line.numero) })) };
+  } catch {
+    return { error: 'Impossible de charger les quantités à cette date.' };
+  }
+}
+
+export async function createAvenant(_previous: { error?: string }, formData: FormData): Promise<{ error?: string }> {
+  return saveAvenant(formData);
+}
+
+export async function updateAvenant(avenantId: string, _previous: { error?: string }, formData: FormData): Promise<{ error?: string }> {
+  return saveAvenant(formData, avenantId);
+}
+
+async function saveAvenant(formData: FormData, avenantId?: string): Promise<{ error?: string }> {
   const id = str(formData, 'projectId');
   const target = `/projects/${id}?tab=avenants`;
   try {
-    await apiPost(`/btp/projects/${id}/avenants`, {
+    const bordereauImpact = parseAvenantBordereauImpact(formData);
+    const reference = opt(formData, 'reference');
+    if (bordereauImpact && !reference) {
+      throw new AvenantInputError('Renseignez la référence de l’avenant signé.');
+    }
+    let typeAvenant = opt(formData, 'typeAvenant');
+    if (bordereauImpact) {
+      const { quantities, additions } = bordereauImpact;
+      if (additions.length) typeAvenant = quantities.length ? 'mixte' : 'prix_nouveaux';
+      else typeAvenant = quantities.every((item) => item.nouvelleQuantite < item.ancienneQuantite) ? 'diminution' : 'modification';
+    }
+    const payload = {
       objet: str(formData, 'objet'),
-      reference: opt(formData, 'reference'),
-      typeAvenant: opt(formData, 'typeAvenant'),
+      reference,
+      typeAvenant,
       dateAvenant: opt(formData, 'dateAvenant'),
-      montantDeltaMad: num(formData, 'montantDeltaMad') ?? 0,
+      montantDeltaMad: bordereauImpact ? undefined : (num(formData, 'montantDeltaMad') ?? 0),
       delaiDeltaMois: num(formData, 'delaiDeltaMois') ?? 0,
       observations: opt(formData, 'observations'),
-    });
+      bordereauImpact,
+    };
+    if (avenantId) await apiPatch(`/btp/projects/${id}/avenants/${encodeURIComponent(avenantId)}`, payload);
+    else await apiPost(`/btp/projects/${id}/avenants`, payload);
   } catch (error) {
-    fail(target, 'createAvenant', error);
+    if (isRedirectError(error)) throw error;
+    if (error instanceof AvenantInputError) return { error: error.message };
+    console.error(`[btp] action "${avenantId ? 'updateAvenant' : 'createAvenant'}" failed`, error);
+    if (error instanceof AtlasApiError && error.status === 409) {
+      return { error: 'Le bordereau ou l’état du marché a changé. Vérifiez les lignes et les quantités avant de réessayer.' };
+    }
+    if (error instanceof AtlasApiError && error.status === 400) {
+      return { error: 'Vérifiez les dates, les quantités et les prix renseignés pour l’avenant.' };
+    }
+    return { error: 'L’avenant n’a pas été enregistré. Réessayez.' };
   }
   revalidatePath(`/projects/${id}`);
-  done(target);
+  done(`${target}&saved=1`);
 }
 
 export async function transitionAvenant(formData: FormData) {
@@ -367,12 +442,13 @@ export async function transitionAvenant(formData: FormData) {
   try {
     await apiPost(`/btp/projects/${id}/avenants/${avenantId}/transition`, {
       to: str(formData, 'to'),
+      dateApprobation: opt(formData, 'dateApprobation'),
     });
   } catch (error) {
     fail(target, 'transitionAvenant', error);
   }
   revalidatePath(`/projects/${id}`);
-  done(target);
+  done(`${target}&saved=1`);
 }
 
 export async function deleteAvenant(formData: FormData) {
@@ -401,6 +477,8 @@ export async function createOds(formData: FormData) {
       motif: opt(formData, 'motif'),
       dateEmission: opt(formData, 'dateEmission'),
       dateEffet: opt(formData, 'dateEffet'),
+      arretScope: opt(formData, 'arretScope'),
+      repriseArretId: opt(formData, 'repriseArretId'),
       delaiJours: num(formData, 'delaiJours'),
       impactDelaiJours: num(formData, 'impactDelaiJours'),
       impactFinancierMad: num(formData, 'impactFinancierMad'),
@@ -422,6 +500,10 @@ export async function actionOds(formData: FormData) {
     await apiPost(`/btp/projects/${id}/ods/${odsId}/action`, {
       action: str(formData, 'action'),
       accusePar: opt(formData, 'accusePar'),
+      dateNotification: opt(formData, 'dateNotification'),
+      dateEffet: opt(formData, 'dateEffet'),
+      arretScope: opt(formData, 'arretScope'),
+      repriseArretId: opt(formData, 'repriseArretId'),
     });
   } catch (error) {
     fail(target, 'actionOds', error);
@@ -842,6 +924,7 @@ export async function createAttachementTerrain(formData: FormData) {
     const [ligneId, numeroPrix, unite, ...designationParts] = str(formData, 'ligne').split(':::');
     await apiPost(`/btp/projects/${id}/terrain/attachements`, {
       date: str(formData, 'date'),
+      isExecutionDate: true,
       ligneId: ligneId || 'inconnu',
       numeroPrix: numeroPrix || undefined,
       designation: designationParts.join(':::') || '—',

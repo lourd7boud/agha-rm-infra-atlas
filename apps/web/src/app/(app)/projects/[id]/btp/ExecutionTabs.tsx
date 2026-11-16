@@ -24,8 +24,9 @@ export async function BordereauTab({ project }: { project: BtpProjectDetail }) {
         <div>
           <h2 className="text-lg font-bold">Bordereau des prix (BPU)</h2>
           <p className="text-xs text-muted">
-            Chaque ligne alimente le métré ; l'enregistrement recalcule le montant du marché et
-            reconstruit les décomptes.
+            {bordereau.modifieParAvenant
+              ? <>Les prix et quantités proviennent du marché et des <Link className="font-semibold text-cyan underline" href={`/projects/${project.id}?section=admin&tab=avenants`}>avenants approuvés</Link>.</>
+              : 'Chaque ligne alimente le métré. Enregistrer le bordereau recalcule le montant du marché et les décomptes.'}
           </p>
         </div>
         <a
@@ -35,11 +36,33 @@ export async function BordereauTab({ project }: { project: BtpProjectDetail }) {
           ⬇ Export Excel
         </a>
       </div>
-      <BordereauEditor
+      {bordereau.modifieParAvenant ? (
+        <div className="overflow-x-auto rounded-xl border border-line bg-paper-2">
+          <table className="w-full min-w-[600px] text-left text-sm">
+            <thead className="bg-sand text-xs text-muted"><tr>
+              <th className="px-3 py-3">N°</th><th className="px-3 py-3">Désignation</th>
+              <th className="px-3 py-3">Unité</th><th className="px-3 py-3 text-right">Quantité</th>
+              <th className="px-3 py-3 text-right">P.U. HT</th><th className="px-3 py-3 text-right">Montant HT</th>
+            </tr></thead>
+            <tbody className="divide-y divide-line">
+              {bordereau.lignes.map((line) => <tr key={line.id ?? line.numero}>
+                <td className="px-3 py-2.5 font-mono text-cyan">{line.numero}</td>
+                <td className="px-3 py-2.5">{line.designation}
+                  {line.avenant && <span className="block text-xs text-muted">{line.avenant.reference} · Effet le {fmtDate(line.avenant.dateEffet)}</span>}
+                </td>
+                <td className="px-3 py-2.5">{line.unite}</td>
+                <td className="px-3 py-2.5 text-right font-mono">{line.quantite.toLocaleString('fr-MA')}</td>
+                <td className="px-3 py-2.5 text-right font-mono">{fmtMadPrecise(line.prixUnitaire)}</td>
+                <td className="px-3 py-2.5 text-right font-mono">{fmtMadPrecise(line.montant ?? line.quantite * line.prixUnitaire)}</td>
+              </tr>)}
+            </tbody>
+          </table>
+        </div>
+      ) : <BordereauEditor
         projectId={project.id}
         initialLignes={bordereau?.lignes ?? []}
         action={saveBordereau}
-      />
+      />}
     </div>
   );
 }
@@ -49,6 +72,9 @@ export async function BordereauTab({ project }: { project: BtpProjectDetail }) {
 export async function MetresTab({ project }: { project: BtpProjectDetail }) {
   const periodes = await apiGet<Periode[]>(`/btp/projects/${project.id}/periodes`);
   const hasBordereau = project.counts.bordereauLignes > 0;
+  const executionStart = project.executionStartDate ?? (project.ordreServiceDate
+    ? new Date(new Date(project.ordreServiceDate).getTime() + 86_400_000).toISOString().slice(0, 10)
+    : null);
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -62,16 +88,11 @@ export async function MetresTab({ project }: { project: BtpProjectDetail }) {
         {hasBordereau ? (
           <form action={createPeriode} className="flex flex-wrap items-end gap-2">
             <input type="hidden" name="projectId" value={project.id} />
+            <div className="pb-1.5 text-xs text-muted">
+              Depuis le <span className="font-mono text-ink-2">{fmtDate(executionStart)}</span>
+            </div>
             <label className="text-[11px] font-semibold uppercase tracking-widest text-faint">
-              Du
-              <input
-                type="date"
-                name="dateDebut"
-                className="mt-1 block rounded-lg border border-line bg-paper px-2 py-1.5 text-xs"
-              />
-            </label>
-            <label className="text-[11px] font-semibold uppercase tracking-widest text-faint">
-              Au
+              Travaux arrêtés au
               <input
                 type="date"
                 name="dateFin"
@@ -193,7 +214,7 @@ export async function DecomptesTab({ project }: { project: BtpProjectDetail }) {
         <h2 className="text-lg font-bold">Décomptes provisoires</h2>
         <p className="text-xs text-muted">
           Générés automatiquement à chaque enregistrement de métré — quantités cumulées, retenue de
-          garantie, révision sur le dernier.
+          garantie et révision calculée depuis les métrés et les publications disponibles.
         </p>
       </div>
       {decomptes.length === 0 ? (

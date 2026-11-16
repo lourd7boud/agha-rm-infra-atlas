@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   HttpException,
   Inject,
   Injectable,
@@ -13,9 +14,15 @@ import {
   type DceFileKind,
 } from '@atlas/contracts';
 import { unzipSync, type UnzipFileInfo } from 'fflate';
+import { createHash } from 'node:crypto';
 import { OBJECT_STORAGE, type ObjectStorage } from '../vault/storage';
+import type { SamirArchiveEvidence } from './samir-review';
+import { inspectDossierFile } from './dossier-file-evidence';
+import { runDossierFileOcr, projectDossierFileOcr, readCachedDossierFileOcr } from './dossier-file-ocr';
+import { dossierDecisionFileKind, extractDossierDecisionExcerpts } from './dossier-decision-evidence';
+import { checkDossierRevision, comparedArchiveSha256, readSavedDossierRevision } from './dossier-revision-check';
 import { normalizeArchiveToZip } from './dossier-archive';
-import { buildFullDossierMarkdown } from './dossier-fulltext';
+import { buildFullDossierMarkdown, DOSSIER_COVERAGE_MARKER, readDossierCoverage, type CoverageState } from './dossier-fulltext';
 import { pdfParseExtract } from './pdf-ocr';
 import { defaultBinaryExtractor } from './dossier-binary';
 import {
@@ -24,6 +31,7 @@ import {
   assertSelectedDossierEntry,
   createDossierMetadataBudget,
   DossierArchiveAccessGate,
+  MAX_DOSSIER_ARCHIVE_BYTES,
   readBoundedResponse,
   trackDossierEntryMetadata,
 } from './dossier-archive-safety';
@@ -40,6 +48,11 @@ export interface LeasedDossierFile {
   release: () => void;
 }
 
+interface DossierFileOptions {
+  cachedOnly?: boolean;
+  expectedSha256?: string;
+}
+
 export interface DossierFileInfo {
   /** Full path inside the ZIP (e.g. "AO 09 DR4 2026/Bordereau.xlsx"). */
   name: string;
@@ -48,6 +61,8 @@ export interface DossierFileInfo {
   /** Coarse kind for the UI viewer (pdf/excel/word/image/other). */
   kind: DceFileKind;
   sizeBytes: number;
+  /** Saved extraction state, attached only when its ZIP fingerprint matches. */
+  readability?: CoverageState;
 }
 
 /** Ordering hint for the file list — most-useful first. Bordereau leads
@@ -64,8 +79,6 @@ function filePriority(label: string): number {
 }
 
 import {
-  dceIdentityFromEnv,
-  downloadDce,
   parsePortalRef,
 } from '../watch/dossier.crawler';
 import {
@@ -117,18 +130,195 @@ export class DossierService {
   private readonly logger = new Logger('Dossier');
   private readonly archiveAccess = new DossierArchiveAccessGate();
   private readonly payloadAccess = new DossierArchiveAccessGate();
+  private readonly ocrAccess = new DossierArchiveAccessGate(1, 1);
+  private readonly revisionAccess = new DossierArchiveAccessGate(1, 1);
 
   constructor(
     @Inject(TENDER_REPOSITORY) private readonly tenders: TenderRepository,
     @Inject(OBJECT_STORAGE) private readonly storage: ObjectStorage,
   ) {}
 
-  /** Presigned URL to the tender's DCE ZIP; downloads + caches on first call. */
-  async ensureDossier(tenderId: string, signal?: AbortSignal): Promise<DossierResult> {
-    return this.archiveAccess.run(() => this.ensureDossierUnlocked(tenderId), signal);
+  /** Local-only evidence check. Never enters the live portal download flow. */
+  async inspectCachedArchive(tenderId: string, raw: Record<string, unknown> | null, comparedSha256?: string): Promise<SamirArchiveEvidence> {
+    if (raw?.dossier == null) return { state: 'not_cached' };
+    const meta = readDossierMeta(raw);
+    if (!meta || meta.objectKey !== `dossiers/${tenderId}.zip` || !meta.filename.trim() ||
+        !Number.isFinite(meta.sizeBytes) || meta.sizeBytes <= 0 ||
+        !Number.isFinite(Date.parse(meta.downloadedAt)) || Date.parse(meta.downloadedAt) > Date.now()) {
+      return { state: 'unavailable' };
+    }
+    const cached = { filename: meta.filename, cachedAt: meta.downloadedAt };
+    try {
+      const present = await this.storage.exists(meta.objectKey, AbortSignal.timeout(1500));
+      if (!present) return { state: 'missing_object', ...cached };
+    } catch {
+      return { state: 'unavailable' };
+    }
+    if (!comparedSha256) return { state: 'available', ...cached };
+    try {
+      const integrity = await this.payloadAccess.run(async () => {
+        const signal = AbortSignal.timeout(2500);
+        const archive = await this.storage.getObject(meta.objectKey, signal);
+        const abort = () => archive.body.destroy();
+        signal.addEventListener('abort', abort, { once: true });
+        try {
+          signal.throwIfAborted();
+          if (archive.sizeBytes !== undefined) assertDossierArchiveSize(archive.sizeBytes);
+          const digest = createHash('sha256');
+          let length = 0;
+          for await (const chunk of archive.body) {
+            signal.throwIfAborted();
+            length += chunk.byteLength;
+            if (length > MAX_DOSSIER_ARCHIVE_BYTES) throw new Error('Archive limit exceeded');
+            digest.update(chunk);
+          }
+          signal.throwIfAborted();
+          return length === meta.sizeBytes && digest.digest('hex') === comparedSha256 ? 'matched' : 'mismatch';
+        } finally {
+          signal.removeEventListener('abort', abort);
+          archive.body.destroy();
+        }
+      }, AbortSignal.timeout(3000));
+      return { state: 'available', ...cached, integrity };
+    } catch {
+      return { state: 'available', ...cached, integrity: 'unavailable' };
+    }
   }
 
-  private async ensureDossierUnlocked(tenderId: string): Promise<DossierResult> {
+  async inspectCachedFile(tenderId: string, name: string, signal?: AbortSignal) {
+    const leased = await this.acquireDossierFile(tenderId, name, signal, { cachedOnly: true });
+    try {
+      const evidence = await inspectDossierFile(leased.file.bytes, leased.file.filename, { signal });
+      const ocr = await this.readSavedFileOcr(tenderId, evidence.sha256, leased.file.filename);
+      return { ...evidence, ...(ocr ? { ocr: projectDossierFileOcr(ocr) } : {}) };
+    } finally {
+      leased.release();
+    }
+  }
+
+  private fileOcrKey(tenderId: string, sha: string, filename: string): string {
+    const leaf = filename.split('/').pop() ?? filename;
+    const nameHash = createHash('sha256').update(leaf).digest('hex').slice(0, 16);
+    return `dossiers/${tenderId}/ocr/${sha}-${nameHash}.json`;
+  }
+
+  async savedRevision(tenderId: string) {
+    const tender = await this.tenders.findById(tenderId);
+    if (!tender) throw new NotFoundException('Marché introuvable');
+    const revision = readSavedDossierRevision(tender.raw, tender.sourceUrl);
+    const comparedSha256 = comparedArchiveSha256(revision);
+    if (revision && comparedSha256) {
+      const archive = await this.inspectCachedArchive(tenderId, tender.raw, comparedSha256);
+      if (archive.state !== 'available' || archive.integrity !== 'matched') return {
+        version: revision.version, officialIdentity: revision.officialIdentity, checkedAt: revision.checkedAt,
+        state: 'unavailable' as const, reason: 'archive_unverified' as const,
+        ...(revision.mode ? { mode: revision.mode } : {}),
+        changedFiles: [], addedFiles: [], removedFiles: [],
+      };
+    }
+    return revision ?? { state: 'not_checked' as const };
+  }
+
+  /** Read only existing OCR for the RC and CPS in the currently saved archive. */
+  async decisionExcerpts(tenderId: string, signal?: AbortSignal) {
+    return this.archiveAccess.run(async () => {
+      const dossier = await this.getCachedDossier(tenderId);
+      assertDossierArchiveSize(dossier.sizeBytes);
+      const response = await fetch(dossier.url, { signal });
+      if (!response.ok) throw new ServiceUnavailableException('Archive DCE indisponible');
+      const archive = await readBoundedResponse(response);
+      const metadata = createDossierMetadataBudget();
+      const candidates: UnzipFileInfo[] = [];
+      const counts = new Map<string, number>();
+      unzipSync(archive, { filter: file => {
+        trackDossierEntryMetadata(file, metadata);
+        if (dossierDecisionFileKind(file.name)) {
+          candidates.push(file);
+          counts.set(file.name, (counts.get(file.name) ?? 0) + 1);
+        }
+        return false;
+      } });
+      candidates.sort((a, b) => Number(dossierDecisionFileKind(b.name) === 'rc') - Number(dossierDecisionFileKind(a.name) === 'rc') || a.name.localeCompare(b.name));
+      const selected = candidates.filter(candidate => counts.get(candidate.name) === 1).slice(0, 4);
+      const names = new Set<string>();
+      for (const file of selected) {
+        try { assertSelectedDossierEntry(file); names.add(file.name); }
+        catch { /* A selected PDF exceeding the viewer limits cannot have usable OCR. */ }
+      }
+      const entries = unzipSync(archive, { filter: file => names.has(file.name) });
+      const records = [];
+      for (const name of names) {
+        signal?.throwIfAborted();
+        const bytes = Object.hasOwn(entries, name) ? entries[name] : undefined;
+        if (!bytes) continue;
+        const ocr = await this.readSavedFileOcr(tenderId, createHash('sha256').update(bytes).digest('hex'), name);
+        if (ocr && ocr.state !== 'failed') records.push({ ...ocr, filename: name });
+      }
+      return { excerpts: extractDossierDecisionExcerpts(records) };
+    }, signal);
+  }
+
+  async checkRevision(tenderId: string, signal?: AbortSignal, usePortalAccount = false) {
+    return this.revisionAccess.run(() => checkDossierRevision(tenderId, {
+      tenders: this.tenders, storage: this.storage, usePortalAccount,
+      commit: operation => this.archiveAccess.run(operation),
+    }, signal), signal);
+  }
+
+  private async readSavedFileOcr(tenderId: string, sha: string, filename: string) {
+    const leaf = filename.split('/').pop() ?? filename;
+    try {
+      const object = await this.storage.getObject(this.fileOcrKey(tenderId, sha, leaf));
+      const text = await this.streamToString(object.body as AsyncIterable<Buffer | Uint8Array>);
+      return readCachedDossierFileOcr(JSON.parse(text), sha, leaf);
+    } catch { return null; }
+  }
+
+  /** Explicit local OCR of a saved source. It never invokes the portal or an LLM. */
+  async ocrCachedFile(tenderId: string, name: string, signal?: AbortSignal) {
+    return this.ocrAccess.run(async () => {
+      const leased = await this.acquireDossierFile(tenderId, name, signal, { cachedOnly: true });
+      const file = leased.file;
+      leased.release(); // OCR has a separate gate and must not block document viewing.
+      const sha = createHash('sha256').update(file.bytes).digest('hex');
+      const saved = await this.readSavedFileOcr(tenderId, sha, file.filename);
+      const result = saved && saved.state !== 'failed'
+        ? saved : await runDossierFileOcr(file.bytes, file.filename, { signal });
+      if (!saved || saved.state === 'failed') {
+        const json = Buffer.from(JSON.stringify(result), 'utf8');
+        if (json.byteLength > 2 * 1024 * 1024) throw new ServiceUnavailableException('Résultat OCR trop volumineux');
+        await this.storage.put(this.fileOcrKey(tenderId, sha, file.filename), json, 'application/json');
+      }
+      if (result.state !== 'failed') {
+        // A build already in flight must finish before its derived cache is invalidated.
+        await this.archiveAccess.run(() => this.storage.delete(`dossiers/${tenderId}.md`));
+      }
+      return projectDossierFileOcr(result);
+    }, signal);
+  }
+
+  private async getCachedDossier(tenderId: string): Promise<DossierResult> {
+    const tender = await this.tenders.findById(tenderId);
+    if (!tender) throw new NotFoundException('Marché introuvable');
+    if (tender.raw?.dossier == null) throw new NotFoundException('Archive DCE absente');
+    const evidence = await this.inspectCachedArchive(tenderId, tender.raw);
+    const meta = readDossierMeta(tender.raw);
+    if (evidence.state === 'unavailable') throw new ServiceUnavailableException('Vérification de l’archive indisponible');
+    if (evidence.state !== 'available' || !meta) throw new NotFoundException('Archive DCE absente');
+    return {
+      url: await this.storage.presignedGetUrl(meta.objectKey),
+      filename: meta.filename,
+      sizeBytes: meta.sizeBytes,
+      cached: true,
+    };
+  }
+
+  /** Presigned URL to the tender's DCE ZIP; downloads + caches on first call. */
+  async ensureDossier(tenderId: string, signal?: AbortSignal): Promise<DossierResult> {
+    return this.archiveAccess.run(() => this.ensureDossierUnlocked(tenderId, signal), signal);
+  }
+
+  private async ensureDossierUnlocked(tenderId: string, signal?: AbortSignal): Promise<DossierResult> {
     const tender = await this.tenders.findById(tenderId);
     if (!tender) throw new NotFoundException(`Tender not found: ${tenderId}`);
 
@@ -149,24 +339,19 @@ export class DossierService {
       );
     }
 
-    const dossier = await downloadDce(ref, dceIdentityFromEnv());
-    const objectKey = `dossiers/${tenderId}.zip`;
-    await this.storage.put(objectKey, dossier.bytes, dossier.mime);
-    const meta: DossierMeta = {
-      objectKey,
-      filename: dossier.filename,
-      sizeBytes: dossier.sizeBytes,
-      downloadedAt: new Date().toISOString(),
-    };
-    await this.tenders.updateEnrichment(tenderId, {}, { dossier: meta });
-    this.logger.log(
-      `dossier ${tender.reference} → ${dossier.filename} (${dossier.sizeBytes} bytes)`,
-    );
-
+    // This method already holds archiveAccess; reuse the source guard and
+    // anonymous mode without reacquiring that same commit gate.
+    const revision = await checkDossierRevision(tenderId, {
+      tenders: this.tenders, storage: this.storage, commit: operation => operation(),
+    }, signal);
+    if (revision.state === 'unavailable') throw new ServiceUnavailableException('DCE officiel indisponible. Consultez le contrôle de version pour le motif et la prochaine vérification.');
+    const refreshed = await this.tenders.findById(tenderId);
+    const meta = readDossierMeta(refreshed?.raw ?? null);
+    if (!meta) throw new ServiceUnavailableException('Archive DCE non conservée');
     return {
-      url: await this.storage.presignedGetUrl(objectKey),
-      filename: dossier.filename,
-      sizeBytes: dossier.sizeBytes,
+      url: await this.storage.presignedGetUrl(meta.objectKey),
+      filename: meta.filename,
+      sizeBytes: meta.sizeBytes,
       cached: false,
     };
   }
@@ -189,7 +374,7 @@ export class DossierService {
     tenderId: string,
     signal?: AbortSignal,
   ): Promise<DossierFileInfo[]> {
-    const dossier = await this.ensureDossierUnlocked(tenderId);
+    const dossier = await this.ensureDossierUnlocked(tenderId, signal);
     assertDossierArchiveSize(dossier.sizeBytes);
     const r = await fetch(dossier.url, { signal });
     if (!r.ok) {
@@ -230,6 +415,14 @@ export class DossierService {
       const pb = filePriority(b.label);
       return pa - pb || a.label.localeCompare(b.label);
     });
+    try {
+      const saved = await this.storage.getObject(`dossiers/${tenderId}.md`);
+      const markdown = await this.streamToString(saved.body as AsyncIterable<Buffer | Uint8Array>);
+      const coverage = readDossierCoverage(markdown, createHash('sha256').update(zipBuf).digest('hex'));
+      if (coverage) for (const file of files) file.readability = coverage.get(file.name);
+    } catch {
+      // No valid saved coverage: the viewer keeps the file explicitly unverified.
+    }
     return files;
   }
 
@@ -245,11 +438,12 @@ export class DossierService {
     tenderId: string,
     name: string,
     signal?: AbortSignal,
+    options: DossierFileOptions = {},
   ): Promise<LeasedDossierFile> {
     const release = await this.payloadAccess.lease(signal);
     try {
       return {
-        file: await this.getDossierFile(tenderId, name, signal),
+        file: await this.getDossierFile(tenderId, name, signal, options),
         release,
       };
     } catch (error) {
@@ -262,12 +456,16 @@ export class DossierService {
     tenderId: string,
     name: string,
     signal?: AbortSignal,
+    options: DossierFileOptions = {},
   ): Promise<DossierFileResult> {
     if (!name || name.includes('..') || name.includes('\0')) {
       throw new BadRequestException('Nom de fichier invalide');
     }
+    if (options.expectedSha256 !== undefined && !/^[a-f0-9]{64}$/.test(options.expectedSha256)) {
+      throw new BadRequestException('Empreinte du fichier invalide');
+    }
     return this.archiveAccess.run(
-      () => this.getDossierFileUnlocked(tenderId, name, signal),
+      () => this.getDossierFileUnlocked(tenderId, name, signal, options),
       signal,
     );
   }
@@ -276,9 +474,12 @@ export class DossierService {
     tenderId: string,
     name: string,
     signal?: AbortSignal,
+    options: DossierFileOptions = {},
   ): Promise<DossierFileResult> {
     // Ensure the ZIP is cached + grab a fresh presigned URL.
-    const dossier = await this.ensureDossierUnlocked(tenderId);
+    const dossier = options.cachedOnly || options.expectedSha256
+      ? await this.getCachedDossier(tenderId)
+      : await this.ensureDossierUnlocked(tenderId, signal);
     assertDossierArchiveSize(dossier.sizeBytes);
     const r = await fetch(dossier.url, { signal });
     if (!r.ok) {
@@ -296,7 +497,7 @@ export class DossierService {
         filter: (file) => {
           trackDossierEntryMetadata(file, budget);
           const fileLeaf = file.name.split('/').pop()?.toLowerCase() ?? '';
-          if (!file.name.endsWith('/') && (file.name === name || fileLeaf === leaf)) {
+          if (!file.name.endsWith('/') && (file.name === name || (!options.expectedSha256 && fileLeaf === leaf))) {
             if (matches.length >= 20) {
               throw new BadRequestException('Nom de fichier DCE ambigu');
             }
@@ -312,6 +513,7 @@ export class DossierService {
       );
     }
     const selected = matches.find((entry) => entry.name === name) ?? matches[0];
+    if (options.expectedSha256 && matches.length > 1) throw new ConflictException('Source DCE ambiguë');
     if (!selected) {
       throw new NotFoundException(`Fichier "${name}" introuvable dans le dossier`);
     }
@@ -329,11 +531,14 @@ export class DossierService {
         `Archive DCE illisible: ${(err as Error).message}`,
       );
     }
-    const found = entries[selected.name];
+    const found = Object.hasOwn(entries, selected.name) ? entries[selected.name] : undefined;
     if (!found) {
       throw new NotFoundException(`Fichier "${name}" introuvable dans le dossier`);
     }
     assertDossierEntrySize(found.byteLength);
+    if (options.expectedSha256 && createHash('sha256').update(found).digest('hex') !== options.expectedSha256) {
+      throw new ConflictException('La source a changé. Rouvrez la fiche pour actualiser les extraits.');
+    }
     return {
       filename: name.split('/').pop()!,
       bytes: Buffer.from(found.buffer, found.byteOffset, found.byteLength),
@@ -346,7 +551,10 @@ export class DossierService {
     body: AsyncIterable<Buffer | Uint8Array>,
   ): Promise<string> {
     const chunks: Buffer[] = [];
+    let bytes = 0;
     for await (const chunk of body) {
+      bytes += chunk.byteLength;
+      if (bytes > 2 * 1024 * 1024) throw new ServiceUnavailableException('Texte DCE conservé trop volumineux');
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
     return Buffer.concat(chunks).toString('utf8');
@@ -358,28 +566,37 @@ export class DossierService {
    * summary. Built once from the DCE archive (the cached zip, or a one-time
    * portal download via ensureDossier) — normalizing RAR→ZIP and reading every
    * data-bearing file's full text with the CHEAP path (pdf-parse + OOXML, no OCR)
-   * — then cached in MinIO (dossiers/{id}.md) so later chats are a fast fetch.
-   * This is what lets the agent read the real files, even for OLD tenders that
-   * were only ever summarized. Returns null on any failure so the chat falls back
-   * to the stored excerpt.
+   * — then cached in MinIO (dossiers/{id}.md). New caches include file coverage.
+   * Legacy Markdown is rebuilt only from a saved ZIP; absent or unavailable ZIPs
+   * retain their old text with explicit unverified coverage, without acquisition.
+   * Otherwise returns null on failure so chat can fall back to its saved excerpt.
    */
   async getDossierMarkdown(tenderId: string): Promise<string | null> {
     const mdKey = `dossiers/${tenderId}.md`;
+    let legacyMarkdown: string | null = null;
+    const fallback = () => legacyMarkdown
+      ? `COUVERTURE NON VÉRIFIÉE — CACHE ANCIEN\nLes fichiers et pages absents de ces extraits restent à vérifier. Version officielle actuelle non confirmée.\n\n${legacyMarkdown}`
+      : null;
     // 1) Serve the cached Markdown if we already built it.
     try {
       const obj = await this.storage.getObject(mdKey);
       const md = await this.streamToString(obj.body as AsyncIterable<Buffer | Uint8Array>);
-      if (md.trim().length > 0) return md;
+      if (md.trim().length > 0) {
+        if (md.startsWith(DOSSIER_COVERAGE_MARKER)) return md;
+        legacyMarkdown = md;
+      }
     } catch {
       // Not cached yet — build it below.
     }
     // 2) Build from the archive (cached zip, or a one-time portal download).
     try {
       return await this.archiveAccess.run(async () => {
-        const dossier = await this.ensureDossierUnlocked(tenderId);
+        const dossier = legacyMarkdown
+          ? await this.getCachedDossier(tenderId)
+          : await this.ensureDossierUnlocked(tenderId);
         assertDossierArchiveSize(dossier.sizeBytes);
         const r = await fetch(dossier.url);
-        if (!r.ok) return null;
+        if (!r.ok) return fallback();
         const archive = await readBoundedResponse(r);
         const zip = await normalizeArchiveToZip(
           new Uint8Array(archive.buffer, archive.byteOffset, archive.byteLength),
@@ -388,8 +605,15 @@ export class DossierService {
           zip,
           pdfParseExtract,
           defaultBinaryExtractor,
+          undefined,
+          async (name, bytes) => {
+            const sha = createHash('sha256').update(bytes).digest('hex');
+            const ocr = await this.readSavedFileOcr(tenderId, sha, name);
+            if (!ocr || ocr.state === 'failed' || !ocr.pages.some(page => page.state === 'text' && page.text.trim().length >= 40)) return null;
+            return ocr.pages.map(page => `\n[Page ${page.num} — OCR local · ${page.state}${page.textTruncated ? ' · texte limité' : ''}]\n${page.text}`).join('\n');
+          },
         );
-        if (!markdown.trim()) return null;
+        if (!markdown.trim()) return fallback();
         await this.storage.put(
           mdKey,
           Buffer.from(markdown, 'utf8'),
@@ -404,7 +628,7 @@ export class DossierService {
       this.logger.warn(
         `getDossierMarkdown failed (${tenderId}): ${(err as Error).message}`,
       );
-      return null;
+      return fallback();
     }
   }
 }

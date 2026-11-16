@@ -14,11 +14,13 @@ import {
   type SnapshotRepository,
 } from './snapshot.repository';
 import { parsePmmpResults } from './watch.parser';
+import { pmmpIdentity, type WatchAuditCapture } from './watch-audit';
 import { PORTAL_SOURCE, type PortalSource } from './watch.source';
 // Name-based so it matches whichever module's PortalBlockedError the listing
 // walk throws (watch.source has its own). Result-stage crawlers report their
 // own blocks via summary.stoppedEarly instead.
 import { isPortalBlockedError } from './portal-fetch';
+import { isPortalPausedError } from './portal-request-gate';
 import { EnrichmentService } from '../tender/enrichment.service';
 import { DossierExtractionService } from '../tender/dossier-extraction.service';
 import { ExpertService } from '../expert/expert.service';
@@ -40,6 +42,10 @@ function envLimit(name: string, fallback: number): number {
 }
 
 export interface WatchRunSummary {
+  status: 'complete' | 'partial' | 'failed' | 'blocked';
+  stopReason: 'end' | 'page_limit' | 'repeated_page' | 'parser_mismatch' | 'fetch_failed' | 'blocked' | 'scheduled_closure';
+  portalTotal?: number;
+  uniqueSeen: number;
   fetched: number;
   inserted: number;
   duplicates: number;
@@ -151,8 +157,17 @@ export class WatchService {
     this.random = options?.random ?? Math.random;
   }
 
-  async runOnce(): Promise<WatchRunSummary> {
+  async runOnce(options: {
+    discoveryOnly?: boolean; progress?: (summary: WatchRunSummary) => Promise<void>;
+    shouldPause?: () => Promise<boolean>; onBlocked?: () => Promise<void>;
+    scheduledReopen?: () => Date | null;
+    audit?: WatchAuditCapture;
+  } = {}): Promise<WatchRunSummary> {
     const seenResults = new Set<string>();
+    const seenTenders = new Set<string>();
+    const declaredTotals = new Set<number>();
+    let portalTotal: number | undefined;
+    let stopReason: WatchRunSummary['stopReason'] = 'page_limit';
     let fetched = 0;
     let inserted = 0;
     let duplicates = 0;
@@ -168,15 +183,21 @@ export class WatchService {
     let portalBlocked = false;
 
     for (let page = 1; page <= this.maxPages; page += 1) {
+      if (options.scheduledReopen?.()) { stopReason = 'scheduled_closure'; break; }
+      if (await options.shouldPause?.()) { portalBlocked = true; stopReason = 'blocked'; break; }
       let portalPage;
       try {
         portalPage = await this.source.fetch(page);
       } catch (error) {
+        if (options.scheduledReopen?.()) { stopReason = 'scheduled_closure'; break; }
         // The source already retries with backoff; a final failure ends the
         // walk without discarding pages already ingested this run, and the
         // run still returns a summary (the BullMQ job is not rejected).
-        errors += 1;
-        if (isPortalBlockedError(error)) portalBlocked = true;
+        const paused = isPortalPausedError(error);
+        if (!paused) errors += 1;
+        if (isPortalBlockedError(error) || paused) portalBlocked = true;
+        if (portalBlocked && !paused) await options.onBlocked?.();
+        stopReason = portalBlocked ? 'blocked' : 'fetch_failed';
         this.logger.error(
           `Portal fetch failed on page ${page}: ${(error as Error).message}`,
         );
@@ -188,15 +209,34 @@ export class WatchService {
         : null;
       const decision = decideSnapshot(html, previousSha);
 
-      const { tenders, skippedRows: pageSkipped } = parsePmmpResults(
-        html,
-        sourceUrl,
-      );
+      const parsed = parsePmmpResults(html, sourceUrl, Boolean(options.audit));
+      const { tenders, skippedRows: pageSkipped } = parsed;
+      if (options.audit) {
+        options.audit.record({
+          page, declared: parsed.portalTotal ?? null,
+          sourceRows: parsed.sourceIdentities ?? (parsed.portalTotal === 0 && pageSkipped === 0 ? [] : null),
+          parsed: tenders.flatMap((tender) => {
+            const identity = tender.sourceUrl ? pmmpIdentity(tender.sourceUrl) : null;
+            return identity ? [identity] : [];
+          }),
+          skippedRows: pageSkipped,
+        });
+      }
+      if (parsed.portalTotal !== undefined) {
+        declaredTotals.add(parsed.portalTotal);
+        portalTotal = Math.max(portalTotal ?? 0, parsed.portalTotal);
+      }
 
       // No parseable rows. Past the first page this is the clean end of the
       // result set — stop without recording a coverage miss. On the first
       // page it is a parser/portal miss worth recording, then stop.
       if (tenders.length === 0) {
+        // Only our explicit end marker or a recognized zero-count search is empty.
+        const cleanEnd = portalPage.endOfResults === true ||
+          (portalTotal === 0 && pageSkipped === 0);
+        stopReason = cleanEnd ? 'end' : 'parser_mismatch';
+        if (!cleanEnd) errors += 1;
+        if (page > 1) skippedRows += pageSkipped;
         if (page === 1) {
           pagesFetched += 1;
           if (!decision.changed) pagesUnchanged += 1;
@@ -206,7 +246,7 @@ export class WatchService {
               source: 'watch',
               url: sourceUrl,
               ...decision,
-              parsedOk: false,
+              parsedOk: cleanEnd,
               items: 0,
             });
           }
@@ -218,9 +258,11 @@ export class WatchService {
       // volatile page chrome / per-request nonces): a page repeating an
       // earlier page's tenders means the source ran past the last page or
       // ignored the page index.
-      const fingerprint = resultFingerprint(tenders.map((t) => t.reference));
-      if (seenResults.has(fingerprint)) break;
+      const keys = tenders.map((t) => t.sourceUrl ?? `${t.reference}\u0000${t.buyerName}`);
+      const fingerprint = resultFingerprint(keys);
+      if (seenResults.has(fingerprint)) { stopReason = 'repeated_page'; break; }
       seenResults.add(fingerprint);
+      keys.forEach((key) => seenTenders.add(key));
 
       pagesFetched += 1;
       if (!decision.changed) pagesUnchanged += 1;
@@ -252,6 +294,7 @@ export class WatchService {
               objet: tender.objet,
               location: tender.location,
               deadlineAt: tender.deadlineAt,
+              estimationMad: tender.estimationMad,
             });
           } catch (healError) {
             // A row with this source_url likely already exists; falling through
@@ -270,7 +313,7 @@ export class WatchService {
           }
         }
         try {
-          await this.tenders.create(tender);
+          await this.tenders.create(tender, 'portal');
           inserted += 1;
           this.logger.log(
             `tender.detected ${tender.reference} (${tender.buyerName})`,
@@ -304,14 +347,23 @@ export class WatchService {
         }
       }
 
+      if (options.progress) await options.progress({
+        status: 'partial', stopReason: 'page_limit', portalTotal, uniqueSeen: seenTenders.size,
+        fetched, inserted, duplicates, healed, sourceUrlBackfilled, skippedRows, errors, pagesFetched,
+      });
+      if (portalPage.hasNext === false) { stopReason = 'end'; break; }
       if (this.delayMs > 0 && page < this.maxPages) {
-        // Jittered, not fixed: ~200 sequential hops at a constant gap is a
-        // textbook WAF bot signature. A ±40% window reads as human paging.
         await this.sleep(jitterDelay(this.delayMs, this.random));
       }
     }
 
     const summary: WatchRunSummary = {
+      status: stopReason === 'scheduled_closure' ? 'partial'
+        : portalBlocked ? 'blocked' : (errors === 0 && skippedRows === 0 && stopReason === 'end' &&
+        fetched === seenTenders.size && declaredTotals.size <= 1 &&
+        (portalTotal === undefined || seenTenders.size === portalTotal))
+        ? 'complete' : seenTenders.size > 0 ? 'partial' : 'failed',
+      stopReason, portalTotal, uniqueSeen: seenTenders.size,
       fetched,
       inserted,
       duplicates,
@@ -325,32 +377,33 @@ export class WatchService {
         : {}),
     };
     this.logger.log(`run complete ${JSON.stringify(summary)}`);
+    if (options.progress) await options.progress(summary);
+    if (!options.discoveryOnly && !portalBlocked && stopReason !== 'scheduled_closure' && errors === 0) await this.enrichOnce();
+    return summary;
+  }
+
+  /** Separate queue: slow dossier/AI work never delays the next discovery run. */
+  async enrichOnce(control: { shouldPause?: () => Promise<boolean>; onBlocked?: () => Promise<void> } = {}): Promise<{ blocked: boolean }> {
+    let portalBlocked = false;
+    const allowed = async () => {
+      if (await control.shouldPause?.()) portalBlocked = true;
+      return !portalBlocked;
+    };
     // Stage-2: auto-enrich the freshest consultations from their detail pages
     // (caution, category, detail URL). A failure here never fails the Sentinel.
-    if (this.detailCrawler && !portalBlocked) {
-      try {
-        const detail = await this.detailCrawler.crawlOnce({ maxDetails: 20 });
-        this.logger.log(`detail enrichment ${JSON.stringify(detail)}`);
-        if (detail.stoppedEarly) {
-          portalBlocked = true;
-          this.logger.warn('detail crawl hit a portal block — backing off the rest of this sweep');
-        }
-      } catch (error) {
-        this.logger.error(
-          `detail enrichment failed: ${(error as Error).message}`,
-        );
-      }
-      // Stage-2b: DB-driven caution backfill — targets OUR rows still missing
-      // the caution through their stored detail URL (newest first, zero LLM).
-      // The listing crawl above only ever sees page 1; this stage is what
-      // actually guarantees "no tender stays without its caution".
+    if (this.detailCrawler && await allowed()) {
+      // DB targets span all discovered pages; never reset the discovery source's
+      // stateful PRADO session or load the whole catalogue to match by reference.
+      // Refresh missing/outdated metadata, prioritizing active consultations.
+      // A portal omission stays unknown; failed pages are never stamped complete.
       try {
         const maxDetails = envLimit('WATCH_DETAIL_BACKFILL', 40);
-        if (maxDetails > 0 && !portalBlocked) {
-          const backfill = await this.detailCrawler.backfillMissing({ maxDetails });
+        if (maxDetails > 0 && await allowed()) {
+          const backfill = await this.detailCrawler.backfillMissing({ maxDetails, ...control });
           this.logger.log(`detail backfill ${JSON.stringify(backfill)}`);
           if (backfill.stoppedEarly) {
             portalBlocked = true;
+            if (!backfill.paused) await control.onBlocked?.();
             this.logger.warn('detail backfill hit a portal block — backing off the rest of this sweep');
           }
         }
@@ -360,7 +413,7 @@ export class WatchService {
     }
     // Stage-3: harvest a few published results (vision-read scanned notices →
     // competitor wins). Bounded to cap vision cost; failures never fail the run.
-    if (this.resultCrawler && !portalBlocked) {
+    if (this.resultCrawler && await allowed()) {
       try {
         // Was hard-coded 3 — way too low to ever reach datao's ~45k catalogue
         // of attribution notices. Env-tunable; default 25/sweep ≈ 600/day at
@@ -372,6 +425,7 @@ export class WatchService {
           this.logger.log(`result harvest ${JSON.stringify(results)}`);
           if (results.stoppedEarly) {
             portalBlocked = true;
+            await control.onBlocked?.();
             this.logger.warn('result harvest hit a portal block — backing off the rest of this sweep');
           }
         }
@@ -384,7 +438,7 @@ export class WatchService {
     // estimation. This is what teaches the expert agent how many competitors
     // show up per buyer and what rebates actually win. Opt-in via WATCH_PV_LIMIT;
     // failures never fail the run.
-    if (this.pvCrawler && !portalBlocked) {
+    if (this.pvCrawler && await allowed()) {
       try {
         const maxPv = envLimit('WATCH_PV_LIMIT', DEFAULT_PV_LIMIT);
         const maxPages = envLimit('WATCH_PV_MAX_PAGES', 3);
@@ -393,6 +447,7 @@ export class WatchService {
           this.logger.log(`pv harvest ${JSON.stringify(pv)}`);
           if (pv.stoppedEarly) {
             portalBlocked = true;
+            await control.onBlocked?.();
             this.logger.warn('pv harvest hit a portal block — backing off the rest of this sweep');
           }
         }
@@ -404,7 +459,7 @@ export class WatchService {
     // structured bidder field + amounts for past-deadline consultations, zero OCR
     // (the datao "Résultats"/concurrents source). Bounded via WATCH_SUIVI_LIMIT;
     // failures never fail the Sentinel.
-    if (this.suiviCrawler && !portalBlocked) {
+    if (this.suiviCrawler && await allowed()) {
       try {
         const maxSuivi = envLimit('WATCH_SUIVI_LIMIT', 0);
         if (maxSuivi > 0) {
@@ -412,6 +467,7 @@ export class WatchService {
           this.logger.log(`suivi harvest ${JSON.stringify(suivi)}`);
           if (suivi.stoppedEarly) {
             portalBlocked = true;
+            await control.onBlocked?.();
             this.logger.warn('suivi harvest hit a portal block — backing off the rest of this sweep');
           }
         }
@@ -436,7 +492,7 @@ export class WatchService {
     // Stage-5: extract the real DCE data (budget/caution/qualifications/BPU) for
     // a bounded batch of still-unextracted tenders. Bounded for portal load +
     // memory (PDF parsing); failures never fail the Sentinel.
-    if (this.dossierExtraction) {
+    if (this.dossierExtraction && await allowed()) {
       try {
         const limit = envLimit('WATCH_EXTRACT_LIMIT', DEFAULT_EXTRACT_LIMIT);
         if (limit > 0) {
@@ -460,6 +516,6 @@ export class WatchService {
         );
       }
     }
-    return summary;
+    return { blocked: portalBlocked };
   }
 }

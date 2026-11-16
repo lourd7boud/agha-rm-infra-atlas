@@ -5,12 +5,15 @@
 // étape 3: fiche marché complète. L'objet `acquisition` part en JSON caché;
 // le back le valide par mode (zod) et re-remplit l'identité société.
 import { useMemo, useState } from 'react';
-import type { Intervenants, ModeObtention, NotreEntreprise } from '@/lib/btp-shared';
+import { useFormStatus } from 'react-dom';
+import { fmtDate, type Intervenants, type ModeObtention, type NotreEntreprise } from '@/lib/btp-shared';
+import type { BtpProjectSource } from '@/lib/btp-source';
 
 interface WizardProps {
   action: (formData: FormData) => void;
   intervenants: Intervenants;
   entreprise: NotreEntreprise;
+  source?: BtpProjectSource;
 }
 
 interface MembreRow {
@@ -85,8 +88,9 @@ function Field({
   );
 }
 
-export function NewMarcheWizard({ action, intervenants, entreprise }: WizardProps) {
+export function NewMarcheWizard({ action, intervenants, entreprise, source }: WizardProps) {
   const [step, setStep] = useState(1);
+  const [reuseBpu, setReuseBpu] = useState(false);
   const [mode, setMode] = useState<ModeObtention>('ao_direct');
 
   // ── état acquisition par mode ──
@@ -94,9 +98,9 @@ export function NewMarcheWizard({ action, intervenants, entreprise }: WizardProp
     modePassation: 'ao_ouvert',
     caractere: 'ordinaire',
     lot: '',
-    cautionProvisoireMad: '',
-    cautionDefinitivePct: '3',
-    retenueGarantiePct: '7',
+    cautionProvisoireMad: source?.cautionProvisoireMad?.toString() ?? '',
+    cautionDefinitivePct: source?.cautionDefinitivePct?.toString() ?? '3',
+    retenueGarantiePct: source?.retenueGarantiePct?.toString() ?? '7',
   });
   const [bc, setBc] = useState({ numeroBc: '', dateBc: '', ordonnateur: '', montantBcMad: '' });
   const [st, setSt] = useState({
@@ -246,6 +250,13 @@ export function NewMarcheWizard({ action, intervenants, entreprise }: WizardProp
     <form action={action} className="mt-8 max-w-5xl space-y-6">
       <input type="hidden" name="modeObtention" value={mode} />
       <input type="hidden" name="acquisition" value={JSON.stringify(acquisition)} />
+      {source && <section className="rounded-xl border border-cyan/30 bg-cyan-soft/20 p-5 text-sm">
+        <h2 className="font-bold">Depuis la consultation {source.reference}</h2>
+        <p className="mt-1 text-muted">Identité et lieu préremplis depuis l’annonce enregistrée. Les données du DCE sont des propositions à vérifier avec les pièces du marché attribué.</p>
+        <p className="mt-2 text-xs text-muted">Date limite de remise des offres : {source.dateLimite} · {source.extractedAt ? `Extraction du ${source.extractedAt.slice(0, 10)}` : 'Aucune extraction DCE disponible'}.</p>
+        {source.sourceFiles.length > 0 && <p className="mt-1 text-xs text-muted">Pièces lues : {source.sourceFiles.join(', ')}</p>}
+        <a href={`/tenders?q=${encodeURIComponent(source.reference)}`} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs font-semibold text-cyan hover:underline">Retrouver la consultation et ses pièces ↗</a>
+      </section>}
 
       {/* Stepper */}
       <div className="flex flex-wrap items-center gap-2">
@@ -824,6 +835,7 @@ export function NewMarcheWizard({ action, intervenants, entreprise }: WizardProp
             <Field label="Objet du marché *" span2>
               <textarea
                 name="objet"
+                defaultValue={source?.objet}
                 required={step === 3}
                 rows={3}
                 placeholder="Travaux d'aménagement…"
@@ -833,6 +845,7 @@ export function NewMarcheWizard({ action, intervenants, entreprise }: WizardProp
             <Field label="N° du marché / référence *">
               <input
                 name="reference"
+                defaultValue={source?.reference}
                 required={step === 3}
                 placeholder={mode === 'marche_prive' ? 'DEV-2026-…' : '07/2026/…'}
                 className={`${inputClass} mt-1 font-mono`}
@@ -848,7 +861,7 @@ export function NewMarcheWizard({ action, intervenants, entreprise }: WizardProp
               </select>
             </Field>
             <Field label="Commune">
-              <input name="commune" className={`${inputClass} mt-1`} />
+              <input name="commune" defaultValue={source?.commune ?? ''} className={`${inputClass} mt-1`} />
             </Field>
             <Field label="Statut initial">
               <select name="status" defaultValue="preparation" className={`${inputClass} mt-1`}>
@@ -928,10 +941,10 @@ export function NewMarcheWizard({ action, intervenants, entreprise }: WizardProp
                 label={
                   mode === 'marche_prive'
                     ? 'Client / donneur d’ordre'
-                    : "Maître d'œuvre / Maître d'ouvrage"
+                    : "Maître d'ouvrage"
                 }
               >
-                <input name="maitreOeuvre" list="moes" className={`${inputClass} mt-1`} />
+                <input name="buyerName" defaultValue={source?.buyerName} className={`${inputClass} mt-1`} />
               </Field>
               <datalist id="moes">
                 {intervenants.maitreOeuvre.map((m) => (
@@ -939,6 +952,9 @@ export function NewMarcheWizard({ action, intervenants, entreprise }: WizardProp
                 ))}
               </datalist>
             </div>
+            <Field label="Maître d’œuvre">
+              <input name="maitreOeuvre" list="moes" className={`${inputClass} mt-1`} />
+            </Field>
             <div>
               <Field label="Assistance technique">
                 <input name="assistanceTechnique" list="ats" className={`${inputClass} mt-1`} />
@@ -952,6 +968,15 @@ export function NewMarcheWizard({ action, intervenants, entreprise }: WizardProp
             <Field label="Date d'ouverture des plis">
               <input type="date" name="dateOuverture" className={`${inputClass} mt-1`} />
             </Field>
+            {source?.dateLimite ? (
+              <Field label="Date limite de remise des offres">
+                <p className="mt-1 text-sm text-muted">{fmtDate(source.dateLimite)} · reprise du dossier</p>
+              </Field>
+            ) : (
+              <Field label="Date limite de remise des offres">
+                <input type="date" name="dateLimiteRemiseOffres" className={`${inputClass} mt-1`} />
+              </Field>
+            )}
             <Field label="O.S.C (ordre de service de commencement)">
               <input type="date" name="osc" className={`${inputClass} mt-1`} />
             </Field>
@@ -959,14 +984,41 @@ export function NewMarcheWizard({ action, intervenants, entreprise }: WizardProp
               <input
                 type="number"
                 name="delaiMois"
-                min="0.5"
-                step="0.5"
+                defaultValue={source?.delaiMois ?? ''}
+                min="0"
+                max="240"
+                step="any"
                 placeholder="6"
                 className={`${inputClass} mt-1 font-mono`}
               />
             </Field>
           </div>
         </section>
+
+        {source && <section className="space-y-4 rounded-xl border border-line bg-paper-2 p-5">
+          {source.bpu.length > 0 && <>
+            <label className="flex items-center gap-2 text-sm font-semibold">
+              <input type="checkbox" name="reuseBpu" checked={reuseBpu} onChange={(event) => setReuseBpu(event.target.checked)} className="accent-cyan" />
+              Reprendre les {source.bpu.length} postes du BPU extrait après vérification
+            </label>
+            {reuseBpu && <>
+              <p className="text-xs text-muted">Confirmez les quantités et les prix du marché signé. Complétez chaque valeur absente ; le montant du marché sera calculé à partir de ces postes.</p>
+              <div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left text-xs">
+                <thead><tr><th className="p-2">N° · Désignation</th><th className="p-2">Unité</th><th className="p-2">Quantité</th><th className="p-2">Prix unitaire HT (DH)</th></tr></thead>
+                <tbody>{source.bpu.map((line) => <tr key={line.numero} className="border-t border-line">
+                  <td className="p-2">{line.numero} · {line.designation}</td>
+                  <td className="p-2"><input aria-label={`Unité poste ${line.numero}`} name={`bpu:${line.numero}:unite`} required maxLength={20} defaultValue={line.unite ?? ''} className={`${inputClass} min-w-16`} /></td>
+                  <td className="p-2"><input aria-label={`Quantité poste ${line.numero}`} name={`bpu:${line.numero}:quantite`} type="number" required min="0" step="any" defaultValue={line.quantite ?? ''} className={`${inputClass} min-w-24`} /></td>
+                  <td className="p-2"><input aria-label={`Prix unitaire poste ${line.numero}`} name={`bpu:${line.numero}:prixUnitaire`} type="number" required min="0" step="any" defaultValue={line.prixUnitaire ?? ''} className={`${inputClass} min-w-28`} /></td>
+                </tr>)}</tbody>
+              </table></div>
+            </>}
+          </>}
+          <label className="flex items-start gap-2 text-sm font-semibold">
+            <input type="checkbox" name="sourceReviewed" required={step === 3} className="mt-1 accent-cyan" />
+            J’ai vérifié les données préremplies avec les pièces du marché attribué.
+          </label>
+        </section>}
 
         <div className="flex items-center gap-3">
           <button
@@ -976,14 +1028,17 @@ export function NewMarcheWizard({ action, intervenants, entreprise }: WizardProp
           >
             ← Détails du mode
           </button>
-          <button
-            type="submit"
-            className="rounded-lg bg-cyan px-6 py-2.5 text-sm font-bold text-paper transition hover:opacity-90"
-          >
-            Créer le marché
-          </button>
+          <CreateMarcheButton />
         </div>
       </div>
     </form>
   );
+}
+
+function CreateMarcheButton() {
+  const { pending } = useFormStatus();
+  return <button type="submit" disabled={pending} aria-disabled={pending}
+    className="rounded-lg bg-cyan px-6 py-2.5 text-sm font-bold text-paper transition hover:opacity-90 disabled:cursor-wait disabled:opacity-50">
+    {pending ? 'Création en cours…' : 'Créer le marché'}
+  </button>;
 }

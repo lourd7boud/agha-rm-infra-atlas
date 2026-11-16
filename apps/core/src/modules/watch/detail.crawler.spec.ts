@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryTenderRepository } from '../tender/tender.repository';
 import {
+  buildDetailMeta,
   crawlDetails,
   DetailCrawlerService,
   normalizeReference,
   type CrawlDeps,
 } from './detail.crawler';
+import { parseDetailPage } from './detail.parser';
 import { FixturePortalSource } from './watch.source';
 import { PortalBlockedError } from './portal-fetch';
 
@@ -27,6 +29,11 @@ const LISTING =
   '<a href="x?page=entreprise.EntrepriseDetailsConsultation&refConsultation=111&orgAcronyme=aaa&retraits">a</a>' +
   '<a href="x?page=entreprise.EntrepriseDetailsConsultation&refConsultation=222&orgAcronyme=bbb&depots">b</a>';
 const BASE = 'https://www.marchespublics.gov.ma/index.php?page=entreprise.EntrepriseAdvancedSearch';
+
+it('preserves the complete portal subject for the detail view even when the listing is truncated', () => {
+  const parsed = parseDetailPage(detailHtml('REF/FULL', '0'));
+  expect(buildDetailMeta(parsed, 'https://portal/full', '2026-11-09T12:00:00Z').objet).toBe('Objet');
+});
 
 function deps(
   overrides: Partial<CrawlDeps> & Pick<CrawlDeps, 'fetchDetail' | 'tenders'>,
@@ -52,6 +59,19 @@ describe('normalizeReference', () => {
 });
 
 describe('crawlDetails', () => {
+  it('uses official identity when two stored notices reuse a textual reference', async () => {
+    const applyEnrichment = vi.fn<CrawlDeps['applyEnrichment']>(async () => {});
+    await crawlDetails(LISTING, BASE, deps({
+      tenders: [
+        { id: 'a', reference: 'SAME', sourceUrl: 'https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=111&orgAcronyme=aaa' },
+        { id: 'b', reference: 'SAME', sourceUrl: 'https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=222&orgAcronyme=bbb' },
+      ],
+      fetchDetail: async () => detailHtml('SAME', '1 000,00 MAD'),
+      applyEnrichment,
+    }), { delayMs: 0 });
+    expect(applyEnrichment.mock.calls.map(call => call[0])).toEqual(['a', 'b']);
+  });
+
   it('fills only empty fields and counts matched vs enriched', async () => {
     const calls: { id: string; amounts: Record<string, number> }[] = [];
     const summary = await crawlDetails(
@@ -195,6 +215,26 @@ describe('crawlDetails circuit breaker', () => {
 });
 
 describe('DetailCrawlerService.backfillMissing', () => {
+  it('stops before the next detail when discovery reports a portal cooldown', async () => {
+    const repo = new InMemoryTenderRepository();
+    await seed(repo, 'REF/A', { sourceUrl: 'https://portal/a' });
+    await seed(repo, 'REF/B', { sourceUrl: 'https://portal/b' });
+    let requests = 0;
+    vi.stubGlobal('fetch', async () => { requests++; return new Response(detailHtml('REF/A', '0')); });
+    const summary = await makeService(repo).backfillMissing({ delayMs: 0, shouldPause: async () => requests > 0 });
+    expect(requests).toBe(1);
+    expect(summary.stoppedEarly).toBe(true);
+    expect(summary.paused).toBe(true);
+  });
+  it('does not stamp a maintenance page as a successfully harvested dossier', async () => {
+    const repo = new InMemoryTenderRepository();
+    const row = await seed(repo, 'REF/SAFE', { sourceUrl: 'https://portal/safe' });
+    vi.stubGlobal('fetch', async () => new Response('<html>maintenance</html>'));
+    const summary = await makeService(repo).backfillMissing({ delayMs: 0 });
+    expect(summary.errors).toBe(1);
+    expect(summary.matched).toBe(0);
+    expect((await repo.findById(row.id))?.raw).toBeNull();
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
   });

@@ -3,6 +3,9 @@ import { asc, desc, eq, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { avenants, projects, situations, tasks } from '../../db/schema';
 import { normalizeTaskPatch, type TaskPatch, type TaskStatus } from './task.domain';
+import { applyApprovedAvenantAmount, currentContractAmountSql, DrizzleBtpExecutionRepository, lockBtpProject } from './btp.repository';
+import { BtpTransitionError } from './btp-registres.domain';
+import { round2, toDecimal } from './btp-finance.domain';
 
 export type ProjectStatus =
   | 'preparation'
@@ -111,6 +114,7 @@ export interface ProjectRepository {
    */
   listAllSituations(): Promise<SituationWithProject[]>;
   createSituation(input: CreateSituation): Promise<SituationRecord>;
+  getContractAmount(projectId: string): Promise<number | null>;
   listAvenants(projectId: string): Promise<AvenantRecord[]>;
   createAvenant(input: CreateAvenant): Promise<AvenantRecord>;
   findSituationById(id: string): Promise<SituationRecord | null>;
@@ -192,6 +196,12 @@ export class InMemoryProjectRepository implements ProjectRepository {
   }
 
   private avenants: readonly AvenantRecord[] = [];
+
+  async getContractAmount(projectId: string): Promise<number | null> {
+    const project = await this.findById(projectId);
+    if (!project) return null;
+    return (await this.listAvenants(projectId)).reduce((sum, row) => sum + row.montantDeltaMad, project.montantMarcheMad);
+  }
 
   async listAvenants(projectId: string): Promise<AvenantRecord[]> {
     return this.avenants
@@ -276,6 +286,12 @@ export class InMemoryProjectRepository implements ProjectRepository {
 
 export class DrizzleProjectRepository implements ProjectRepository {
   constructor(private readonly db: Db) {}
+
+  async getContractAmount(projectId: string): Promise<number | null> {
+    const [row] = await this.db.select({ amount: currentContractAmountSql })
+      .from(projects).where(eq(projects.id, projectId));
+    return row ? Number(row.amount) : null;
+  }
 
   async create(input: CreateProject): Promise<ProjectRecord> {
     const [row] = await this.db
@@ -392,20 +408,28 @@ export class DrizzleProjectRepository implements ProjectRepository {
   }
 
   async createAvenant(input: CreateAvenant): Promise<AvenantRecord> {
-    const [row] = await this.db
-      .insert(avenants)
-      .values({
+    const row = await this.db.transaction(async (tx) => {
+      const project = await lockBtpProject(tx, input.projectId);
+      if (!project) throw new BtpTransitionError('Marché introuvable.');
+      const delta = round2(toDecimal(input.montantDeltaMad));
+      const amounts = await applyApprovedAvenantAmount(tx, input.projectId, project, delta.toNumber());
+      const [sequence] = await tx.select({ next: sql<number>`coalesce(max(${avenants.numero}), 0) + 1` })
+        .from(avenants).where(eq(avenants.projectId, input.projectId));
+      const [created] = await tx.insert(avenants).values({
         projectId: input.projectId,
-        numero: input.numero,
+        numero: sequence?.next ?? 1,
         objet: input.objet,
-        montantDeltaMad: input.montantDeltaMad.toString(),
+        montantDeltaMad: delta.toFixed(2),
         delaiDeltaMois: input.delaiDeltaMois.toString(),
         approvedAt: input.approvedAt,
-        // Legacy surface only ever created already-approved avenants.
+        dateApprobation: input.approvedAt,
         statut: 'approuve',
-      })
-      .returning();
-    if (!row) throw new Error('Avenant insert returned no row');
+        ...amounts,
+      }).returning();
+      if (!created) throw new Error('Avenant insert returned no row');
+      await new DrizzleBtpExecutionRepository(this.db).rebuildChainTx(tx, input.projectId);
+      return created;
+    });
     return {
       id: row.id,
       projectId: row.projectId,

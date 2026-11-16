@@ -9,6 +9,7 @@ import {
   CATEGORY_TONES,
   buildResume,
   fmtDateTime,
+  conflictingPortalDeadline,
   hasRegion,
   safeHttpUrl,
   type TenderItem,
@@ -23,6 +24,7 @@ import { LiveParticipantsButton } from './LiveParticipantsButton';
 import { ActionButton, AiBanner, ConditionRow } from './drawer-parts';
 import { AddToListButton } from './AddToListButton';
 import { TenderChat } from './TenderChat';
+import { DecisionBrief } from './DecisionBrief';
 
 type Tab = 'resume' | 'faq' | 'lots' | 'bpu' | 'chat';
 
@@ -51,6 +53,7 @@ export function DetailDrawer({
   // light item (no bpu/faq/lotsDetail/… heavy arrays); we hydrate them here from
   // GET /api/tender/tenders/:id when the drawer opens. null while loading/absent.
   const [detail, setDetail] = useState<TenderItem | null>(null);
+  const [detailReload, setDetailReload] = useState(0);
   const panelRef = useRef<HTMLElement>(null);
   const sourceTriggerRef = useRef<HTMLButtonElement>(null);
 
@@ -89,7 +92,7 @@ export function DetailDrawer({
     return () => {
       cancelled = true;
     };
-  }, [item?.id]);
+  }, [item?.id, item?.updatedAt, detailReload]);
 
   // Move focus into the panel when it opens (keyboard + screen-reader).
   useEffect(() => {
@@ -110,11 +113,17 @@ export function DetailDrawer({
   // Merged view: the full detail (heavy enrichment arrays) overrides the light
   // item's undefined fields; base/live fields fall back to `item`. When detail
   // hasn't loaded yet, `view` is just the light item.
-  const view: TenderItem = detail ? { ...item, ...detail } : item;
+  const listingVersion = item.updatedAt ? Date.parse(item.updatedAt) : null;
+  const matchingDetail = detail?.id === item.id && (listingVersion === null ||
+    (detail.updatedAt != null && Date.parse(detail.updatedAt) >= listingVersion)) ? detail : null;
+  const hydrated: TenderItem = matchingDetail ? { ...item, ...matchingDetail } : item;
+  const view: TenderItem = hydrated.portalDetail?.objet
+    ? { ...hydrated, objet: hydrated.portalDetail.objet }
+    : hydrated;
   // Enrichment tabs (bpu/faq/lots/qualifications) depend on the heavy arrays,
   // which only arrive with `detail`. While it's null, show a load placeholder
   // instead of an empty state so the drawer doesn't look broken.
-  const detailLoading = detail === null;
+  const detailLoading = matchingDetail === null;
 
   const state =
     PIPELINE_LABELS[item.pipelineState] ?? {
@@ -141,6 +150,7 @@ export function DetailDrawer({
   // Portal-first "fiche du portail": the published detail block (zero LLM). The
   // portal prints "-" for empty fields — treat those as absent.
   const pd = view.portalDetail;
+  const deadlineConflict = conflictingPortalDeadline(view);
   // Some buyers type placeholders ("-", "champsvide", "néant") into optional
   // portal fields — treat those as absent so we never render "Fax : champsvide".
   const PORTAL_PLACEHOLDERS = new Set(['-', 'champsvide', 'champ vide', 'neant', 'néant', 'n/a']);
@@ -261,7 +271,7 @@ export function DetailDrawer({
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
           <h2 className="font-display text-xl font-semibold leading-snug text-ink">
-            {item.objet}
+            {view.objet}
           </h2>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -298,10 +308,10 @@ export function DetailDrawer({
             </span>
             <span
               className={`rounded-full px-2.5 py-0.5 font-mono text-xs font-bold ${
-                overdue ? 'bg-sand text-faint' : urgencyClasses(item.daysLeft)
+                deadlineConflict ? 'bg-ochre-soft text-ochre-deep' : overdue ? 'bg-sand text-faint' : urgencyClasses(item.daysLeft)
               }`}
             >
-              {overdue ? 'Échu' : `J-${item.daysLeft}`}
+              {deadlineConflict ? 'Échéance à vérifier' : overdue ? 'Échu' : `J-${item.daysLeft}`}
             </span>
           </div>
 
@@ -379,12 +389,17 @@ export function DetailDrawer({
               </dd>
             </div>
             <div>
-              <dt className="text-xs text-faint">Publié le</dt>
+              <dt className="text-xs text-faint">Détecté le</dt>
               <dd className="text-ink">{fmtDateTime(item.publishedAt)}</dd>
             </div>
             <div>
-              <dt className="text-xs text-faint">Date limite</dt>
-              <dd className="text-ink">{fmtDateTime(item.deadlineAt)}</dd>
+              <dt className="text-xs text-faint">{deadlineConflict ? 'Échéance affichée dans la liste' : 'Date limite'}</dt>
+              <dd className="text-ink">{fmtDateTime(view.deadlineAt)}</dd>
+              {deadlineConflict && (
+                <dd className="mt-1 text-xs font-medium text-ochre">
+                  Échéance relevée sur la fiche du portail : {fmtDateTime(deadlineConflict.toISOString())}. Vérifier la date officielle avant de préparer le dépôt.
+                </dd>
+              )}
             </div>
             <div className="col-span-2">
               <dt className="text-xs text-faint">Lieu d&apos;exécution</dt>
@@ -406,6 +421,9 @@ export function DetailDrawer({
           </dl>
 
           <div className="mt-4 flex flex-wrap gap-2">
+            <Link href={`/projects/new?tenderId=${item.id}`} className="rounded-lg border border-emerald bg-emerald-soft px-3 py-2 text-sm font-semibold text-emerald">
+              Créer le marché depuis cette consultation
+            </Link>
             {hasSource && (
               <button
                 type="button"
@@ -459,6 +477,7 @@ export function DetailDrawer({
           <div className="py-4">
             {tab === 'resume' && (
               <div className="space-y-4">
+                <DecisionBrief item={view} />
                 <AiBanner enriched={enriched} />
                 {reserveAuxPme && (
                   <span className="inline-block rounded-full bg-emerald-soft px-2.5 py-0.5 text-xs font-medium text-emerald">
@@ -484,8 +503,8 @@ export function DetailDrawer({
                   <ConditionRow
                     label="Cautionnement provisoire"
                     value={
-                      item.cautionProvisoireMad != null
-                        ? fmtMad(item.cautionProvisoireMad)
+                      view.cautionProvisoireMad != null
+                        ? fmtMad(view.cautionProvisoireMad)
                         : '—'
                     }
                   />
@@ -771,7 +790,7 @@ export function DetailDrawer({
                       <p className="text-xs font-bold uppercase tracking-wider text-faint">
                         Désignation
                       </p>
-                      <p className="mt-1 text-sm text-ink-2">{item.objet}</p>
+                      <p className="mt-1 text-sm text-ink-2">{view.objet}</p>
                     </div>
                   </>
                 )}
@@ -870,6 +889,7 @@ export function DetailDrawer({
         <SourceFileViewer
           tenderId={item.id}
           onClose={closeFiles}
+          onRevisionChecked={() => setDetailReload(value => value + 1)}
           mode={showFiles === 'bordereau' ? 'side' : 'modal'}
           bordereauOnly={showFiles === 'bordereau'}
           drawerWidth={drawerWidth}

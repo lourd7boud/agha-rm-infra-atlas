@@ -10,7 +10,16 @@ async function requestOrigin(): Promise<string | null> {
   if (configured) {
     try {
       const url = new URL(configured);
-      if (url.protocol === 'https:' || process.env.NODE_ENV !== 'production') {
+      // The local Docker stack runs a production build on HTTP loopback.
+      // Accept that explicit deployment URL so logout also ends Keycloak SSO.
+      const localHttp =
+        url.protocol === 'http:' &&
+        ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+      if (
+        url.protocol === 'https:' ||
+        localHttp ||
+        process.env.NODE_ENV !== 'production'
+      ) {
         return url.origin;
       }
     } catch {
@@ -44,7 +53,10 @@ export async function logoutFromAtlas(): Promise<void> {
   const [session, origin] = await Promise.all([auth(), requestOrigin()]);
   const keycloakLogoutUrl = origin
     ? buildKeycloakLogoutUrl({
-        issuer: session?.issuer ?? process.env.AUTH_KEYCLOAK_ISSUER,
+        issuer:
+          process.env.AUTH_KEYCLOAK_BROWSER_ISSUER?.trim() ||
+          session?.issuer ||
+          process.env.AUTH_KEYCLOAK_ISSUER,
         clientId: process.env.AUTH_KEYCLOAK_ID,
         idToken: session?.idToken,
         postLogoutRedirectUri: new URL('/login', origin).toString(),

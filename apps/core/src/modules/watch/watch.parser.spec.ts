@@ -12,8 +12,45 @@ const REAL_SHAPE = readFileSync(
   'utf8',
 );
 const BASE_URL = 'https://www.marchespublics.gov.ma/';
+const CARDS = readFileSync(join(process.cwd(), 'src/modules/watch/fixtures/pmmp-cards-2026.html'), 'utf8');
+
+describe('redesigned PMMP cards', () => {
+  test('retains architectural consultations instead of silently dropping a published procedure', () => {
+    const html = readFileSync(join(process.cwd(), 'src/modules/watch/fixtures/pmmp-architecture-card-2026.html'), 'utf8');
+    const parsed = parsePmmpResults(html, BASE_URL);
+    expect(parsed.tenders).toHaveLength(1);
+    expect(parsed.skippedRows).toBe(0);
+    expect(parsed.tenders[0]).toMatchObject({ reference: 'CA/07/ANEPCEST/2026', procedure: 'consultation_architecturale' });
+  });
+  test('reads every real card with complete fields and the published budget', () => {
+    const parsed = parsePmmpResults(CARDS, BASE_URL);
+    expect(parsed.tenders).toHaveLength(10);
+    expect(parsed.skippedRows).toBe(0);
+    expect(parsed.tenders[0]).toMatchObject({
+      reference: '01/2027', procedure: 'AOO',
+      buyerName: 'Collectivité territoriale de KARIAT BEN AOUDA',
+      location: 'KENITRA', estimationMad: 1386563.64,
+      sourceUrl: 'https://www.marchespublics.gov.ma/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=1053059&orgAcronyme=i1t',
+    });
+    expect(parsed.tenders[0]!.objet).toContain('91 foyers');
+    expect(parsed.tenders[0]!.deadlineAt.toISOString()).toBe('2027-01-07T11:00:00.000Z');
+    expect(parsed.portalTotal).toBe(4810);
+    expect(parsed.layout).toBe('cards');
+  });
+
+  test('counts a malformed card rather than silently treating the page as empty', () => {
+    const parsed = parsePmmpResults(CARDS.replace('01/2027', ''), BASE_URL);
+    expect(parsed.tenders).toHaveLength(9);
+    expect(parsed.skippedRows).toBe(1);
+  });
+});
 
 describe('parsePmmpDate', () => {
+  test('uses legal Moroccan GMT after the September 2026 transition', () => {
+    expect(parsePmmpDate('19/09/2026 10:00')?.toISOString()).toBe('2026-09-19T09:00:00.000Z');
+    expect(parsePmmpDate('20/09/2026 01:30')?.toISOString()).toBe('2026-09-20T00:30:00.000Z');
+    expect(parsePmmpDate('20/09/2026 02:00')?.toISOString()).toBe('2026-09-20T02:00:00.000Z');
+  });
   test('converts PMMP local time (UTC+1) to UTC', () => {
     expect(parsePmmpDate('07/07/2026 10:00')?.toISOString()).toBe(
       '2026-07-07T09:00:00.000Z',
@@ -23,10 +60,30 @@ describe('parsePmmpDate', () => {
   test('returns null on malformed input', () => {
     expect(parsePmmpDate('2026-07-07')).toBeNull();
     expect(parsePmmpDate('')).toBeNull();
+    expect(parsePmmpDate('31/02/2026 10:00')).toBeNull();
+    expect(parsePmmpDate('15/07/2026 25:00')).toBeNull();
+  });
+
+  test('uses Casablanca civil time during the Ramadan clock change', () => {
+    expect(parsePmmpDate('25/02/2026 10:00')?.toISOString()).toBe('2026-02-25T10:00:00.000Z');
   });
 });
 
 describe('mapProcedure', () => {
+  test.each([
+    ["Appel à manifestation d'intérêt", 'manifestation_interet'],
+    ["Appel d'offres avec préselection - Phase 1", 'preselection'],
+    ['Appel d’offres avec préqualification – Partenariat Public-Privé – Phase 2', 'partenariat_public_prive'],
+    ['Appel d’offres avec présélection – Partenariat Public-Privé – Phase 1', 'partenariat_public_prive'],
+    ['Concours Architectural', 'concours_architectural'],
+    ['Consultation architecturale négociée avec publicité préalable - Phase 1', 'consultation_architecturale'],
+    ['Demande de Cotation Ouverte - Banques Multilatérales de Développement', 'demande_cotation'],
+    ['Dialogue compétitif - Phase 3', 'dialogue_competitif'],
+    ['Enchère électronique inversée', 'enchere_electronique'],
+    ['Appel d’offres ouvert simplifié', 'AOO'],
+  ])('retains the official procedure family for %s', (label, expected) => {
+    expect(mapProcedure(label)).toBe(expected);
+  });
   test('maps French labels to procedure codes', () => {
     expect(mapProcedure("Appel d'offres ouvert")).toBe('AOO');
     expect(mapProcedure("Appel d'offres restreint")).toBe('AOR');

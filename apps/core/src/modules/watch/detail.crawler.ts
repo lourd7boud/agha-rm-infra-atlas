@@ -1,4 +1,7 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { PortalRequestGate, isPortalPausedError } from './portal-request-gate';
+import { pmmpIdentity } from './watch-audit';
+import { isPmmpUrl } from '../../lib/pmmp-hours';
 import {
   TENDER_REPOSITORY,
   type TenderRepository,
@@ -19,8 +22,8 @@ import {
 
 /**
  * The full published-metadata block we persist under raw.detail. Everything the
- * detail page publishes EXCEPT reference/objet (those are the join key / already
- * a column). Stamped with the parser version + provenance so the backfill knows
+ * detail page publishes except the reference join key. Keep the complete subject
+ * because redesigned listing cards can truncate it. Stamped with provenance so the backfill knows
  * whether a row was harvested by the current parser. This is the portal-first
  * source of truth the UI reads and the LLM defers to.
  */
@@ -29,7 +32,7 @@ export function buildDetailMeta(
   url: string,
   fetchedAt: string,
 ): Record<string, unknown> {
-  const { reference: _reference, objet: _objet, ...portal } = fields;
+  const { reference: _reference, ...portal } = fields;
   return { url, fetchedAt, v: DETAIL_VERSION, ...portal };
 }
 
@@ -45,6 +48,8 @@ export function normalizeReference(reference: string): string {
 }
 
 export interface CrawlSummary {
+  /** Existing shared cooldown, rather than a new HTTP block. */
+  paused?: boolean;
   linksFound: number;
   fetched: number;
   matched: number;
@@ -59,6 +64,8 @@ export interface CrawlSummary {
 }
 
 export interface CrawlOptions {
+  shouldPause?: () => Promise<boolean>;
+  onBlocked?: () => Promise<void>;
   /** Hard cap on detail pages fetched per run (politeness + runaway guard). */
   maxDetails?: number;
   /** Polite delay between detail fetches (ms). */
@@ -70,6 +77,7 @@ export interface CrawlOptions {
 interface TenderLite {
   id: string;
   reference: string;
+  sourceUrl?: string;
   estimationMad?: number;
   cautionProvisoireMad?: number;
 }
@@ -106,9 +114,13 @@ export async function crawlDetails(
   const delayMs = Math.max(0, Math.floor(opts.delayMs ?? 800));
   const random = deps.random ?? opts.random ?? Math.random;
 
-  const byRef = new Map<string, TenderLite>();
+  const byRef = new Map<string, TenderLite[]>();
+  const byIdentity = new Map<string, TenderLite>();
   for (const tender of deps.tenders) {
-    byRef.set(normalizeReference(tender.reference), tender);
+    const ref = normalizeReference(tender.reference);
+    byRef.set(ref, [...(byRef.get(ref) ?? []), tender]);
+    const identity = tender.sourceUrl && isPmmpUrl(tender.sourceUrl) ? pmmpIdentity(tender.sourceUrl) : null;
+    if (identity) byIdentity.set(identity, tender);
   }
 
   const links = extractDetailLinks(listingHtml, baseUrl).slice(0, maxDetails);
@@ -147,9 +159,12 @@ export async function crawlDetails(
     // so it must not trip the breaker.
     try {
       const fields = parseDetailPage(html);
-      const tender = fields.reference
-        ? byRef.get(normalizeReference(fields.reference))
-        : undefined;
+      const identity = isPmmpUrl(link.detailUrl) ? pmmpIdentity(link.detailUrl) : null;
+      const reference = fields.reference ? normalizeReference(fields.reference) : null;
+      const candidates = reference ? byRef.get(reference) ?? [] : [];
+      const exact = identity ? byIdentity.get(identity) : undefined;
+      const legacy = candidates.length === 1 && !candidates[0]?.sourceUrl ? candidates[0] : undefined;
+      const tender = exact && normalizeReference(exact.reference) === reference ? exact : legacy;
       if (tender) {
         matched += 1;
         const amounts: { estimationMad?: number; cautionProvisoireMad?: number } = {};
@@ -203,6 +218,7 @@ export class DetailCrawlerService {
   constructor(
     @Inject(PORTAL_SOURCE) private readonly source: PortalSource,
     @Inject(TENDER_REPOSITORY) private readonly tenders: TenderRepository,
+    @Optional() @Inject(PortalRequestGate) private readonly requestGate?: PortalRequestGate,
   ) {}
 
   async crawlOnce(opts: CrawlOptions = {}): Promise<CrawlSummary> {
@@ -248,8 +264,10 @@ export class DetailCrawlerService {
     // mid-sweep must halt the batch, not fire the remaining ~250 GETs into it.
     let consecutiveFailures = 0;
     let stoppedEarly = false;
+    let paused = false;
 
     for (let i = 0; i < targets.length; i += 1) {
+      if (await opts.shouldPause?.()) { stoppedEarly = true; paused = true; break; }
       const target = targets[i]!;
       let html: string;
       try {
@@ -257,14 +275,17 @@ export class DetailCrawlerService {
         consecutiveFailures = 0;
         fetched += 1;
       } catch (err) {
+        if (isPortalPausedError(err)) { stoppedEarly = true; paused = true; break; }
         errors += 1;
         if (err instanceof PortalBlockedError) {
           stoppedEarly = true;
+          await opts.onBlocked?.();
           break;
         }
         consecutiveFailures += 1;
         if (consecutiveFailures >= PORTAL_BLOCK_THRESHOLD) {
           stoppedEarly = true;
+          await opts.onBlocked?.();
           break;
         }
         if (delayMs > 0 && i < targets.length - 1) await sleepMs(jitter(delayMs, random));
@@ -273,14 +294,17 @@ export class DetailCrawlerService {
 
       try {
         const fields = parseDetailPage(html);
+        if (!fields.reference || !fields.objet || normalizeReference(fields.reference) !== normalizeReference(target.reference)) {
+          throw new Error('Consultation metadata missing or reference mismatch');
+        }
         matched += 1;
         const amounts: { estimationMad?: number; cautionProvisoireMad?: number } = {};
-        if (target.estimationMad === undefined && fields.estimationMad != null) {
+        if (fields.estimationMad != null && fields.estimationMad !== target.estimationMad) {
           amounts.estimationMad = fields.estimationMad;
         }
         if (
-          target.cautionProvisoireMad === undefined &&
-          fields.cautionProvisoireMad != null
+          fields.cautionProvisoireMad != null &&
+          fields.cautionProvisoireMad !== target.cautionProvisoireMad
         ) {
           amounts.cautionProvisoireMad = fields.cautionProvisoireMad;
         }
@@ -301,12 +325,17 @@ export class DetailCrawlerService {
       enriched,
       errors,
       ...(stoppedEarly ? { stoppedEarly: true } : {}),
+      ...(paused ? { paused: true } : {}),
     };
     this.logger.log(`detail backfill complete ${JSON.stringify(summary)}`);
     return summary;
   }
 
   private async fetchDetail(url: string): Promise<string> {
+    return this.requestGate ? this.requestGate.run(() => this.fetchDetailNow(url)) : this.fetchDetailNow(url);
+  }
+
+  private async fetchDetailNow(url: string): Promise<string> {
     const response = await fetch(url, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' },
       signal: AbortSignal.timeout(DETAIL_TIMEOUT_MS),

@@ -176,7 +176,9 @@ function buildKeycloakProvider(request?: NextRequest) {
       : {}),
     authorization: {
       url: `${browserOidcBase}/auth`,
-      params: { scope: 'openid profile email' },
+      // Explicit sign-in must require credentials even if RP logout was
+      // unavailable (for example, an expired session with no ID token).
+      params: { scope: 'openid profile email', prompt: 'login' },
     },
     token: { url: `${serverOidcBase}/token` },
     userinfo: { url: `${serverOidcBase}/userinfo` },
@@ -214,10 +216,11 @@ async function refreshAccessToken(
 ): Promise<AtlasToken> {
   // The server-side issuer takes precedence: the web container reaches
   // Keycloak via the Docker service name, not the browser-accessible URL
-  // stored in token.issuer.
+  // stored in token.issuer. Prefer configured endpoints on every refresh so
+  // a browser-only override cannot change the endpoint on the next rotation.
   const serverIssuer = resolveKeycloakServerIssuer();
   const issuer =
-    serverIssuer ?? token.issuer ?? fallbackIssuer ?? resolveKeycloakIssuer();
+    serverIssuer ?? fallbackIssuer ?? resolveKeycloakIssuer() ?? token.issuer;
   const clientId = process.env.AUTH_KEYCLOAK_ID;
   if (!issuer || !clientId || !token.refreshToken) {
     return sanitizedRefreshFailure(token) as AtlasToken;
@@ -250,7 +253,11 @@ async function refreshAccessToken(
       refreshToken: refreshed.refresh_token ?? token.refreshToken,
       idToken: refreshed.id_token ?? token.idToken,
       expiresAt: Math.floor(Date.now() / 1000) + (refreshed.expires_in ?? 300),
-      issuer,
+      issuer:
+        resolveKeycloakBrowserIssuer() ??
+        token.issuer ??
+        fallbackIssuer ??
+        resolveKeycloakIssuer(),
       roles: rolesFromAccessToken(refreshed.access_token),
       error: undefined,
     };

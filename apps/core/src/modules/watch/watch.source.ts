@@ -1,9 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { parseFormInputs } from './prado';
+import { load } from 'cheerio';
+import { isBlockStatus } from './portal-fetch';
+import { isPortalPausedError } from './portal-request-gate';
 
 export interface PortalPage {
   html: string;
   sourceUrl: string;
+  hasNext?: boolean;
+  endOfResults?: boolean;
 }
 
 /**
@@ -90,7 +95,7 @@ export class HttpPortalSource implements PortalSource {
     }
     this.attempts = Math.max(1, options.attempts ?? 3);
     this.backoffMs = options.backoffMs ?? 1500;
-    this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.timeoutMs = options.timeoutMs ?? 40_000;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? defaultSleep;
     this.pageParam = options.pageParam;
@@ -125,6 +130,7 @@ export class HttpPortalSource implements PortalSource {
         return await this.fetchOnce(url);
       } catch (error) {
         lastError = error;
+        if (error instanceof PortalBlockedError || isPortalPausedError(error)) break;
         if (attempt < this.attempts) {
           await this.sleep(this.backoffMs * 2 ** (attempt - 1));
         }
@@ -144,6 +150,7 @@ export class HttpPortalSource implements PortalSource {
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!response.ok) {
+      if (isBlockStatus(response.status)) throw new PortalBlockedError(response.status);
       throw new Error(`Portal fetch failed: HTTP ${response.status}`);
     }
     return { html: await response.text(), sourceUrl: url };
@@ -245,7 +252,7 @@ export class PradoPortalSource implements PortalSource {
     }
     this.attempts = Math.max(1, options.attempts ?? 3);
     this.backoffMs = options.backoffMs ?? 1500;
-    this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.timeoutMs = options.timeoutMs ?? 40_000;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? defaultSleep;
     this.pageSize =
@@ -262,25 +269,30 @@ export class PradoPortalSource implements PortalSource {
       // to cover the whole catalogue. Only when the listing exposes the control
       // (guards non-listing pages) and a target size was requested.
       if (this.pageSize && this.fields && html.includes('listePageSizeTop')) {
+        const $ = load(html);
+        const sizes = $(`[name="${PAGE_SIZE_FIELD}"] option`).map((_, el) => Number($(el).attr('value'))).get()
+          .filter((n) => Number.isInteger(n) && n > 0 && n <= this.pageSize!);
+        const size = sizes.length ? Math.max(...sizes) : undefined;
+        if (!size) return { html, sourceUrl: this.url, hasNext: this.nextTarget !== null };
         const body = new URLSearchParams(this.fields);
-        body.set(PAGE_SIZE_FIELD, String(this.pageSize));
+        body.set(PAGE_SIZE_FIELD, String(size));
         body.set('PRADO_POSTBACK_TARGET', PAGE_SIZE_FIELD);
         body.set('PRADO_POSTBACK_PARAMETER', '');
         html = await this.requestWithRetry('POST', body);
         this.capture(html);
       }
-      return { html, sourceUrl: this.url };
+      return { html, sourceUrl: this.url, hasNext: this.nextTarget !== null };
     }
     // No "next" link on the last page → an empty page ends the walk cleanly.
     if (!this.nextTarget) {
-      return { html: '<html><body></body></html>', sourceUrl: this.pageUrl(page) };
+      return { html: '<html><body></body></html>', sourceUrl: this.pageUrl(page), endOfResults: true };
     }
     const body = new URLSearchParams(this.fields);
     body.set('PRADO_POSTBACK_TARGET', this.nextTarget);
     body.set('PRADO_POSTBACK_PARAMETER', '');
     const html = await this.requestWithRetry('POST', body);
     this.capture(html);
-    return { html, sourceUrl: this.pageUrl(page) };
+    return { html, sourceUrl: this.pageUrl(page), hasNext: this.nextTarget !== null };
   }
 
   /** Stable per-page key so cross-run change detection works per page. */
@@ -342,7 +354,7 @@ export class PradoPortalSource implements PortalSource {
         if (!response.ok) {
           // 429/403 is a rate-limit/block signal, not a transient glitch:
           // fail fast so the walk halts instead of retrying into a live ban.
-          if (response.status === 429 || response.status === 403) {
+          if (isBlockStatus(response.status)) {
             throw new PortalBlockedError(response.status);
           }
           throw new Error(`Portal fetch failed: HTTP ${response.status}`);
@@ -352,7 +364,7 @@ export class PradoPortalSource implements PortalSource {
       } catch (error) {
         lastError = error;
         // A block is terminal for this run — never retry into it.
-        if (error instanceof PortalBlockedError) break;
+        if (error instanceof PortalBlockedError || isPortalPausedError(error)) break;
         if (attempt < this.attempts) {
           await this.sleep(this.backoffMs * 2 ** (attempt - 1));
         }

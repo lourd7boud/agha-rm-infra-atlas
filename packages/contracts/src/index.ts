@@ -3,6 +3,7 @@ import { z } from 'zod';
 export * from './bid';
 export * from './dce';
 export * from './terrain';
+export * from './morocco-time';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vault — company document vault (10-architecture/03-data-architecture.md §3-4)
@@ -59,6 +60,14 @@ export const TENDER_PROCEDURES = [
   'concours',
   'negocie',
   'bons_de_commande',
+  'consultation_architecturale',
+  'concours_architectural',
+  'manifestation_interet',
+  'preselection',
+  'partenariat_public_prive',
+  'demande_cotation',
+  'dialogue_competitif',
+  'enchere_electronique',
 ] as const;
 export const tenderProcedureSchema = z.enum(TENDER_PROCEDURES);
 export type TenderProcedure = z.infer<typeof tenderProcedureSchema>;

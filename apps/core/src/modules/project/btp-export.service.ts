@@ -12,6 +12,8 @@ import {
   type MetreLigne,
 } from './btp-metre.domain';
 import { round2, toDecimal, toNumber } from './btp-finance.domain';
+import { readRevisionTrace } from './btp-revision.domain';
+import { revisionReportPdf, revisionReportXlsx } from './btp-revision-report.export';
 import {
   BTP_EXECUTION_REPOSITORY,
   type BtpExecutionRepository,
@@ -282,6 +284,17 @@ export class BtpExportService {
   }
 
   /** Décompte n°X — lignes cumulées + récapitulatif complet. */
+  async revision(projectId: string, format: 'xlsx' | 'pdf'): Promise<StreamableFile> {
+    const report = await this.execution.getRevisionReport(projectId);
+    if (!report) throw new NotFoundException('Marché introuvable');
+    const file = format === 'pdf' ? await revisionReportPdf(report) : await revisionReportXlsx(report);
+    const filename = fileNameFor(report.project.reference, 'revision').replace(/\.xlsx$/, `.${format}`);
+    return new StreamableFile(file, {
+      type: format === 'pdf' ? PDF_MIME : XLSX_MIME,
+      disposition: `attachment; filename="${filename}"`,
+    });
+  }
+
   async decompte(projectId: string, decompteId: string): Promise<StreamableFile> {
     const project = await this.projectOr404(projectId);
     const decompte = await this.execution.getDecompte(decompteId);
@@ -305,6 +318,9 @@ export class BtpExportService {
     ];
     sheet.addRow([`Marché N° ${project.reference} — ${title}`]).font = { bold: true, size: 14 };
     sheet.addRow([project.objet ?? project.name]);
+    sheet.addRow([decompte.periode?.dateDebut && decompte.periode.dateFin
+      ? `Travaux du ${formatDateFr(decompte.periode.dateDebut)} au ${formatDateFr(decompte.periode.dateFin)}`
+      : 'Dates des travaux à compléter dans le métré']);
     sheet.addRow([]);
     const header = sheet.addRow([
       'N° Prix',
@@ -317,7 +333,6 @@ export class BtpExportService {
     ]);
     styleHeaderRow(header);
 
-    const firstDataRow = header.number + 1;
     for (const ligne of decompte.lignes) {
       const row = sheet.addRow([
         ligne.prixNo,
@@ -333,13 +348,15 @@ export class BtpExportService {
       moneyFmt(row.getCell(7));
       row.getCell(2).alignment = { wrapText: true };
     }
-    const lastDataRow = sheet.lastRow!.number;
-
     sheet.addRow([]);
+    const revision = readRevisionTrace(decompte.revision?.details);
     const recap: [string, number | { formula: string }][] = [
-      ['Total HT (cumulé)', { formula: `SUM(G${firstDataRow}:G${lastDataRow})` }],
-      ...(decompte.revisionMontantMad !== 0
-        ? ([['Révision des prix', decompte.revisionMontantMad]] as [string, number][])
+      ['Total HT (cumulé)', decompte.totalHtMad],
+      ...(revision || decompte.revisionMontantMad !== 0
+        ? ([
+            ['Révision des prix cumulée (HT)', decompte.revisionMontantMad],
+            ['HT après révision', round2(toDecimal(decompte.totalHtMad).plus(decompte.revisionMontantMad)).toNumber()],
+          ] as [string, number][])
         : []),
       [`TVA ${decompte.tauxTva}%`, decompte.montantTvaMad],
       ['Total TTC (cumulé)', decompte.totalTtcMad],
@@ -355,6 +372,42 @@ export class BtpExportService {
       moneyFmt(row.getCell(7));
     }
 
+    if (revision) {
+      const note = workbook.addWorksheet(decompte.isDernier ? 'État de la révision' : 'Note de révision');
+      note.columns = [{ width: 16 }, { width: 17 }, { width: 15 }, { width: 18 }, { width: 17 }, { width: 30 },
+        { width: 16 }, { width: 16 }, { width: 52 }, { width: 29 }, { width: 46 }];
+      note.addRow([`Marché ${project.reference} · ${title}`]).font = { bold: true, size: 14 };
+      note.addRow(['Arrêté n° 3-302-15 · art. 8 et 12 à 18']);
+      note.addRow(['Publications retenues au', revision.cutoff]);
+      note.addRow(['Révision cumulée HT', revision.cumulative]);
+      note.addRow(['Variation du décompte', revision.movement]);
+      note.addRow(['État', revision.status === 'pending' ? 'Révision en attente' : 'Révision calculée']);
+      note.addRow([]);
+      styleHeaderRow(note.addRow(['Décompte', 'Mois', 'Jours', 'HT exécuté', 'Révision HT',
+        'Bulletin', 'Date de parution', 'Coefficient', 'Indice du mois / base × pondération', 'Ventilation du HT', 'Base de révision']));
+      for (const { numero, period } of revision.recognized) {
+        for (const month of period.months) {
+          const ratios = Object.entries(month.breakdown?.indexContributions ?? {}).map(([code, index]) =>
+            `${code} ${index.currentValue}/${index.baseValue} × ${index.weight}`);
+          const row = note.addRow([
+            numero, month.month, month.days, month.ht, month.amount, month.publication?.source,
+            month.publication?.publishedOn, month.coefficient == null ? null : 1 + month.coefficient,
+            [month.breakdown && `Fixe ${month.breakdown.fixedPart}`, ...ratios,
+              month.contractCoefficient !== undefined && `Borne délai ${1 + month.contractCoefficient}`].filter(Boolean).join(' · '),
+            (month.priceBasis?.allocationSource ?? period.allocationSource) === 'attachements' ? 'Attachements datés' : (month.priceBasis?.method ?? period.method) === 'monthly' ? 'Ventilation réelle' : 'Prorata calendaire',
+            month.priceBasis ? [month.priceBasis.label, month.priceBasis.date, month.priceBasis.formula, month.priceBasis.publication?.source].filter(Boolean).join(' · ') : null,
+          ]);
+          for (const column of [4, 5]) moneyFmt(row.getCell(column));
+          row.getCell(8).numFmt = '0.0000';
+          row.getCell(9).alignment = { wrapText: true };
+        }
+      }
+      for (const { numero, period } of revision.pendingPeriods) {
+        const missing = [...new Set(period.months.flatMap((month) => month.missing))];
+        note.addRow([numero, 'En attente', '', period.ht, '', '', '', '',
+          [...period.issues, ...missing.map((month) => `Indices à vérifier ${month}`)].join(' · ')]);
+      }
+    }
     return toStreamable(workbook, fileNameFor(project.reference, `decompte_${decompte.numero}`));
   }
 
@@ -1545,6 +1598,8 @@ export class BtpExportService {
       { width: 16 },
       { width: 18 },
       { width: 12 },
+      { width: 20 },
+      { width: 20 },
     ];
     sheet.addRow([`Marché N° ${project.reference} — Récapitulatif des décomptes`]).font = {
       bold: true,
@@ -1562,6 +1617,8 @@ export class BtpExportService {
       'Retenue',
       "Montant de l'acompte",
       'Statut',
+      'Révision cumulée HT',
+      'Variation révision HT',
     ]);
     styleHeaderRow(header);
     for (const decompte of decomptes) {
@@ -1574,8 +1631,10 @@ export class BtpExportService {
         decompte.retenueGarantieMad,
         decompte.montantAcompteMad,
         decompte.statut,
+        decompte.revisionMontantMad,
+        decompte.revisionTrace?.movement ?? null,
       ]);
-      for (const col of [3, 4, 5, 6, 7]) moneyFmt(row.getCell(col));
+      for (const col of [3, 4, 5, 6, 7, 9, 10]) moneyFmt(row.getCell(col));
     }
     const first = header.number + 1;
     const last = sheet.lastRow!.number;

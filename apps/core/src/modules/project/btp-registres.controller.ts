@@ -39,6 +39,7 @@ import { BTP_REGISTRES_REPOSITORY, type BtpRegistresRepository } from './btp-reg
 import { ODS_TYPES } from './btp-registres.domain';
 import { validateFormula } from './btp-revision.domain';
 import { actorFrom, toHttp, WRITE_ROLES, type AuthedRequest } from './btp-http.helpers';
+import { avenantBordereauImpactSchema } from './btp-avenant-bordereau.domain';
 
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 
@@ -52,22 +53,26 @@ const avenantInputSchema = z.object({
   delaiDeltaMois: z.number().min(-120).max(120).optional(),
   modifications: z.array(z.record(z.string(), z.unknown())).optional(),
   prixNouveaux: z.array(z.record(z.string(), z.unknown())).optional(),
+  bordereauImpact: avenantBordereauImpactSchema.nullish(),
   observations: z.string().max(4000).optional(),
 });
 
 const avenantTransitionSchema = z.object({
   to: z.enum(['brouillon', 'en_attente', 'approuve', 'rejete', 'annule']),
-  dateApprobation: z.coerce.date().optional(),
+  dateApprobation: z.union([z.iso.date(), z.iso.datetime({ offset: true })]).transform((date) => new Date(date)).optional(),
 });
 
+const odsDate = z.iso.date().transform((day) => new Date(`${day}T00:00:00Z`));
 const odsInputSchema = z.object({
   type: z.enum(ODS_TYPES).optional(),
   objet: z.string().min(3).max(2000),
   description: z.string().max(4000).optional(),
   motif: z.string().max(2000).optional(),
-  dateEmission: z.coerce.date().optional(),
-  dateEffet: z.coerce.date().optional(),
-  dateFin: z.coerce.date().optional(),
+  dateEmission: odsDate.optional(),
+  dateEffet: odsDate.optional(),
+  arretScope: z.enum(['total', 'partiel']).optional(),
+  repriseArretId: z.string().min(1).max(200).optional(),
+  dateFin: odsDate.optional(),
   delaiJours: z.number().int().min(0).max(10000).optional(),
   impactFinancierMad: z.number().min(-1_000_000_000).max(1_000_000_000).optional(),
   impactDelaiJours: z.number().int().min(-10000).max(10000).optional(),
@@ -80,6 +85,10 @@ const odsInputSchema = z.object({
 const odsActionSchema = z.object({
   action: z.enum(['emit', 'notify', 'acknowledge', 'execute', 'close', 'cancel']),
   accusePar: z.string().max(300).optional(),
+  dateNotification: odsDate.optional(),
+  dateEffet: odsDate.optional(),
+  arretScope: z.enum(['total', 'partiel']).optional(),
+  repriseArretId: z.string().min(1).max(200).optional(),
 });
 
 const penaliteInputSchema = z.object({
@@ -151,15 +160,16 @@ const formulaInputSchema = z.object({
   id: z.string().uuid().optional(),
   name: z.string().min(2).max(200),
   description: z.string().max(1000).optional(),
-  fixedPart: z.number().min(0).max(1),
-  weights: z.record(z.string(), z.number().min(0).max(1)),
+  fixedPart: z.number().min(0.15).max(1),
+  weights: z.record(z.string().trim().min(1), z.number().positive().max(1)),
   isDefault: z.boolean().optional(),
 });
 
 const indexMonthSchema = z.object({
   monthDate: z.coerce.date(),
-  indexValues: z.record(z.string(), z.number()),
-  source: z.string().max(300).optional(),
+  indexValues: z.record(z.string().trim().min(1), z.number().positive()),
+  source: z.string().trim().min(1).max(300),
+  publishedOn: z.iso.date(),
   notes: z.string().max(1000).optional(),
   status: z.enum(['provisoire', 'definitif']).optional(),
 });
@@ -257,19 +267,27 @@ export class BtpRegistresController {
   async upsertIndexMonth(@Body() body: unknown, @Req() req: AuthedRequest) {
     const parsed = indexMonthSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
-    return this.registres.upsertIndexMonth(parsed.data, actorFrom(req));
+    try {
+      return await this.registres.upsertIndexMonth(parsed.data, actorFrom(req));
+    } catch (error) {
+      toHttp(error);
+    }
   }
 
   @Roles('direction', 'admin-si')
   @Delete('revision/indexes/:month')
   async deleteIndexMonth(@Param('month') month: string, @Req() req: AuthedRequest) {
     const date = new Date(`${month}-01T00:00:00Z`);
-    if (Number.isNaN(date.getTime())) {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || Number.isNaN(date.getTime())) {
       throw new BadRequestException(`Mois invalide: ${month} (attendu YYYY-MM)`);
     }
-    const ok = await this.registres.deleteIndexMonth(date, actorFrom(req));
-    if (!ok) throw new NotFoundException(`Mois introuvable: ${month}`);
-    return { deleted: true };
+    try {
+      const ok = await this.registres.deleteIndexMonth(date, actorFrom(req));
+      if (!ok) throw new NotFoundException(`Mois introuvable: ${month}`);
+      return { deleted: true };
+    } catch (error) {
+      toHttp(error);
+    }
   }
 
   @Get('revision/indexes-audit')
@@ -404,6 +422,10 @@ export class BtpRegistresController {
     try {
       const updated = await this.registres.actionOds(projectId, odsId, parsed.data.action, {
         accusePar: parsed.data.accusePar,
+        dateNotification: parsed.data.dateNotification,
+        dateEffet: parsed.data.dateEffet,
+        arretScope: parsed.data.arretScope,
+        repriseArretId: parsed.data.repriseArretId,
       });
       if (!updated) throw new NotFoundException(`ODS introuvable: ${odsId}`);
       return updated;

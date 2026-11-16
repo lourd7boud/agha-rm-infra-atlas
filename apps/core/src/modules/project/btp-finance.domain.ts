@@ -27,7 +27,7 @@ export { Decimal };
 
 export const TVA_RATE_DEFAULT = 20;
 export const RETENUE_TAUX_DEFAULT = 10; // % of the cumulative TTC
-export const RETENUE_CAP_RATE = 0.07; // 7% of the whole marché TTC (CCAG-T art. 40)
+export const RETENUE_CAP_RATE = 0.07; // Default cap on contract TTC including amendments (CCAG-T art. 64)
 
 export function toDecimal(value: number | string | Decimal | null | undefined): Decimal {
   if (value === null || value === undefined || value === '') return new Decimal(0);
@@ -63,14 +63,25 @@ export interface BordereauLigne {
   quantite: number;
   prixUnitaire: number;
   montant?: number;
+  avenant?: {
+    id: string;
+    numero: number;
+    reference: string;
+    dateEffet: string;
+    baseDate: string | null;
+    formuleId: string | null;
+    formuleSnapshot?: { id: string; name: string; fixedPart: number; weights: Record<string, number> };
+  };
 }
 
 export interface BordereauTotaux {
-  lignes: Required<BordereauLigne>[];
+  lignes: NormalizedBordereauLigne[];
   montantHt: number;
   montantTva: number;
   montantTtc: number;
 }
+
+export type NormalizedBordereauLigne = BordereauLigne & Required<Pick<BordereauLigne, 'id' | 'montant'>>;
 
 /** Normalises lignes (montant = quantité × prix) and computes the BPU totals. */
 export function computeBordereau(
@@ -149,6 +160,10 @@ export interface DecompteComputationInput {
   anneeCourante: number;
   /** Révision des prix coefficient — applied only on the décompte dernier. */
   revisionCoefficient?: number | null;
+  /** Cumulative, signed revision from eligible execution periods, in MAD HT. */
+  revisionAmount?: number;
+  /** Initial contract TTC plus booked amendments, when available. */
+  contractAmount?: number;
 }
 
 export interface DecompteComputation {
@@ -183,6 +198,8 @@ export function computeDecompte(input: DecompteComputationInput): DecompteComput
     priorAcomptes,
     anneeCourante,
     revisionCoefficient,
+    revisionAmount,
+    contractAmount,
   } = input;
 
   // 1. Lignes: cumulative quantity × unit price, full-precision internals.
@@ -204,10 +221,13 @@ export function computeDecompte(input: DecompteComputationInput): DecompteComput
     };
   });
 
-  // 2. Révision des prix — only on the décompte dernier (source-app rule).
+  // 2. Apply the settled amount before TVA.
   let effectiveHtInternal = htInternal;
   let revisionMontant = new Decimal(0);
-  if (isDernier && revisionCoefficient != null && revisionCoefficient !== 0) {
+  if (revisionAmount !== undefined) {
+    revisionMontant = toDecimal(revisionAmount);
+    effectiveHtInternal = round2(htInternal).plus(revisionMontant);
+  } else if (isDernier && revisionCoefficient != null && revisionCoefficient !== 0) {
     const revisionInternal = htInternal.times(toDecimal(revisionCoefficient));
     revisionMontant = trunc2(revisionInternal);
     effectiveHtInternal = htInternal.plus(revisionInternal);
@@ -228,7 +248,7 @@ export function computeDecompte(input: DecompteComputationInput): DecompteComput
   }
 
   // 5. Retenue de garantie: MIN(TRUNC(TTC×taux), TRUNC(marché TTC×7%)).
-  const marcheTtcInternal = computeMarcheTtcInternal(bordereauLignes);
+  const marcheTtcInternal = contractAmount === undefined ? computeMarcheTtcInternal(bordereauLignes) : toDecimal(contractAmount);
   const retenueTaux = trunc2(ttcInternal.times(toDecimal(tauxRetenue).dividedBy(100)));
   const retenueCap = trunc2(marcheTtcInternal.times(RETENUE_CAP_RATE));
   const retenueGarantie = Decimal.min(retenueTaux, retenueCap);
@@ -267,9 +287,10 @@ export function computeDecompte(input: DecompteComputationInput): DecompteComput
 export function computeProgressPct(
   dernierTotalTtc: number,
   bordereauLignes: BordereauLigne[],
+  contractAmount?: number,
 ): number {
-  const marcheTtc = computeMarcheTtcInternal(bordereauLignes);
-  if (marcheTtc.isZero()) return 0;
+  const marcheTtc = contractAmount === undefined ? computeMarcheTtcInternal(bordereauLignes) : toDecimal(contractAmount);
+  if (marcheTtc.lte(0)) return 0;
   const pct = toNumber(
     toDecimal(dernierTotalTtc).dividedBy(marcheTtc).times(100).toDecimalPlaces(2),
   );

@@ -77,7 +77,7 @@ const MAX_LIKELY_COMPETITORS = 12;
  * intel module uses, so the two harvest paths agree.
  */
 export function buildTenderCompetitorIntel(
-  tender: { reference: string; buyerName: string; deadlineAt: Date },
+  tender: { reference: string; buyerName: string; deadlineAt: Date; ambiguousResultReference?: boolean },
   allBids: readonly CompetitorBidRecord[],
   now: Date,
 ): TenderCompetitorIntel {
@@ -89,7 +89,7 @@ export function buildTenderCompetitorIntel(
   // buyer. This mirrors the BidResolver lifecycle so the result panel and this
   // competitor-intel view never disagree (both were reference-only before).
   const deadlinePassed = tender.deadlineAt.getTime() < now.getTime();
-  const thisTenderBids = deadlinePassed
+  const thisTenderBids = deadlinePassed && !tender.ambiguousResultReference
     ? allBids.filter(
         (b) =>
           canonicalReferenceKey(b.reference) === refKey &&

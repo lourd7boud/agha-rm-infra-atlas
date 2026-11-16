@@ -2,12 +2,14 @@
 // marché (adjudicataire direct, bon de commande ≤500k DH, sous-traitance,
 // groupement, marché privé), 2) les champs propres au mode (notre société
 // auto-remplie quand NOUS sommes l'attributaire), 3) la fiche marché.
+import { randomUUID } from 'node:crypto';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { apiGet, apiPost, AtlasApiError } from '@/lib/api';
 import { isRedirectError } from '@/lib/next-redirect';
 import type { BtpProject, Intervenants, NotreEntreprise } from '@/lib/btp';
 import { NewMarcheWizard } from './NewMarcheWizard';
+import { reviewedSourceBordereau, type BtpProjectSource } from '@/lib/btp-source';
 
 export const metadata = { title: 'Nouveau marché — ATLAS' };
 
@@ -18,7 +20,20 @@ function field(formData: FormData, name: string): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-export default async function NewProjectPage() {
+export default async function NewProjectPage({ searchParams }: {
+  searchParams: Promise<{ tenderId?: string; error?: string }>;
+}) {
+  const query = await searchParams;
+  const creationId = randomUUID();
+  let source: BtpProjectSource | undefined;
+  let sourceError = false;
+  if (query.tenderId) {
+    try {
+      source = await apiGet<BtpProjectSource>(`/btp/project-source/${encodeURIComponent(query.tenderId)}`);
+    } catch {
+      sourceError = true;
+    }
+  }
   const [intervenants, entrepriseInfo] = await Promise.all([
     apiGet<Intervenants>('/btp/projects/intervenants').catch(
       () => ({ assistanceTechnique: [], maitreOeuvre: [], societes: [] }) as Intervenants,
@@ -49,12 +64,24 @@ export default async function NewProjectPage() {
       }
     }
     try {
+      if (sourceError) redirect('/projects/new?error=source');
+      if (source && formData.get('sourceReviewed') !== 'on') throw new Error('Source non revue');
+      if (source) {
+        const current = await apiGet<BtpProjectSource>(`/btp/project-source/${source.tenderId}`);
+        if (current.sourceVersion !== source.sourceVersion) {
+          redirect(`/projects/new?tenderId=${source.tenderId}&error=source-changed`);
+        }
+      }
       created = await apiPost<BtpProject>('/btp/projects', {
+        creationId,
+        tenderId: source?.tenderId,
+        dateLimiteRemiseOffres: source?.dateLimite ?? field(formData, 'dateLimiteRemiseOffres'),
+        bordereau: source ? reviewedSourceBordereau(formData, source) : undefined,
         reference: field(formData, 'reference') ?? '',
         name:
           (field(formData, 'objet') ?? '').slice(0, 180) || (field(formData, 'reference') ?? ''),
         objet: field(formData, 'objet'),
-        buyerName: field(formData, 'maitreOeuvre'),
+        buyerName: field(formData, 'buyerName'),
         annee: field(formData, 'annee'),
         societe: field(formData, 'societe'),
         commune: field(formData, 'commune'),
@@ -80,7 +107,7 @@ export default async function NewProjectPage() {
     } catch (error) {
       if (isRedirectError(error)) throw error;
       const code = error instanceof AtlasApiError && error.status === 400 ? 'invalid' : 'failed';
-      redirect(`/projects/new?error=${code}`);
+      redirect(`/projects/new?${source ? `tenderId=${source.tenderId}&` : ''}error=${code}`);
     }
     redirect(`/projects/${created.id}?tab=bordereau&created=1`);
   }
@@ -95,11 +122,19 @@ export default async function NewProjectPage() {
         Choisissez d&apos;abord comment la société a obtenu ce marché — chaque mode a ses
         champs. Le montant naîtra du bordereau des prix.
       </p>
-      <NewMarcheWizard
+      {(sourceError || query.error) && <p role="alert" className="mt-4 rounded-lg border border-clay/30 bg-clay-soft p-3 text-sm text-clay">
+        {sourceError || query.error === 'source'
+          ? 'La consultation source est indisponible. Revenez à la fiche de consultation pour réessayer.'
+          : query.error === 'source-changed'
+            ? 'La source a changé. Relisez les données actualisées avant de créer le marché.'
+            : 'Le marché n’a pas été créé. Vérifiez les champs obligatoires et les valeurs du BPU.'}
+      </p>}
+      {!sourceError && <NewMarcheWizard
         action={createProject}
         intervenants={intervenants}
         entreprise={entreprise}
-      />
+        source={source}
+      />}
     </div>
   );
 }

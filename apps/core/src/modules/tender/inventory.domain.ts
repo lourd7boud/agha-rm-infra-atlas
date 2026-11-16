@@ -3,6 +3,7 @@ import { daysUntil } from '../../lib/dates';
 import { readAiEnrichment } from './ai-enrichment';
 import { readDossierExtraction } from './dossier-extraction';
 import { readPortalDetail, type PortalDetail } from './portal-detail';
+import { hasMismatchedPortalDetail } from './samir-review';
 import {
   refBuyerKey,
   type CompetitorBidRecord,
@@ -77,7 +78,7 @@ export interface ResolvedBidState {
 export class BidResolver {
   private readonly byRefBuyer: Map<string, CompetitorBidRecord[]>;
 
-  constructor(bids: readonly CompetitorBidRecord[]) {
+  constructor(bids: readonly CompetitorBidRecord[], private readonly ambiguousKeys: ReadonlySet<string> = new Set()) {
     this.byRefBuyer = indexBidsByRefAndBuyer(bids);
   }
 
@@ -94,7 +95,8 @@ export class BidResolver {
     if (deadlineAt.getTime() >= now.getTime()) {
       return { competitors: [], lifecycle: 'en_cours', resultDate: null };
     }
-    const matched = this.byRefBuyer.get(refBuyerKey(reference, buyerName)) ?? [];
+    const key = refBuyerKey(reference, buyerName);
+    const matched = this.ambiguousKeys.has(key) ? [] : this.byRefBuyer.get(key) ?? [];
     const competitors: TenderCompetitor[] = matched.map((b) => ({
       bidderName: b.bidderName,
       amountMad: b.amountMad ?? null,
@@ -111,6 +113,17 @@ export class BidResolver {
       resultDate,
     };
   }
+}
+
+function ambiguousBidKeys(rows: ReadonlyArray<{ reference: string; buyerName: string }>): ReadonlySet<string> {
+  const seen = new Set<string>();
+  const ambiguous = new Set<string>();
+  for (const row of rows) {
+    const key = refBuyerKey(row.reference, row.buyerName);
+    if (seen.has(key)) ambiguous.add(key);
+    seen.add(key);
+  }
+  return ambiguous;
 }
 
 /** Lifecycle order used for both the facet and the datao spine (En cours →
@@ -133,7 +146,7 @@ export function lifecycleFacetForRows(
   bids: readonly CompetitorBidRecord[],
   now: Date,
 ): InventoryFacet[] {
-  const resolver = new BidResolver(bids);
+  const resolver = new BidResolver(bids, ambiguousBidKeys(rows));
   const counts = new Map<LifecycleStatus, number>();
   for (const row of rows) {
     const { lifecycle } = resolver.resolve(
@@ -229,6 +242,14 @@ export const PROCEDURE_LABELS: Record<TenderProcedure, string> = {
   concours: 'Concours',
   negocie: 'Marché négocié',
   bons_de_commande: 'Bons de commande',
+  consultation_architecturale: 'Consultation architecturale',
+  concours_architectural: 'Concours architectural',
+  manifestation_interet: "Appel à manifestation d'intérêt",
+  preselection: "Appel d'offres avec présélection",
+  partenariat_public_prive: 'Partenariat public-privé',
+  demande_cotation: 'Demande de cotation',
+  dialogue_competitif: 'Dialogue compétitif',
+  enchere_electronique: 'Enchère électronique inversée',
 };
 
 /**
@@ -713,6 +734,8 @@ export interface InventoryItem {
   autres?: string[];
   /** ISO timestamp the DCE dossier was read (provenance marker). */
   dossierExtractedAt?: string;
+  /** Deadline as last seen on the portal detail page. */
+  portalDetailDeadline?: string;
   /**
    * The published portal metadata block (datao "fiche du portail") harvested by
    * the watch detail crawler into raw.detail — buyer entity, procédure, mode de
@@ -797,6 +820,9 @@ export interface InventoryRow {
   hasBpu?: boolean | null;
   /** Number of BPU line items in the dossier extraction (0 when none). */
   bpuCount?: number;
+  /** Timestamp of the dossier analysis, projected for the current page. */
+  dossierExtractedAt?: string;
+  portalDetailDeadline?: string;
   /** AI-enrichment résumé line, when the tender was enriched. */
   aiResume?: string;
   /** AI-enrichment fine secteur label, when enriched. */
@@ -1106,7 +1132,7 @@ function buildItem(c: Classified, now: Date): InventoryItem {
   const dossier = readDossierExtraction(record.raw);
   // Published portal block (zero LLM) — the source of truth for facts the portal
   // prints. Parsed once and reused below (reserveAuxPme + portalDetail).
-  const pd = readPortalDetail(record.raw);
+  const pd = hasMismatchedPortalDetail(record.sourceUrl, record.raw) ? null : readPortalDetail(record.raw);
   return {
     id: record.id,
     reference: record.reference,
@@ -1170,6 +1196,7 @@ function buildItem(c: Classified, now: Date): InventoryItem {
     conditionsLegales: dossier?.conditionsLegales,
     autres: dossier?.autres,
     dossierExtractedAt: dossier?.extractedAt,
+    portalDetailDeadline: pd?.deadline ?? undefined,
     // Portal-first: the published detail block (no LLM). Undefined until the
     // detail crawler has stamped raw.detail for this row.
     portalDetail: pd ?? undefined,
@@ -1223,6 +1250,8 @@ export function buildLightItem(c: Classified, now: Date): InventoryItem {
     sourceUrl: record.sourceUrl,
     aiResume: record.aiResume,
     hasBpu: record.hasBpu ?? false,
+    dossierExtractedAt: record.dossierExtractedAt,
+    portalDetailDeadline: record.portalDetailDeadline,
     enrichedAt: record.aiEnrichedAt,
     budgetFromDossier: record.budgetFromDossier ?? false,
     lifecycleStatus: c.lifecycle,
@@ -1259,7 +1288,7 @@ export function selectInventory(
   // Index ALL bids once by canonical reference key (BidResolver), then attach to
   // each tender by reference fallback (tender_id is sparsely populated until the
   // back-fill runs at scale). Shared with the DB-side page so lifecycle can't drift.
-  const resolver = new BidResolver(bids);
+  const resolver = new BidResolver(bids, ambiguousBidKeys(records));
 
   // Classify EVERY row from base columns only — no `raw` JSONB parsing here.
   // The heavy ai/dossier reads happen once per VISIBLE row in buildItem, so a

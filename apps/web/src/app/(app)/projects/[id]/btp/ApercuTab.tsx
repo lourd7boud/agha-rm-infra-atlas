@@ -77,6 +77,7 @@ export function ApercuTab({ project }: { project: BtpProjectDetail }) {
             <Detail label="Mode de passation" value={project.modePassation ?? '—'} />
             <Detail label="Commune" value={project.commune ?? '—'} />
             <Detail label="Date d'ouverture" value={fmtDate(project.dateOuverture)} />
+            <Detail label="Date limite de remise des offres" value={fmtDate(project.dateLimiteRemiseOffres)} />
             <Detail label="Montant (TTC)" value={fmtMad(project.montantMarcheMad)} mono />
             <Detail label="Maître d'œuvre" value={project.maitreOeuvre ?? project.buyerName} />
             <Detail label="Assistance technique" value={project.assistanceTechnique ?? '—'} />
@@ -262,6 +263,15 @@ export function ApercuTab({ project }: { project: BtpProjectDetail }) {
               />
             </label>
             <label className={labelClass}>
+              Date limite de remise des offres
+              <input
+                type="date"
+                name="dateLimiteRemiseOffres"
+                defaultValue={project.dateLimiteRemiseOffres?.slice(0, 10) ?? ''}
+                className={`${inputClass} mt-1`}
+              />
+            </label>
+            <label className={labelClass}>
               O.S.C
               <input
                 type="date"
@@ -271,11 +281,25 @@ export function ApercuTab({ project }: { project: BtpProjectDetail }) {
               />
             </label>
             <label className={labelClass}>
+              Début réel du chantier
+              <input
+                type="date"
+                name="executionStartDate"
+                defaultValue={project.executionStartDate?.slice(0, 10) ?? ''}
+                className={`${inputClass} mt-1`}
+                aria-describedby="execution-start-hint"
+              />
+              <span id="execution-start-hint" className="mt-1 block text-xs font-normal normal-case tracking-normal text-muted">
+                Laissez vide pour retenir le lendemain de l’OS.
+              </span>
+            </label>
+            <label className={labelClass}>
               Délai (mois)
               <input
                 type="number"
-                step="0.5"
-                min="0.5"
+                step="any"
+                min="0"
+                max="240"
                 name="delaiMois"
                 defaultValue={project.delaiMois ?? ''}
                 className={`${inputClass} mt-1 font-mono`}
@@ -400,7 +424,7 @@ export function ApercuTab({ project }: { project: BtpProjectDetail }) {
                     </div>
                     {arret.motif && <p className="mt-1 text-faint">{arret.motif}</p>}
                     <div className="mt-1.5 flex items-center gap-3">
-                      {!arret.dateReprise && (
+                      {!arret.dateReprise && !arret.sourceOdsId && (
                         <form action={setArretReprise} className="flex items-center gap-1.5">
                           <input type="hidden" name="projectId" value={project.id} />
                           <input type="hidden" name="arretId" value={arret.id ?? ''} />
@@ -415,11 +439,13 @@ export function ApercuTab({ project }: { project: BtpProjectDetail }) {
                           </button>
                         </form>
                       )}
-                      <form action={removeArret}>
+                      {arret.sourceOdsId || arret.repriseOdsId
+                        ? <Link href={`/projects/${project.id}?tab=ods`} className="font-semibold text-cyan hover:underline">Voir les ordres de service</Link>
+                        : <form action={removeArret}>
                         <input type="hidden" name="projectId" value={project.id} />
                         <input type="hidden" name="arretId" value={arret.id ?? ''} />
                         <button className="font-semibold text-faint hover:text-clay">Retirer</button>
-                      </form>
+                      </form>}
                     </div>
                   </li>
                 ))}

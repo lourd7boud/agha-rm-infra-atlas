@@ -15,15 +15,19 @@ export async function GET(
 ): Promise<Response> {
   const { id } = await context.params;
   const name = req.nextUrl.searchParams.get('name');
+  const sha256 = req.nextUrl.searchParams.get('sha256');
   if (!name) return NextResponse.json({ error: 'name requis' }, { status: 400 });
+  if (sha256 !== null && !/^[a-f0-9]{64}$/.test(sha256)) return NextResponse.json({ error: 'Empreinte du fichier invalide' }, { status: 400 });
 
   const session = await auth();
   if (!session?.accessToken || session.error === 'RefreshAccessTokenError') {
     return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
   }
 
+  const query = new URLSearchParams({ name });
+  if (sha256) query.set('sha256', sha256);
   const upstream = await fetch(
-    `${API_URL}/tender/tenders/${encodeURIComponent(id)}/dossier/raw?name=${encodeURIComponent(name)}`,
+    `${API_URL}/tender/tenders/${encodeURIComponent(id)}/dossier/raw?${query}`,
     {
       headers: { Authorization: `Bearer ${session.accessToken}` },
       cache: 'no-store',
@@ -44,7 +48,7 @@ export async function GET(
     headers: {
       'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
       'Content-Disposition': `${isDceRawInlineSafe(name) ? 'inline' : 'attachment'}; filename="document"`,
-      'Cache-Control': 'private, max-age=600',
+      'Cache-Control': 'private, no-store',
       'Content-Security-Policy': "default-src 'none'; sandbox",
       'X-Content-Type-Options': 'nosniff',
     },

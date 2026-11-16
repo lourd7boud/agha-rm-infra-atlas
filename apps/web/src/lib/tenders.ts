@@ -1,7 +1,32 @@
-import type { PipelineState, TenderProcedure } from '@atlas/contracts';
+import { moroccoTimeZone, parsePmmpDeadline, type PipelineState, type TenderProcedure } from '@atlas/contracts';
 
 /** Legal trichotomy of Moroccan public procurement. */
 export type TenderCategory = 'Travaux' | 'Fournitures' | 'Services';
+
+export type SamirEvidenceCheck = 'matched' | 'conflict' | 'unverified';
+export interface SamirReview {
+  checkedAt: string;
+  source: {
+    identity: string | null;
+    state: 'no_official_source' | 'missing_snapshot' | 'mismatched_snapshot' | 'matched_snapshot';
+    observedAt: string | null;
+  };
+  checks: Record<'deadline' | 'caution' | 'estimate', SamirEvidenceCheck>;
+  documents: {
+    state: 'not_cached' | 'unavailable' | 'available' | 'missing_object';
+    filename?: string;
+    cachedAt?: string;
+    currentRevision: 'unverified' | 'confirmed_as_of';
+    integrity?: 'matched' | 'mismatch' | 'unavailable';
+    complement?: { state: 'listed' | 'not_listed'; observedAt: string };
+    revision?: {
+      state: 'unchanged' | 'updated' | 'downloaded' | 'unavailable';
+      checkedAt: string;
+      reason?: string;
+      retryAt?: string;
+    };
+  };
+}
 
 /**
  * One row of the datao-style catalogue — the enriched shape served by
@@ -10,6 +35,7 @@ export type TenderCategory = 'Travaux' | 'Fournitures' | 'Services';
  */
 export interface TenderItem {
   id: string;
+  samirReview?: SamirReview;
   reference: string;
   buyerName: string;
   procedure: TenderProcedure;
@@ -77,8 +103,9 @@ export interface TenderItem {
   /** Other notable conditions (datao "Autres :"). */
   autres?: string[];
   dossierExtractedAt?: string;
+  portalDetailDeadline?: string | null;
   /** Published portal metadata block (datao "fiche du portail") — zero LLM. */
-  portalDetail?: PortalDetail;
+  portalDetail?: PortalDetail | null;
   // ── Consultation-side lifecycle + result (datao "Résultat de l'appel d'offre") ──
   lifecycleStatus: LifecycleStatus;
   lifecycleLabel: string;
@@ -97,6 +124,7 @@ export interface TenderItem {
  * PortalDetail (apps/core .../portal-detail.ts).
  */
 export interface PortalDetail {
+  objet?: string | null;
   fetchedAt?: string | null;
   buyerEntity?: string | null;
   typeAnnonce?: string | null;
@@ -104,6 +132,8 @@ export interface PortalDetail {
   modePassation?: string | null;
   location?: string | null;
   deadline?: string | null;
+  publishedAt?: string | null;
+  responseMode?: string | null;
   estimationMad?: number | null;
   cautionProvisoireMad?: number | null;
   domainesActivite?: string | null;
@@ -193,17 +223,26 @@ export function fmtDateShort(iso: string | undefined | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString('fr-MA', DATE_SHORT);
+  return d.toLocaleDateString('fr-MA', { ...DATE_SHORT, timeZone: moroccoTimeZone(d) });
 }
 
 export function fmtDateTime(iso: string | undefined | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  return `${d.toLocaleDateString('fr-MA', DATE_LONG)} à ${d.toLocaleTimeString(
+  const timeZone = moroccoTimeZone(d);
+  return `${d.toLocaleDateString('fr-MA', { ...DATE_LONG, timeZone })} à ${d.toLocaleTimeString(
     'fr-MA',
-    TIME_OPTS,
+    { ...TIME_OPTS, timeZone },
   )}`;
+}
+
+export function conflictingPortalDeadline(item: Pick<TenderItem, 'deadlineAt' | 'portalDetailDeadline' | 'portalDetail'>): Date | null {
+  const detailText = item.portalDetail?.deadline ?? item.portalDetailDeadline;
+  const listing = Date.parse(item.deadlineAt);
+  if (!detailText || !Number.isFinite(listing)) return null;
+  const detail = parsePmmpDeadline(detailText);
+  return detail && Math.floor(detail.getTime() / 60_000) !== Math.floor(listing / 60_000) ? detail : null;
 }
 
 /** Returns the URL only when it is a safe http(s) link, else undefined. */

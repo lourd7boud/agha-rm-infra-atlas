@@ -11,6 +11,14 @@ export const PROCEDURE_LABELS: Record<TenderProcedure, string> = {
   concours: 'Concours',
   negocie: 'Marché négocié',
   bons_de_commande: 'Bons de commande',
+  consultation_architecturale: 'Consultation architecturale',
+  concours_architectural: 'Concours architectural',
+  manifestation_interet: "Appel à manifestation d'intérêt",
+  preselection: "Appel d'offres avec présélection",
+  partenariat_public_prive: 'Partenariat public-privé',
+  demande_cotation: 'Demande de cotation',
+  dialogue_competitif: 'Dialogue compétitif',
+  enchere_electronique: 'Enchère électronique inversée',
 };
 
 /** Procedure chip tones — open tenders (our core business) read warm ochre. */
@@ -20,6 +28,14 @@ export const PROCEDURE_TONES: Record<TenderProcedure, string> = {
   concours: 'bg-teal-soft text-teal',
   negocie: 'bg-emerald-soft text-emerald',
   bons_de_commande: 'bg-sand text-muted',
+  consultation_architecturale: 'bg-teal-soft text-teal',
+  concours_architectural: 'bg-teal-soft text-teal',
+  manifestation_interet: 'bg-sand text-muted',
+  preselection: 'bg-ochre-soft text-ochre-deep',
+  partenariat_public_prive: 'bg-sand text-muted',
+  demande_cotation: 'bg-sand text-muted',
+  dialogue_competitif: 'bg-sand text-muted',
+  enchere_electronique: 'bg-sand text-muted',
 };
 
 export const PIPELINE_LABELS: Record<PipelineState, { label: string; classes: string }> = {

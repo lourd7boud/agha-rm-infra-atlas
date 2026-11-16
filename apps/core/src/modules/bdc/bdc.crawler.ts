@@ -7,6 +7,7 @@
 // ?page=N). On rejoue donc le postback UNE fois pour amorcer la session, puis
 // on pagine en GET simple avec le cookie jar.
 import { parseFormInputs } from '../watch/prado';
+import { nextPmmpOpening, PmmpClosedError } from '../../lib/pmmp-hours';
 import {
   parseBdcDetail,
   parseBdcListe,
@@ -102,7 +103,11 @@ export class BdcCrawler {
   private readonly timeoutMs: number;
 
   constructor(options: BdcCrawlerOptions = {}) {
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? ((...args) => {
+      const reopening = nextPmmpOpening();
+      if (reopening) throw new PmmpClosedError(reopening);
+      return fetch(...args);
+    });
     this.timeoutMs = options.timeoutMs ?? 30_000;
   }
 
@@ -164,7 +169,8 @@ export class BdcCrawler {
       try {
         const html = await client.get(`${BDC_LISTE}show/${portalId}`);
         out.set(portalId, parseBdcDetail(html));
-      } catch {
+      } catch (error) {
+        if (error instanceof PmmpClosedError) break;
         // On saute un détail en erreur; le prochain run le retentera.
       }
     }

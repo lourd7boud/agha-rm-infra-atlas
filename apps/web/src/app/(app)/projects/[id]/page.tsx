@@ -12,6 +12,7 @@ import {
 import { ApercuTab } from './btp/ApercuTab';
 import { JourneeTab } from './btp/JourneeTab';
 import { ProductionTab } from './btp/ProductionTab';
+import { ProjectJourney } from './btp/ProjectJourney';
 import { BordereauTab, DecomptesTab, ExportTab, MetresTab } from './btp/ExecutionTabs';
 import { RevisionTab } from './btp/RevisionTab';
 import { AvenantsTab, OdsTab, PenalitesTab, ValidationsTab } from './btp/RegistresTabs';
@@ -226,6 +227,8 @@ export default async function ProjectDetailPage({
           {savedMessage}
         </div>
       )}
+
+      <ProjectJourney project={project} />
 
       {/* Sections: Administratif (bureau) / Terrain (chantier) */}
       <div className="mt-6 inline-flex rounded-xl border border-line bg-paper-2 p-1 shadow-sm">

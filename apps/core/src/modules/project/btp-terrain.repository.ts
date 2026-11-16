@@ -78,6 +78,7 @@ export interface AttachementRecord {
   id: string;
   projectId: string;
   date: Date;
+  isExecutionDate: boolean;
   ligneId: string;
   numeroPrix: string | null;
   designation: string;
@@ -257,6 +258,7 @@ function mapAttachement(r: typeof chantierAttachements.$inferSelect): Attachemen
     id: r.id,
     projectId: r.projectId,
     date: r.date,
+    isExecutionDate: r.isExecutionDate,
     ligneId: r.ligneId,
     numeroPrix: r.numeroPrix,
     designation: r.designation,
@@ -464,6 +466,7 @@ export class DrizzleBtpTerrainRepository implements BtpTerrainRepository {
       .values({
         projectId: input.projectId,
         date: input.date,
+        isExecutionDate: input.isExecutionDate,
         ligneId: input.ligneId,
         numeroPrix: input.numeroPrix,
         designation: input.designation,

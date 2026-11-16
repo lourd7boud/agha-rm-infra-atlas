@@ -4,18 +4,16 @@ import { parseFormInputs } from '../watch/prado';
 /**
  * Authenticated session layer for marchespublics.gov.ma (Atexo MPE / PRADO).
  *
- * Login is the ONLY write the portal sees — everything afterwards is a polite,
- * read-only GET carrying the captured session cookie. The form has no CAPTCHA
- * and no 2FA: it is a plain PRADO postback. We replay every parsed hidden input
- * verbatim (PRADO_PAGESTATE et al.), set the two credential fields and the
- * postback target for the authentication image button, then POST urlencoded.
+ * The read-only harvests use authedFetch. A caller explicitly authorized to
+ * withdraw a DCE can use authenticatedTransport for its PRADO postbacks and ZIP
+ * response. Both paths keep the portal session cookie inside this client.
  *
  * Success/failure is detected by content: an authenticated response no longer
  * contains the login prompt "Par login et mot de passe" and gains a
  * "Déconnexion" link. A later authed GET that comes back as the login form is
  * the session-expiry signal — we re-login once and retry.
  *
- * The password is a secret: it is never logged and is redacted from any error.
+ * Login errors contain neither credentials nor response content.
  */
 
 const LOGIN_PAGE_PATH = 'index.php?page=entreprise.EntrepriseHome';
@@ -79,13 +77,30 @@ export class PortalAuthSession {
   private readonly password: string;
   private readonly fetchImpl: typeof fetch;
   private readonly baseUrl: string;
+  private readonly origin: string;
   private cookie: string | null = null;
+  private loginGeneration = 0;
+  private loginInFlight: Promise<string> | null = null;
 
   constructor(options: PortalAuthSessionOptions) {
     this.login = options.login;
     this.password = options.password;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
+    this.origin = new URL(this.baseUrl).origin;
+  }
+
+  /** Binary-capable same-origin transport for an explicitly authorized flow.
+   * Redirects are returned to the caller. A postback is never replayed. */
+  async authenticatedTransport(): Promise<typeof fetch> {
+    await this.ensureCookie();
+    return async (input, init) => {
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      headers.set('Cookie', this.cookie ?? '');
+      const response = await this.request(input, { ...init, headers });
+      if (response.status < 400) this.mergeSessionCookies(response);
+      return response;
+    };
   }
 
   /**
@@ -98,18 +113,29 @@ export class PortalAuthSession {
     // this session authenticated against. Neutralises an env-injected off-origin
     // URL (e.g. a tampered MES_CAUTIONS_URL) from exfiltrating the cookie.
     this.assertSameOrigin(url);
-    if (!this.cookie) {
-      this.cookie = await this.authenticate();
-    }
-    const html = await this.get(url, this.cookie);
+    await this.ensureCookie();
+    const generation = this.loginGeneration;
+    const html = await this.get(url);
     if (!isLoginForm(html)) return html;
     // Session expired: re-authenticate once, then retry.
-    this.cookie = await this.authenticate();
-    const retried = await this.get(url, this.cookie);
+    if (this.loginGeneration === generation) this.cookie = null;
+    await this.ensureCookie();
+    const retried = await this.get(url);
     if (isLoginForm(retried)) {
       throw new Error('Portal session expired and re-login did not restore it');
     }
     return retried;
+  }
+
+  private async ensureCookie(): Promise<string> {
+    if (this.cookie) return this.cookie;
+    if (this.loginInFlight) return this.loginInFlight;
+    this.loginInFlight = this.authenticate();
+    try {
+      this.cookie = await this.loginInFlight;
+      this.loginGeneration += 1;
+      return this.cookie;
+    } finally { this.loginInFlight = null; }
   }
 
   /**
@@ -120,10 +146,13 @@ export class PortalAuthSession {
   private async authenticate(): Promise<string> {
     const loginUrl = new URL(LOGIN_PAGE_PATH, this.baseUrl).toString();
 
-    const formRes = await this.fetchImpl(loginUrl, {
+    const formRes = await this.request(loginUrl, {
       headers: { 'User-Agent': PORTAL_UA, Accept: 'text/html' },
-      signal: AbortSignal.timeout(PORTAL_TIMEOUT),
     });
+    if (!formRes.ok) {
+      await formRes.body?.cancel().catch(() => {});
+      throw new Error(`Portal login form unavailable: HTTP ${formRes.status}`);
+    }
     const getCookie = cookieHeader(formRes.headers.getSetCookie());
     const html = await formRes.text();
 
@@ -137,7 +166,7 @@ export class PortalAuthSession {
     body.set(`${AUTH_BUTTON}.x`, '1');
     body.set(`${AUTH_BUTTON}.y`, '1');
 
-    const postRes = await this.fetchImpl(loginUrl, {
+    const postRes = await this.request(loginUrl, {
       method: 'POST',
       headers: {
         'User-Agent': PORTAL_UA,
@@ -154,8 +183,6 @@ export class PortalAuthSession {
       // marker gate throws. Following manually with the merged cookies matches
       // what a browser (or curl -b/-c) does and is how the live P1 probe
       // authenticated from the same VPS.
-      redirect: 'manual',
-      signal: AbortSignal.timeout(PORTAL_TIMEOUT),
     });
 
     // Merge the GET cookie (PHPSESSID captured on the form fetch) with any
@@ -174,22 +201,20 @@ export class PortalAuthSession {
     let sessionCookie: string;
 
     if (postRes.status >= 300 && postRes.status < 400) {
-      const location = postRes.headers.get('location');
-      if (!location) {
-        throw new Error(
-          `Portal login redirect missing Location for "${this.login}"`,
-        );
-      }
-      const redirectUrl = new URL(location, loginUrl).toString();
-      const redirectRes = await this.fetchImpl(redirectUrl, {
+      const redirectUrl = this.redirectTarget(postRes, loginUrl);
+      await postRes.body?.cancel().catch(() => {});
+      const redirectRes = await this.request(redirectUrl, {
         headers: {
           'User-Agent': PORTAL_UA,
           Accept: 'text/html',
           Referer: loginUrl,
           Cookie: mergedCookie,
         },
-        signal: AbortSignal.timeout(PORTAL_TIMEOUT),
       });
+      if (!redirectRes.ok) {
+        await redirectRes.body?.cancel().catch(() => {});
+        throw new Error(`Portal login redirect failed: HTTP ${redirectRes.status}`);
+      }
       sessionCookie = mergeCookieHeaders(
         mergedCookie,
         redirectRes.headers.getSetCookie(),
@@ -198,37 +223,80 @@ export class PortalAuthSession {
     } else {
       // Rare non-redirect path — some Atexo instances render the authed page
       // inline instead of 302ing. Keep the original single-shot behaviour.
+      if (!postRes.ok) {
+        await postRes.body?.cancel().catch(() => {});
+        throw new Error(`Portal login failed: HTTP ${postRes.status}`);
+      }
       sessionCookie = mergedCookie;
       authedHtml = await postRes.text();
     }
 
-    if (isLoginForm(authedHtml) || !authedHtml.includes(AUTHED_MARKER)) {
-      // Never echo the password; identify the account only by login.
-      throw new Error(`Portal login failed for "${this.login}"`);
+    if (!sessionCookie || isLoginForm(authedHtml) || !authedHtml.includes(AUTHED_MARKER)) {
+      throw new Error('Portal login failed');
     }
     return sessionCookie;
   }
 
-  private async get(url: string, cookie: string): Promise<string> {
-    const res = await this.fetchImpl(url, {
-      headers: {
-        'User-Agent': PORTAL_UA,
-        Accept: 'text/html',
-        ...(cookie ? { Cookie: cookie } : {}),
-      },
-      signal: AbortSignal.timeout(PORTAL_TIMEOUT),
-    });
-    if (!res.ok) throw new Error(`Portal fetch failed: HTTP ${res.status}`);
-    return res.text();
+  private async get(url: string): Promise<string> {
+    for (let redirects = 0; redirects <= 3; redirects += 1) {
+      const response = await this.request(url, {
+        headers: {
+          'User-Agent': PORTAL_UA,
+          Accept: 'text/html',
+          ...(this.cookie ? { Cookie: this.cookie } : {}),
+        },
+      });
+      if (response.ok) {
+        const html = await response.text();
+        if (!isLoginForm(html)) this.mergeSessionCookies(response);
+        return html;
+      }
+      if (response.status >= 300 && response.status < 400) this.mergeSessionCookies(response);
+      await response.body?.cancel().catch(() => {});
+      if (response.status < 300 || response.status >= 400) {
+        throw new Error(`Portal fetch failed: HTTP ${response.status}`);
+      }
+      url = this.redirectTarget(response, url);
+    }
+    throw new Error('Portal redirect limit exceeded');
   }
 
-  /** Reject any URL whose host differs from the authenticated origin. */
-  private assertSameOrigin(url: string): void {
-    if (new URL(url).host !== new URL(this.baseUrl).host) {
-      throw new Error(
-        `PortalAuthSession refuses to fetch off-origin (${new URL(url).host})`,
-      );
+  private mergeSessionCookies(response: Response): void {
+    this.cookie = mergeCookieHeaders(this.cookie ?? '', response.headers.getSetCookie());
+  }
+
+  private async request(input: URL | Request | string, init?: RequestInit): Promise<Response> {
+    const url = input instanceof Request ? input.url : String(input);
+    this.assertSameOrigin(url);
+    const response = await this.fetchImpl(input, {
+      ...init,
+      redirect: 'manual',
+      signal: init?.signal ?? (input instanceof Request ? input.signal : AbortSignal.timeout(PORTAL_TIMEOUT)),
+    });
+    if (response.status >= 300 && response.status < 400 && response.status !== 304) {
+      try { this.redirectTarget(response, url); }
+      catch (error) {
+        await response.body?.cancel().catch(() => {});
+        throw error;
+      }
     }
+    return response;
+  }
+
+  private redirectTarget(response: Response, from: string): string {
+    const location = response.headers.get('location');
+    if (!location) throw new Error('Portal redirect missing Location');
+    return this.assertSameOrigin(location, from).href;
+  }
+
+  private assertSameOrigin(value: string, from?: string): URL {
+    let url: URL;
+    try { url = new URL(value, from); }
+    catch { throw new Error('Portal request refused: off-origin or invalid URL'); }
+    if (url.origin !== this.origin || url.username || url.password || !['https:', 'http:'].includes(url.protocol)) {
+      throw new Error('Portal request refused: off-origin or invalid URL');
+    }
+    return url;
   }
 }
 

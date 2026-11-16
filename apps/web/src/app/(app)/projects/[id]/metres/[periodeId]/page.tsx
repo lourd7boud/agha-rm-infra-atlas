@@ -45,7 +45,7 @@ export default async function MetreEditorPage({
             )}
           </h1>
           <p className="mt-2 text-xs text-muted">
-            {periode.libelle ?? `Période ${periode.numero}`} · {fmtDate(periode.dateDebut)} →{' '}
+            {periode.libelle ?? `Période ${periode.numero}`} · Depuis le {fmtDate(periode.dateDebut)} au{' '}
             {fmtDate(periode.dateFin)} · TVA {periode.tauxTva}% · retenue {periode.tauxRetenue}%
           </p>
         </div>
@@ -80,17 +80,17 @@ export default async function MetreEditorPage({
             </div>
           </details>
           <Link
-            href={`/projects/${id}?tab=decomptes`}
+            href={context.decompteId ? `/projects/${id}/decomptes/${context.decompteId}` : `/projects/${id}?tab=decomptes`}
             className="rounded-lg bg-cyan-soft px-4 py-2.5 text-xs font-semibold text-cyan transition hover:bg-cyan hover:text-paper"
           >
-            Voir les décomptes →
+            {context.decompteId ? `Voir le décompte n°${periode.numero}` : 'Voir les décomptes'} →
           </Link>
         </div>
       </div>
 
       {saved && (
         <div className="mt-4 rounded-xl border border-emerald-soft bg-emerald-soft/20 px-5 py-3 text-sm font-medium text-emerald">
-          Métré enregistré — le décompte n°{periode.numero} a été régénéré automatiquement.
+          Métré enregistré. Le décompte n°{periode.numero} reprend ses quantités et sa date d’arrêté.
         </div>
       )}
       {errored && (
@@ -106,7 +106,7 @@ export default async function MetreEditorPage({
       {/* Réglages période */}
       <details className="group mt-5 rounded-xl border border-line bg-paper-2">
         <summary className="flex cursor-pointer select-none list-none items-center justify-between gap-3 px-4 py-3.5 text-xs text-muted">
-          <span><span className="mr-2 font-semibold text-ink-2">Paramètres de la période</span><span className="hidden sm:inline">Dates, TVA, retenue et décompte final</span></span><span className="font-semibold text-cyan group-open:hidden">Modifier ▾</span><span className="hidden font-semibold text-cyan group-open:inline">Fermer ▴</span>
+          <span><span className="mr-2 font-semibold text-ink-2">Paramètres du métré</span><span className="hidden sm:inline">Date d’arrêté, TVA, retenue et décompte final</span></span><span className="font-semibold text-cyan group-open:hidden">Modifier ▾</span><span className="hidden font-semibold text-cyan group-open:inline">Fermer ▴</span>
         </summary>
         <form
           action={patchPeriode}
@@ -124,17 +124,11 @@ export default async function MetreEditorPage({
               className="mt-1 block rounded-lg border border-line bg-paper px-3 py-2 text-sm"
             />
           </label>
+          <div className="pb-2 text-xs text-muted">
+            Depuis le <span className="font-mono text-ink-2">{fmtDate(periode.dateDebut)}</span>
+          </div>
           <label className="text-[11px] font-semibold uppercase tracking-widest text-faint">
-            Du
-            <input
-              type="date"
-              name="dateDebut"
-              defaultValue={periode.dateDebut?.slice(0, 10) ?? ''}
-              className="mt-1 block rounded-lg border border-line bg-paper px-3 py-2 text-sm"
-            />
-          </label>
-          <label className="text-[11px] font-semibold uppercase tracking-widest text-faint">
-            Au
+            Travaux arrêtés au
             <input
               type="date"
               name="dateFin"
@@ -169,7 +163,7 @@ export default async function MetreEditorPage({
               defaultChecked={periode.isDecompteDernier}
               className="accent-emerald"
             />
-            Décompte et dernier (active la révision)
+            Décompte et dernier
           </label>
           <button className="rounded-lg bg-cyan px-4 py-2 text-xs font-bold text-paper transition hover:opacity-90">
             Enregistrer les réglages

@@ -10,15 +10,18 @@ import {
   fmtDate,
   fmtMad,
   fmtMadPrecise,
+  fmtQty,
   ODS_ACTIONS_NEXT,
   ODS_STATUS_BADGES,
   ODS_TYPE_LABELS,
   PENALITE_STATUS_BADGES,
   type ApprovalRequest,
   type AvenantsView,
+  type Bordereau,
   type BtpProjectDetail,
   type Ods,
   type PenalitesView,
+  type RevisionFormula,
 } from '@/lib/btp';
 import {
   actionOds,
@@ -31,10 +34,13 @@ import {
   deleteAvenant,
   deleteOds,
   libererRetenue,
+  loadAvenantBordereau,
   transitionAvenant,
   transitionCaution,
   transitionPenalite,
+  updateAvenant,
 } from '../actions';
+import { AvenantForm } from './AvenantForm';
 
 const inputClass =
   'w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none placeholder:text-faint focus:border-cyan';
@@ -51,7 +57,14 @@ function Badge({ spec }: { spec: { label: string; classes: string } }) {
 // ─── Avenants ────────────────────────────────────────────────────────────────
 
 export async function AvenantsTab({ project }: { project: BtpProjectDetail }) {
-  const { avenants, summary } = await apiGet<AvenantsView>(`/btp/projects/${project.id}/avenants`);
+  const [{ avenants, summary }, bordereau, formulas] = await Promise.all([
+    apiGet<AvenantsView>(`/btp/projects/${project.id}/avenants`),
+    apiGet<Bordereau | null>(`/btp/projects/${project.id}/bordereau`).catch(() => undefined),
+    apiGet<RevisionFormula[]>('/btp/revision/formulas').catch(() => undefined),
+  ]);
+  const lines = bordereau === undefined ? undefined : bordereau?.lignes ?? [];
+  const byLine = new Map(lines?.map((line) => [line.id ?? String(line.numero), line]));
+  const byFormula = new Map(formulas?.map((formula) => [formula.id, formula.name]));
   return (
     <div className="space-y-6">
       <div className="grid gap-3 sm:grid-cols-4">
@@ -82,6 +95,7 @@ export async function AvenantsTab({ project }: { project: BtpProjectDetail }) {
         ) : (
           <div className="divide-y divide-line">
             {avenants.map((avenant) => {
+              const impact = avenant.bordereauImpact;
               const badge = AVENANT_STATUS_BADGES[avenant.statut] ?? {
                 label: avenant.statut,
                 classes: 'bg-sand text-muted',
@@ -119,7 +133,36 @@ export async function AvenantsTab({ project }: { project: BtpProjectDetail }) {
                       ? `approuvé le ${fmtDate(avenant.dateApprobation)}`
                       : ''}
                   </p>
+                  {impact && (
+                    <details className="mt-3 rounded-lg border border-line px-3 py-2 text-xs text-muted">
+                      <summary className="cursor-pointer font-semibold text-ink">
+                        {impact.quantities.length + impact.additions.length} postes · Effet le {fmtDate(impact.dateEffet)} · TVA {impact.tauxTva} %
+                      </summary>
+                      <ul className="mt-2 space-y-1.5 break-words">
+                        {impact.quantities.map((item) => {
+                          const line = byLine.get(item.ligneId);
+                          return <li key={item.ligneId}>
+                            <strong>{line ? `N°${line.numero} · ${line.designation}` : 'Ligne historique du bordereau'}</strong>
+                            {' · '}{fmtQty(item.ancienneQuantite)} → {fmtQty(item.nouvelleQuantite)} {line?.unite}
+                          </li>;
+                        })}
+                        {impact.additions.map((item) => <li key={item.numero}>
+                          <strong>N°{item.numero} · {item.designation}</strong>
+                          {' · '}{fmtQty(item.quantite)} {item.unite} × {fmtMadPrecise(item.prixUnitaire)} HT
+                          {' · '}{item.origine === 'negocie' ? 'Prix négocié' : 'Conditions du marché'}
+                          {item.formuleId && ` · ${byFormula.get(item.formuleId) ?? 'Formule propre au prix'}`}
+                        </li>)}
+                      </ul>
+                      {impact.dateSignatureTitulaire && <p className="mt-2">Signé par le titulaire le {fmtDate(impact.dateSignatureTitulaire)}.</p>}
+                    </details>
+                  )}
                   <div className="mt-2 flex flex-wrap items-center gap-2">
+                    {impact && avenant.statut === 'rejete' && <form action={transitionAvenant}>
+                      <input type="hidden" name="projectId" value={project.id} />
+                      <input type="hidden" name="avenantId" value={avenant.id} />
+                      <input type="hidden" name="to" value="brouillon" />
+                      <button className="rounded-lg bg-cyan-soft px-3 py-1 text-[11px] font-bold text-cyan">Reprendre en brouillon</button>
+                    </form>}
                     {avenant.statut === 'brouillon' && (
                       <form action={transitionAvenant}>
                         <input type="hidden" name="projectId" value={project.id} />
@@ -132,10 +175,14 @@ export async function AvenantsTab({ project }: { project: BtpProjectDetail }) {
                     )}
                     {avenant.statut === 'en_attente' && (
                       <>
-                        <form action={transitionAvenant}>
+                        <form action={transitionAvenant} className="flex flex-wrap items-end gap-2">
                           <input type="hidden" name="projectId" value={project.id} />
                           <input type="hidden" name="avenantId" value={avenant.id} />
                           <input type="hidden" name="to" value="approuve" />
+                          {impact && <label className="block text-xs font-semibold text-muted">
+                            Date d’approbation de la pièce signée *
+                            <input name="dateApprobation" type="date" required className={`${inputClass} mt-1`} />
+                          </label>}
                           <button className="rounded-lg bg-emerald-soft px-3 py-1 text-[11px] font-bold text-emerald">
                             Approuver (direction)
                           </button>
@@ -150,7 +197,7 @@ export async function AvenantsTab({ project }: { project: BtpProjectDetail }) {
                         </form>
                       </>
                     )}
-                    {avenant.statut !== 'approuve' && (
+                    {(impact ? avenant.statut === 'brouillon' : avenant.statut !== 'approuve') && (
                       <form action={deleteAvenant}>
                         <input type="hidden" name="projectId" value={project.id} />
                         <input type="hidden" name="avenantId" value={avenant.id} />
@@ -160,63 +207,17 @@ export async function AvenantsTab({ project }: { project: BtpProjectDetail }) {
                       </form>
                     )}
                   </div>
+                  {impact && avenant.statut === 'brouillon' && <details className="mt-3 rounded-lg border border-line">
+                    <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-cyan">Modifier les postes enregistrés</summary>
+                    <AvenantForm key={JSON.stringify(avenant)} projectId={project.id} formulas={formulas} draft={avenant}
+                      createAction={updateAvenant.bind(null, avenant.id)} loadBordereauAction={loadAvenantBordereau} />
+                  </details>}
                 </div>
               );
             })}
           </div>
         )}
-        <form
-          action={createAvenant}
-          className="grid gap-3 border-t border-line px-5 py-4 sm:grid-cols-2"
-        >
-          <input type="hidden" name="projectId" value={project.id} />
-          <div className="sm:col-span-2">
-            <label className={labelClass}>
-              Objet de l'avenant *
-              <input name="objet" required minLength={3} className={`${inputClass} mt-1`} />
-            </label>
-          </div>
-          <label className={labelClass}>
-            Type
-            <select name="typeAvenant" className={`${inputClass} mt-1`}>
-              <option value="modification">Modification</option>
-              <option value="prix_nouveaux">Prix nouveaux</option>
-              <option value="mixte">Mixte</option>
-              <option value="diminution">Diminution</option>
-            </select>
-          </label>
-          <label className={labelClass}>
-            Référence
-            <input name="reference" className={`${inputClass} mt-1`} />
-          </label>
-          <label className={labelClass}>
-            Date de l'avenant
-            <input type="date" name="dateAvenant" className={`${inputClass} mt-1`} />
-          </label>
-          <label className={labelClass}>
-            Montant (± MAD TTC)
-            <input
-              type="number"
-              step="0.01"
-              name="montantDeltaMad"
-              className={`${inputClass} mt-1 font-mono`}
-            />
-          </label>
-          <label className={labelClass}>
-            Délai supplémentaire (mois)
-            <input
-              type="number"
-              step="0.5"
-              name="delaiDeltaMois"
-              className={`${inputClass} mt-1 font-mono`}
-            />
-          </label>
-          <div className="flex items-end">
-            <button className="rounded-lg bg-cyan px-4 py-2 text-xs font-bold text-paper transition hover:opacity-90">
-              + Créer l'avenant
-            </button>
-          </div>
-        </form>
+        <AvenantForm projectId={project.id} formulas={formulas} createAction={createAvenant} loadBordereauAction={loadAvenantBordereau} />
       </section>
     </div>
   );
@@ -227,6 +228,8 @@ export async function AvenantsTab({ project }: { project: BtpProjectDetail }) {
 const ODS_FLOW = ['brouillon', 'emis', 'notifie', 'accuse', 'execute', 'cloture'] as const;
 
 export async function OdsTab({ project }: { project: BtpProjectDetail }) {
+  const openStops = project.arrets.filter((stop) => !stop.dateReprise);
+  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Africa/Casablanca' }).format(new Date());
   const odsList = await apiGet<Ods[]>(`/btp/projects/${project.id}/ods`);
   return (
     <div className="space-y-6">
@@ -288,10 +291,39 @@ export async function OdsTab({ project }: { project: BtpProjectDetail }) {
                   )}
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     {next && (
-                      <form action={actionOds}>
+                      <form action={actionOds} className="flex flex-wrap items-end gap-2">
                         <input type="hidden" name="projectId" value={project.id} />
                         <input type="hidden" name="odsId" value={ods.id} />
                         <input type="hidden" name="action" value={next.action} />
+                        {next.action === 'notify' && (
+                          <>
+                            <label className={labelClass}>Notifié le
+                              <input type="date" name="dateNotification" required defaultValue={today} className={`${inputClass} mt-1`} />
+                            </label>
+                            {!ods.dateEffet && ['commencement', 'arret', 'reprise'].includes(ods.type) && (
+                              <label className={labelClass}>Date d’effet
+                                <input type="date" name="dateEffet" required className={`${inputClass} mt-1`} />
+                              </label>
+                            )}
+                            {ods.type === 'arret' && !ods.arretScope && (
+                              <label className={labelClass}>Portée de l’arrêt
+                                <select name="arretScope" required className={`${inputClass} mt-1`}>
+                                  <option value="">Choisir</option><option value="total">Total</option><option value="partiel">Partiel</option>
+                                </select>
+                              </label>
+                            )}
+                            {ods.type === 'reprise' && !ods.repriseArretId && openStops.length > 1 && (
+                              <label className={labelClass}>Arrêt à clôturer
+                                <select name="repriseArretId" required className={`${inputClass} mt-1`}>
+                                  <option value="">Choisir</option>
+                                  {openStops.filter((stop) => stop.id).map((stop) =>
+                                    <option key={stop.id} value={stop.id}>{fmtDate(stop.dateArret)} {stop.motif}</option>
+                                  )}
+                                </select>
+                              </label>
+                            )}
+                          </>
+                        )}
                         <button className="rounded-lg bg-cyan-soft px-3 py-1 text-[11px] font-bold text-cyan">
                           {next.label} →
                         </button>
@@ -317,6 +349,12 @@ export async function OdsTab({ project }: { project: BtpProjectDetail }) {
                       </form>
                     )}
                   </div>
+                  {ods.calendarEffectAppliedAt && (
+                    <p className="mt-2 text-xs text-muted">
+                      {ods.arretScope === 'partiel' ? 'Arrêt partiel enregistré.' : 'Calendrier du marché mis à jour.'}
+                      {ods.statut === 'annule' && ' Historique de notification conservé.'}
+                    </p>
+                  )}
                 </div>
               );
             })}
@@ -350,6 +388,12 @@ export async function OdsTab({ project }: { project: BtpProjectDetail }) {
           <label className={labelClass}>
             Date d'effet
             <input type="date" name="dateEffet" className={`${inputClass} mt-1`} />
+          </label>
+          <label className={labelClass}>
+            Portée si arrêt
+            <select name="arretScope" className={`${inputClass} mt-1`}>
+              <option value="">Sans objet</option><option value="total">Total</option><option value="partiel">Partiel</option>
+            </select>
           </label>
           <label className={labelClass}>
             Impact délai (jours)

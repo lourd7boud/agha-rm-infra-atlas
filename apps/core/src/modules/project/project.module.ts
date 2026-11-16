@@ -18,6 +18,7 @@ import { FinanceModule } from '../finance/finance.module';
 import { PeopleModule } from '../people/people.module';
 import { StockModule } from '../stock/stock.module';
 import { buildDecompte } from './decompte.domain';
+import { toHttp } from './btp-http.helpers';
 import { ProjectCostService } from './project-cost.service';
 import { ProjectRepositoryModule } from './project-repository.module';
 import {
@@ -213,10 +214,8 @@ export class ProjectController {
     const existing = await this.repository.listSituations(id);
     const last = existing[existing.length - 1];
     // The décompte ceiling includes approved avenants (contract amendments).
-    const avenants = await this.repository.listAvenants(id);
-    const plafond =
-      record.montantMarcheMad +
-      avenants.reduce((sum, a) => sum + a.montantDeltaMad, 0);
+    const plafond = await this.repository.getContractAmount(id);
+    if (plafond == null) throw new NotFoundException(`Marché introuvable: ${id}`);
     let decompte;
     try {
       decompte = buildDecompte({
@@ -262,15 +261,17 @@ export class ProjectController {
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     await this.findOr404(id);
     const existing = await this.repository.listAvenants(id);
-    const created = await this.repository.createAvenant({
-      projectId: id,
-      numero: (existing[existing.length - 1]?.numero ?? 0) + 1,
-      ...parsed.data,
-    });
-    new Logger('Project').log(
-      `avenant.approved n°${created.numero} delta=${created.montantDeltaMad} MAD`,
-    );
-    return created;
+    try {
+      const created = await this.repository.createAvenant({
+        projectId: id,
+        numero: (existing[existing.length - 1]?.numero ?? 0) + 1,
+        ...parsed.data,
+      });
+      new Logger('Project').log(`avenant.approved n°${created.numero} delta=${created.montantDeltaMad} MAD`);
+      return created;
+    } catch (error) {
+      toHttp(error);
+    }
   }
 
   @Roles('travaux', 'direction', 'finance', 'marches', 'admin-si')

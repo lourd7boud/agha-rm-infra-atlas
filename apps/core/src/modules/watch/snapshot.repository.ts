@@ -26,6 +26,7 @@ export interface SourceCoverage {
   lastFetchAt: Date | null;
   lastChangeAt: Date | null;
   lastParseOk: boolean | null;
+  lastSuccessAt: Date | null;
 }
 
 export const SNAPSHOT_REPOSITORY = Symbol('SNAPSHOT_REPOSITORY');
@@ -114,6 +115,7 @@ export class DrizzleSnapshotRepository implements SnapshotRepository {
         lastChangeAt: sql<
           string | null
         >`max(${portalSnapshots.fetchedAt}) filter (where ${portalSnapshots.changed})`,
+        lastSuccessAt: sql<string | null>`max(${portalSnapshots.fetchedAt}) filter (where ${portalSnapshots.parsedOk})`,
         lastParseOk: sql<
           boolean | null
         >`(array_agg(${portalSnapshots.parsedOk} order by ${portalSnapshots.fetchedAt} desc))[1]`,
@@ -128,6 +130,7 @@ export class DrizzleSnapshotRepository implements SnapshotRepository {
       lastFetchAt: row.lastFetchAt ? new Date(row.lastFetchAt) : null,
       lastChangeAt: row.lastChangeAt ? new Date(row.lastChangeAt) : null,
       lastParseOk: row.lastParseOk,
+      lastSuccessAt: row.lastSuccessAt ? new Date(row.lastSuccessAt) : null,
     }));
   }
 }
@@ -149,5 +152,6 @@ function buildCoverage(
     lastFetchAt: last?.fetchedAt ?? null,
     lastChangeAt: lastChange?.fetchedAt ?? null,
     lastParseOk: last?.parsedOk ?? null,
+    lastSuccessAt: [...sorted].reverse().find((r) => r.parsedOk)?.fetchedAt ?? null,
   };
 }

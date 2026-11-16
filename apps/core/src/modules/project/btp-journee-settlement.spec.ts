@@ -40,6 +40,8 @@ describe.skipIf(!url)('daily reference settlement (PostgreSQL)', () => {
     expect(result.payload.attendance[0]?.temporaryName).toBeNull();
     expect(result.payload.production[0]?.bpuLigneId).toBe('bpu');
     expect((await pool.query('SELECT count(*) FROM project.daily_log WHERE project_id=$1', [project])).rows[0].count).toBe('1');
+    expect((await pool.query('SELECT date::text, is_execution_date FROM project.chantier_attachement WHERE project_id=$1', [project])).rows[0])
+      .toEqual({ date: '2026-10-27', is_execution_date: true });
     expect((await pool.query('SELECT cost_snapshot_mad FROM people.work_day WHERE assignment_id=$1', [assignment])).rows[0].cost_snapshot_mad).toBe('150.000000');
     expect(result.history.at(-1)).toHaveProperty('priorPayload');
     await expect(repo.settle(project, id, 3, 'bureau', { reason: 'Retry', attendanceMapping: [], productionMapping: [] })).rejects.toThrow(/version/i);

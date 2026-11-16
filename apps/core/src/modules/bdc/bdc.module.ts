@@ -505,7 +505,11 @@ export class BdcModule implements OnModuleInit, OnModuleDestroy {
     }
     this.worker = new Worker(
       BDC_QUEUE_NAME,
-      async () => this.sync.run(),
+      async (job) => {
+        const result = await this.sync.run();
+        if (result.portalReopensAt && result.pages === 0) job.opts.removeOnComplete = true;
+        return result;
+      },
       { connection: redisConnection(), lockDuration: 15 * 60 * 1000 },
     );
     this.worker.on('failed', (job, error) =>

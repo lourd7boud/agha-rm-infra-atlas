@@ -6,6 +6,13 @@ import * as SourceViewerModule from './SourceFileViewer';
 import { SourceFileViewer } from './SourceFileViewer';
 
 describe('tender source split view', () => {
+  it('keeps missing and partial file reading visibly distinct from complete document review', () => {
+    expect(SourceViewerModule.dceReadabilityLabel(undefined)).toBe('Lecture non vérifiée');
+    expect(SourceViewerModule.dceReadabilityLabel('no_readable_text')).toContain('Sans texte exploitable');
+    expect(SourceViewerModule.dceReadabilityLabel('truncated')).toContain('partiel');
+    expect(SourceViewerModule.dceReadabilityLabel('readable')).toContain('pages à vérifier');
+    expect(SourceViewerModule.dceReadabilityLabel('failed')).toContain('Échec');
+  });
   it('routes Office documents to the authenticated local preview service', () => {
     const previewUrl = (
       SourceViewerModule as typeof SourceViewerModule & {

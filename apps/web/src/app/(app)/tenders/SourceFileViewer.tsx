@@ -9,6 +9,8 @@ import {
 } from 'react';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import type { DceFileKind } from '@/lib/dce-file-kind';
+import { DceFileCheck } from './DceFileCheck';
+import { DceRevisionCheck } from './DceRevisionCheck';
 
 /**
  * datao's "Voir le fichier source": split overlay that renders the selected DCE
@@ -30,11 +32,26 @@ interface DceFile {
   label: string;
   kind: DceFileKind;
   sizeBytes: number;
+  readability?: 'readable' | 'no_readable_text' | 'truncated' | 'skipped_budget' | 'skipped_size' | 'skipped_resource_limit' | 'failed';
+}
+
+export function dceReadabilityLabel(state: DceFile['readability']): string {
+  switch (state) {
+    case 'readable': return 'Texte disponible · pages à vérifier';
+    case 'no_readable_text': return 'Sans texte exploitable · lecture à compléter';
+    case 'truncated': return 'Texte partiel · limite atteinte';
+    case 'skipped_budget': return 'Non lu · limite de texte atteinte';
+    case 'skipped_size': return 'Non lu · fichier trop volumineux';
+    case 'skipped_resource_limit': return 'Non lu · limite de traitement atteinte';
+    case 'failed': return 'Échec de lecture';
+    default: return 'Lecture non vérifiée';
+  }
 }
 
 interface Props {
   tenderId: string;
   onClose: () => void;
+  onRevisionChecked?: () => void;
   mode?: 'modal' | 'side';
   bordereauOnly?: boolean;
   drawerWidth?: number;
@@ -119,6 +136,7 @@ function pickBordereau(files: ReadonlyArray<DceFile>): DceFile | null {
 export function SourceFileViewer({
   tenderId,
   onClose,
+  onRevisionChecked,
   mode = 'modal',
   bordereauOnly = false,
   drawerWidth = 640,
@@ -128,6 +146,7 @@ export function SourceFileViewer({
   const [files, setFiles] = useState<DceFile[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [active, setActive] = useState<DceFile | null>(null);
+  const [revisionReload, setRevisionReload] = useState(0);
   // true when no standalone bordereau/BPU/Excel file exists and we fell back to
   // the CPS (which embeds the bordereau des prix as an in-document table).
   const [bordereauInCps, setBordereauInCps] = useState(false);
@@ -225,6 +244,9 @@ export function SourceFileViewer({
 
   useEffect(() => {
     let cancelled = false;
+    setFiles(null);
+    setActive(null);
+    setListError(null);
     void (async () => {
       try {
         const res = await fetch(`/api/tenders/${encodeURIComponent(tenderId)}/files`, { cache: 'no-store' });
@@ -256,7 +278,7 @@ export function SourceFileViewer({
     return () => {
       cancelled = true;
     };
-  }, [tenderId, bordereauOnly]);
+  }, [tenderId, bordereauOnly, revisionReload]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -339,6 +361,8 @@ export function SourceFileViewer({
             </button>
           </div>
         </div>
+        <DceRevisionCheck tenderId={tenderId} onChecked={onRevisionChecked} onUpdated={() => setRevisionReload(value => value + 1)} />
+        {active?.kind === 'pdf' && <DceFileCheck key={`${tenderId}/${active.name}/${revisionReload}`} tenderId={tenderId} name={active.name} />}
         <div className="min-h-0 flex-1 overflow-auto">
           {listError ? (
             <p className="p-4 text-sm text-rose">
@@ -417,6 +441,7 @@ export function SourceFileViewer({
                     <span className="text-xs text-faint">
                       {f.kind.toUpperCase()} · {fmtSize(f.sizeBytes)}
                     </span>
+                    <span className="mt-1 block text-xs text-ink-2">{dceReadabilityLabel(f.readability)}</span>
                   </span>
                 </button>
               </li>
@@ -427,7 +452,10 @@ export function SourceFileViewer({
 
       <section className="flex min-w-0 flex-1 flex-col bg-paper">
         <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-          <p className="truncate text-sm font-semibold text-ink">{active?.label ?? '—'}</p>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-ink">{active?.label ?? '—'}</p>
+            <p className="text-xs text-muted">Documents conservés · contrôle de lecture par fichier</p>
+          </div>
           {active && (
             <a
               href={`/api/tenders/${encodeURIComponent(tenderId)}/files/raw?name=${encodeURIComponent(active.name)}`}
@@ -438,6 +466,8 @@ export function SourceFileViewer({
             </a>
           )}
         </div>
+        <DceRevisionCheck tenderId={tenderId} onChecked={onRevisionChecked} onUpdated={() => setRevisionReload(value => value + 1)} />
+        {active?.kind === 'pdf' && <DceFileCheck key={`${tenderId}/${active.name}/${revisionReload}`} tenderId={tenderId} name={active.name} />}
         <div className="min-h-0 flex-1 overflow-auto">
           {active ? (
             <FileRender tenderId={tenderId} file={active} />

@@ -463,6 +463,69 @@
       "when": 1793203207000,
       "tag": "0065_sales_accounting_flow",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1793203208000,
+      "tag": "0066_btp_revision_workflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1793203209000,
+      "tag": "0067_btp_execution_start",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1793203210000,
+      "tag": "0068_btp_offer_reference",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1793203211000,
+      "tag": "0069_ods_calendar",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1793203212000,
+      "tag": "0070_btp_contract_amount",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1793203213000,
+      "tag": "0071_terrain_execution_date",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1793203214000,
+      "tag": "0072_avenant_bordereau_impact",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1793203215000,
+      "tag": "0073_revision_index_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1793203216000,
+      "tag": "0074_revision_posting_mode",
+      "breakpoints": true
     }
   ]
 }

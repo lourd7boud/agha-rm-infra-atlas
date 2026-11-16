@@ -2,7 +2,7 @@
 // service, pénalités/cautionsBtp/retenues and the validation circuit. Pure CRUD +
 // the status machines from btp-registres.domain; the execution chain rebuild
 // stays in btp.repository (callers re-trigger it when a change affects money).
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import {
   approvalHistory,
@@ -10,6 +10,8 @@ import {
   approvalSteps,
   avenants,
   cautionsBtp,
+  decompteRevisions,
+  decomptes,
   ordresService,
   penalites,
   projectRevisionConfig,
@@ -27,9 +29,14 @@ import {
   assertOdsTransition,
   assertPenaliteTransition,
   computePenalite,
+  withStopIds,
+  type ArretTravaux,
   type OdsAction,
 } from './btp-registres.domain';
-import type { IndexValues } from './btp-revision.domain';
+import { chantierStart, revisionDate, validateFormula, type IndexValues, type PublishedIndexes, type RevisionPostingMode } from './btp-revision.domain';
+import { applyApprovedAvenantAmount, approvedAvenant, currentContractAmount, currentContractAmountSql, DrizzleBtpExecutionRepository, listApprovedBordereauImpacts, lockBtpProject, sumApprovedAvenants, type BtpTransaction } from './btp.repository';
+import { avenantBordereauImpactSchema, storedAvenantBordereauImpactSchema, priceAvenantBordereau, type AvenantBordereauImpact, type StoredAvenantBordereauImpact } from './btp-avenant-bordereau.domain';
+import { shouldApplyMonthlyIndex } from './btp-index-sync.domain';
 
 function num(value: string | number | null | undefined): number {
   if (value === null || value === undefined) return 0;
@@ -59,6 +66,7 @@ export interface RevisionIndexRecord {
   source: string | null;
   notes: string | null;
   status: string;
+  publishedOn: string | null;
   updatedAt: Date;
 }
 
@@ -68,6 +76,9 @@ export interface RevisionConfigRecord {
   formulaId: string | null;
   baseIndexes: IndexValues;
   baseDate: Date | null;
+  contractDeadline: Date | null;
+  delayAttributable: boolean | null;
+  postingMode: RevisionPostingMode;
   isEnabled: boolean;
   notes: string | null;
 }
@@ -90,6 +101,7 @@ export interface AvenantBtpRecord {
   pourcentageVariation: number | null;
   modifications: unknown[];
   prixNouveaux: unknown[];
+  bordereauImpact: StoredAvenantBordereauImpact | null;
   observations: string | null;
   createdAt: Date;
 }
@@ -105,6 +117,9 @@ export interface OdsRecord {
   motif: string | null;
   dateEmission: Date | null;
   dateEffet: Date | null;
+  arretScope: 'total' | 'partiel' | null;
+  repriseArretId: string | null;
+  calendarEffectAppliedAt: Date | null;
   dateFin: Date | null;
   delaiJours: number | null;
   impactFinancierMad: number;
@@ -216,7 +231,7 @@ export const BTP_REGISTRES_REPOSITORY = Symbol('BTP_REGISTRES_REPOSITORY');
 
 export interface BtpRegistresRepository {
   // Révision des prix
-  listFormulas(): Promise<RevisionFormulaRecord[]>;
+  listFormulas(linkedFormulaId?: string | null): Promise<RevisionFormulaRecord[]>;
   saveFormula(input: {
     id?: string;
     name: string;
@@ -234,6 +249,7 @@ export interface BtpRegistresRepository {
       source?: string;
       notes?: string;
       status?: string;
+      publishedOn?: string;
     },
     actor: Actor,
   ): Promise<RevisionIndexRecord>;
@@ -253,8 +269,12 @@ export interface BtpRegistresRepository {
     projectId: string,
     input: {
       formulaId?: string | null;
+      formula?: { fixedPart: number; weights: Record<string, number> };
       baseIndexes?: IndexValues;
       baseDate?: Date | null;
+      contractDeadline?: Date | null;
+      delayAttributable?: boolean | null;
+      postingMode?: RevisionPostingMode;
       isEnabled?: boolean;
       notes?: string | null;
     },
@@ -274,6 +294,7 @@ export interface BtpRegistresRepository {
       delaiDeltaMois?: number;
       modifications?: unknown[];
       prixNouveaux?: unknown[];
+      bordereauImpact?: AvenantBordereauImpact | null;
       observations?: string;
     },
   ): Promise<AvenantBtpRecord>;
@@ -290,6 +311,7 @@ export interface BtpRegistresRepository {
       delaiDeltaMois: number;
       modifications: unknown[];
       prixNouveaux: unknown[];
+      bordereauImpact: AvenantBordereauImpact | null;
       observations: string;
     }>,
   ): Promise<AvenantBtpRecord | null>;
@@ -301,7 +323,7 @@ export interface BtpRegistresRepository {
   ): Promise<AvenantBtpRecord | null>;
   deleteAvenant(projectId: string, avenantId: string): Promise<boolean>;
   avenantSummary(projectId: string): Promise<{
-    montantInitial: number;
+    montantInitial: number | null;
     totalAvenants: number;
     montantActuel: number;
     delaiInitialMois: number;
@@ -309,6 +331,7 @@ export interface BtpRegistresRepository {
     count: number;
     approuves: number;
   }>;
+  approvedExtensions(projectIds: string[]): Promise<Map<string, number>>;
 
   // ODS
   listOds(projectId: string): Promise<OdsRecord[]>;
@@ -321,6 +344,8 @@ export interface BtpRegistresRepository {
       motif?: string;
       dateEmission?: Date;
       dateEffet?: Date;
+      arretScope?: 'total' | 'partiel';
+      repriseArretId?: string;
       dateFin?: Date;
       delaiJours?: number;
       impactFinancierMad?: number;
@@ -341,6 +366,8 @@ export interface BtpRegistresRepository {
       motif: string;
       dateEmission: Date | null;
       dateEffet: Date | null;
+      arretScope: 'total' | 'partiel' | null;
+      repriseArretId: string | null;
       dateFin: Date | null;
       delaiJours: number | null;
       impactFinancierMad: number;
@@ -355,7 +382,7 @@ export interface BtpRegistresRepository {
     projectId: string,
     odsId: string,
     action: OdsAction,
-    meta?: { accusePar?: string },
+    meta?: { accusePar?: string; dateNotification?: Date; dateEffet?: Date; arretScope?: 'total' | 'partiel'; repriseArretId?: string },
   ): Promise<OdsRecord | null>;
   deleteOds(projectId: string, odsId: string): Promise<boolean>;
 
@@ -453,6 +480,7 @@ function mapIndex(row: typeof revisionIndexes.$inferSelect): RevisionIndexRecord
     source: row.source ?? null,
     notes: row.notes ?? null,
     status: row.status,
+    publishedOn: row.publishedOn,
     updatedAt: row.updatedAt,
   };
 }
@@ -464,6 +492,9 @@ function mapConfig(row: typeof projectRevisionConfig.$inferSelect): RevisionConf
     formulaId: row.formulaId ?? null,
     baseIndexes: (row.baseIndexes as IndexValues) ?? {},
     baseDate: row.baseDate ?? null,
+    contractDeadline: row.contractDeadline,
+    delayAttributable: row.delayAttributable,
+    postingMode: row.postingMode,
     isEnabled: row.isEnabled,
     notes: row.notes ?? null,
   };
@@ -491,9 +522,17 @@ function mapAvenant(row: typeof avenants.$inferSelect): AvenantBtpRecord {
     pourcentageVariation: optNum(row.pourcentageVariation),
     modifications: (row.modifications as unknown[]) ?? [],
     prixNouveaux: (row.prixNouveaux as unknown[]) ?? [],
+    bordereauImpact: readAvenantImpact(row.bordereauImpact, true),
     observations: row.observations ?? null,
     createdAt: row.createdAt,
   };
+}
+
+function readAvenantImpact(data: unknown, stored = false): StoredAvenantBordereauImpact | null {
+  if (data == null) return null;
+  const parsed = (stored ? storedAvenantBordereauImpactSchema : avenantBordereauImpactSchema).safeParse(data);
+  if (!parsed.success) throw new BtpTransitionError('L’impact du bordereau de l’avenant est invalide.');
+  return parsed.data;
 }
 
 function mapOds(row: typeof ordresService.$inferSelect): OdsRecord {
@@ -508,6 +547,9 @@ function mapOds(row: typeof ordresService.$inferSelect): OdsRecord {
     motif: row.motif ?? null,
     dateEmission: row.dateEmission ?? null,
     dateEffet: row.dateEffet ?? null,
+    arretScope: row.arretScope ?? null,
+    repriseArretId: row.repriseArretId ?? null,
+    calendarEffectAppliedAt: row.calendarEffectAppliedAt ?? null,
     dateFin: row.dateFin ?? null,
     delaiJours: row.delaiJours ?? null,
     impactFinancierMad: num(row.impactFinancierMad),
@@ -600,14 +642,27 @@ function mapStep(row: typeof approvalSteps.$inferSelect): ApprovalStepRecord {
 }
 
 export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
-  constructor(private readonly db: Db) {}
+  private readonly execution: DrizzleBtpExecutionRepository;
+
+  constructor(private readonly db: Db) {
+    this.execution = new DrizzleBtpExecutionRepository(db);
+  }
+
+  private async rebuildRevisionProjects(tx: BtpTransaction) {
+    const active = await tx.select({ id: projects.id }).from(projects)
+      .innerJoin(projectRevisionConfig, eq(projectRevisionConfig.projectId, projects.id))
+      .where(and(eq(projectRevisionConfig.isEnabled, true), isNull(projects.deletedAt)))
+      .orderBy(asc(projects.id));
+    for (const { id } of active) await this.execution.rebuildChainTx(tx, id);
+  }
 
   // ── Révision des prix ──────────────────────────────────────────────────────
 
-  async listFormulas(): Promise<RevisionFormulaRecord[]> {
+  async listFormulas(linkedFormulaId?: string | null): Promise<RevisionFormulaRecord[]> {
     const rows = await this.db
       .select()
       .from(revisionFormulas)
+      .where(or(eq(revisionFormulas.isPublic, true), linkedFormulaId ? eq(revisionFormulas.id, linkedFormulaId) : undefined))
       .orderBy(desc(revisionFormulas.isDefault), asc(revisionFormulas.name));
     return rows.map(mapFormula);
   }
@@ -621,6 +676,12 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
     isDefault?: boolean;
   }): Promise<RevisionFormulaRecord> {
     return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('btp-revision-indexes'))`);
+      if (input.id) {
+        const [used] = await tx.select({ id: projectRevisionConfig.id }).from(projectRevisionConfig)
+          .where(eq(projectRevisionConfig.formulaId, input.id)).limit(1);
+        if (used) throw new BtpTransitionError('Cette formule est liée à un marché. Créer une nouvelle formule pour modifier les coefficients.');
+      }
       if (input.isDefault) {
         await tx.update(revisionFormulas).set({ isDefault: false });
       }
@@ -687,26 +748,81 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
       source?: string;
       notes?: string;
       status?: string;
+      publishedOn?: string;
     },
     actor: Actor,
   ): Promise<RevisionIndexRecord> {
     return this.db.transaction(async (tx) => {
-      const monthStart = new Date(input.monthDate.getFullYear(), input.monthDate.getMonth(), 1);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('btp-revision-indexes'))`);
+      const row = await this.upsertIndexMonthTx(tx, input, actor);
+      await this.rebuildRevisionProjects(tx);
+      return row!;
+    });
+  }
+
+  async upsertIndexMonthsTx(
+    tx: BtpTransaction, inputs: Parameters<BtpRegistresRepository['upsertIndexMonth']>[0][], actor: Actor, automatic = false,
+  ) {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext('btp-revision-indexes'))`);
+    const rows: RevisionIndexRecord[] = [];
+    for (const input of inputs) {
+      const row = await this.upsertIndexMonthTx(tx, input, actor, automatic);
+      if (row) rows.push(row);
+    }
+    if (rows.length) await this.rebuildRevisionProjects(tx);
+    return rows;
+  }
+
+  private async upsertIndexMonthTx(
+    tx: BtpTransaction, input: Parameters<BtpRegistresRepository['upsertIndexMonth']>[0], actor: Actor, automatic = false,
+  ): Promise<RevisionIndexRecord | null> {
+      const monthStart = new Date(`${revisionDate(input.monthDate).slice(0, 7)}-01T00:00:00Z`);
       const [existing] = await tx
         .select()
         .from(revisionIndexes)
         .where(eq(revisionIndexes.monthDate, monthStart))
         .limit(1)
         .for('update');
+      if (existing && automatic && !shouldApplyMonthlyIndex(existing, input)) {
+        if (!input.publishedOn || !input.source || !input.status) return null;
+        const previous = existing.previousPublications as PublishedIndexes[];
+        const samePublication = ({ source, status, publishedOn }: Pick<PublishedIndexes, 'source' | 'status' | 'publishedOn'>) =>
+          source === input.source && status === input.status && publishedOn === input.publishedOn;
+        if (samePublication(existing) || previous.some(samePublication)) return null;
+        const publication = { values: input.indexValues, source: input.source, status: input.status, publishedOn: input.publishedOn };
+        const [retained] = await tx.update(revisionIndexes).set({
+          previousPublications: [publication, ...previous], updatedAt: new Date(),
+        }).where(eq(revisionIndexes.id, existing.id)).returning();
+        await tx.insert(revisionIndexAudit).values({
+          monthDate: monthStart, action: 'update', actorSub: actor.sub, actorName: actor.name,
+          changes: { publication }, source: input.source,
+        });
+        return retained ? mapIndex(retained) : null;
+      }
       let row: typeof revisionIndexes.$inferSelect | undefined;
       if (existing) {
+        const previousPublications = [...existing.previousPublications as PublishedIndexes[]];
+        const oldValues = existing.indexValues as IndexValues;
+        const valuesChanged = Object.keys(oldValues).length !== Object.keys(input.indexValues).length ||
+          Object.entries(oldValues).some(([code, value]) => input.indexValues[code] !== value);
+        if (existing.publishedOn && existing.source && (
+          valuesChanged || existing.publishedOn !== (input.publishedOn ?? null) ||
+          existing.source !== (input.source ?? existing.source) || existing.status !== (input.status ?? existing.status)
+        )) {
+          previousPublications.unshift({
+            values: existing.indexValues as IndexValues, status: existing.status,
+            source: existing.source, publishedOn: existing.publishedOn,
+          });
+        }
         [row] = await tx
           .update(revisionIndexes)
           .set({
             indexValues: input.indexValues,
             source: input.source ?? existing.source,
-            notes: input.notes ?? existing.notes,
+            notes: input.notes ?? (existing.notes?.startsWith('Import ') ? null : existing.notes),
             status: input.status ?? existing.status,
+            publishedOn: input.publishedOn ?? null,
+            previousPublications,
             updatedAt: new Date(),
           })
           .where(eq(revisionIndexes.id, existing.id))
@@ -720,6 +836,7 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
             source: input.source,
             notes: input.notes,
             status: input.status ?? 'provisoire',
+            publishedOn: input.publishedOn,
             createdBy: actor.sub,
           })
           .returning();
@@ -730,16 +847,30 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
         action: existing ? 'update' : 'create',
         actorSub: actor.sub,
         actorName: actor.name,
-        changes: { indexValues: input.indexValues, status: row.status },
-        source: input.source,
+        changes: {
+          indexValues: row.indexValues, status: row.status, publishedOn: row.publishedOn,
+          before: existing ? {
+            indexValues: existing.indexValues, status: existing.status, source: existing.source,
+            publishedOn: existing.publishedOn, notes: existing.notes,
+          } : null,
+          after: {
+            indexValues: row.indexValues, status: row.status, source: row.source,
+            publishedOn: row.publishedOn, notes: row.notes,
+          },
+        },
+        source: row.source,
       });
       return mapIndex(row);
-    });
   }
 
   async deleteIndexMonth(monthDate: Date, actor: Actor): Promise<boolean> {
     return this.db.transaction(async (tx) => {
-      const monthStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+      const monthStart = new Date(`${revisionDate(monthDate).slice(0, 7)}-01T00:00:00Z`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('btp-revision-indexes'))`);
+      const [existing] = await tx.select().from(revisionIndexes).where(eq(revisionIndexes.monthDate, monthStart));
+      if (existing?.publishedOn || (existing?.previousPublications as PublishedIndexes[] | undefined)?.length) {
+        throw new BtpTransitionError('Ce mois comporte des publications officielles. Enregistrer un bulletin rectificatif pour corriger les valeurs.');
+      }
       const rows = await tx
         .delete(revisionIndexes)
         .where(eq(revisionIndexes.monthDate, monthStart))
@@ -751,6 +882,7 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
         actorSub: actor.sub,
         actorName: actor.name,
       });
+      await this.rebuildRevisionProjects(tx);
       return true;
     });
   }
@@ -784,28 +916,81 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
     projectId: string,
     input: {
       formulaId?: string | null;
+      formula?: { fixedPart: number; weights: Record<string, number> };
       baseIndexes?: IndexValues;
       baseDate?: Date | null;
+      contractDeadline?: Date | null;
+      delayAttributable?: boolean | null;
+      postingMode?: RevisionPostingMode;
       isEnabled?: boolean;
       notes?: string | null;
     },
   ): Promise<RevisionConfigRecord> {
     return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('btp-revision-indexes'))`);
+      if (!await lockBtpProject(tx, projectId)) throw new BtpTransitionError('Marché introuvable.');
       const [existing] = await tx
         .select()
         .from(projectRevisionConfig)
         .where(eq(projectRevisionConfig.projectId, projectId))
         .limit(1)
         .for('update');
+      let formulaId = input.formulaId;
+      if (formulaId && formulaId !== existing?.formulaId) {
+        const [selected] = await tx.select({ id: revisionFormulas.id }).from(revisionFormulas)
+          .where(and(eq(revisionFormulas.id, formulaId), eq(revisionFormulas.isPublic, true))).limit(1);
+        if (!selected) throw new BtpTransitionError('Formule du CPS indisponible pour ce marché.');
+      }
+      if (input.formula) {
+        if (formulaId != null) throw new BtpTransitionError('Choisir ou saisir une seule formule du CPS.');
+        const definition = { name: 'Formule du CPS', ...input.formula };
+        if (!validateFormula(definition).valid) {
+          throw new BtpTransitionError('La partie fixe doit être d’au moins 15 % et le total des coefficients doit valoir 100 %.');
+        }
+        const [linked] = existing?.formulaId ? await tx.select({ id: revisionFormulas.id }).from(revisionFormulas)
+          .where(and(eq(revisionFormulas.id, existing.formulaId), eq(revisionFormulas.fixedPart, String(definition.fixedPart)),
+            sql`${revisionFormulas.weights} = ${JSON.stringify(definition.weights)}::jsonb`)).limit(1) : [];
+        if (linked) {
+          formulaId = linked.id;
+        } else {
+          const [created] = await tx.insert(revisionFormulas).values({
+            ...definition, fixedPart: String(definition.fixedPart), isPublic: false,
+          }).returning({ id: revisionFormulas.id });
+          if (!created) throw new BtpTransitionError('Création de la formule échouée');
+          formulaId = created.id;
+        }
+      }
+      const isEnabled = input.isEnabled ?? (formulaId ? true : existing?.isEnabled ?? true);
+      const oldBase = (existing?.baseIndexes as IndexValues | undefined) ?? {};
+      const baseChanged = input.baseIndexes && Object.keys({ ...oldBase, ...input.baseIndexes })
+        .some((code) => input.baseIndexes?.[code] !== oldBase[code]);
+      const modeChanged = input.postingMode !== undefined && input.postingMode !== (existing?.postingMode ?? 'each_decompte');
+      if (modeChanged || existing?.isEnabled && (
+        !isEnabled || baseChanged ||
+        (formulaId !== undefined && formulaId !== existing.formulaId) ||
+        (input.baseDate !== undefined && input.baseDate?.getTime() !== existing.baseDate?.getTime())
+      )) {
+        const [issued] = await tx.select({ id: decomptes.id }).from(decomptes)
+          .leftJoin(decompteRevisions, eq(decompteRevisions.decompteId, decomptes.id)).where(and(
+          eq(decomptes.projectId, projectId), isNull(decomptes.deletedAt),
+          sql`${decomptes.statut} IN ('validated', 'paid') AND
+            (${decomptes.revisionMontantMad} <> 0 OR
+              (${decompteRevisions.id} IS NOT NULL AND ${decomptes.totalHtMad} <> 0))`,
+        )).limit(1);
+        if (issued) throw new BtpTransitionError('La révision figure sur un décompte validé ou payé. La formule, les données de base, le mode de report et l’activation sont verrouillés.');
+      }
       let row: typeof projectRevisionConfig.$inferSelect | undefined;
       if (existing) {
         [row] = await tx
           .update(projectRevisionConfig)
           .set({
-            formulaId: input.formulaId !== undefined ? input.formulaId : existing.formulaId,
+            formulaId: formulaId !== undefined ? formulaId : existing.formulaId,
             baseIndexes: input.baseIndexes ?? existing.baseIndexes,
             baseDate: input.baseDate !== undefined ? input.baseDate : existing.baseDate,
-            isEnabled: input.isEnabled ?? existing.isEnabled,
+            contractDeadline: input.contractDeadline !== undefined ? input.contractDeadline : existing.contractDeadline,
+            delayAttributable: input.delayAttributable !== undefined ? input.delayAttributable : existing.delayAttributable,
+            postingMode: input.postingMode ?? existing.postingMode,
+            isEnabled,
             notes: input.notes !== undefined ? input.notes : existing.notes,
             updatedAt: new Date(),
           })
@@ -816,15 +1001,19 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
           .insert(projectRevisionConfig)
           .values({
             projectId,
-            formulaId: input.formulaId ?? null,
+            formulaId: formulaId ?? null,
             baseIndexes: input.baseIndexes ?? {},
             baseDate: input.baseDate ?? null,
-            isEnabled: input.isEnabled ?? true,
+            contractDeadline: input.contractDeadline ?? null,
+            delayAttributable: input.delayAttributable ?? null,
+            postingMode: input.postingMode ?? 'each_decompte',
+            isEnabled,
             notes: input.notes ?? null,
           })
           .returning();
       }
       if (!row) throw new BtpTransitionError('Enregistrement de la configuration échoué');
+      await this.execution.rebuildChainTx(tx, projectId);
       return mapConfig(row);
     });
   }
@@ -842,45 +1031,22 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
 
   async createAvenant(
     projectId: string,
-    input: {
-      objet: string;
-      reference?: string;
-      typeAvenant?: string;
-      dateAvenant?: Date;
-      dateNotification?: Date;
-      montantDeltaMad?: number;
-      delaiDeltaMois?: number;
-      modifications?: unknown[];
-      prixNouveaux?: unknown[];
-      observations?: string;
-    },
+    input: Parameters<BtpRegistresRepository['createAvenant']>[1],
   ): Promise<AvenantBtpRecord> {
     return this.db.transaction(async (tx) => {
-      const [project] = await tx
-        .select({ montant: projects.montantMarcheMad, delai: projects.delaiMois })
-        .from(projects)
-        .where(eq(projects.id, projectId))
-        .limit(1);
+      const project = await lockBtpProject(tx, projectId);
+      if (!project) throw new BtpTransitionError('Marché introuvable.');
       const [aggregate] = await tx
         .select({ maxNumero: sql<number>`coalesce(max(${avenants.numero}), 0)::int` })
         .from(avenants)
         .where(and(eq(avenants.projectId, projectId), isNull(avenants.deletedAt)));
-      const priorApproved = await tx
-        .select({ delta: avenants.montantDeltaMad })
-        .from(avenants)
-        .where(
-          and(
-            eq(avenants.projectId, projectId),
-            isNull(avenants.deletedAt),
-            sql`(${avenants.statut} = 'approuve' or (${avenants.statut} = 'brouillon' and ${avenants.approvedAt} is not null))`,
-          ),
-        );
-      const montantInitial = num(project?.montant);
-      const montantAvant = priorApproved.reduce(
-        (sum, a) => toNumber(round2(toDecimal(sum).plus(num(a.delta)))),
-        montantInitial,
-      );
-      const delta = input.montantDeltaMad ?? 0;
+      const prior = await sumApprovedAvenants(tx, projectId);
+      const montantAvant = currentContractAmount(project, prior.amount).toNumber();
+      const montantInitial = num(project.montantMarcheInitialMad ?? project.montantMarcheMad);
+      const impact = readAvenantImpact(input.bordereauImpact);
+      const delta = impact
+        ? (await this.reviewBordereauImpact(tx, projectId, impact, input.montantDeltaMad)).delta
+        : input.montantDeltaMad ?? 0;
       const montantNouveau = toNumber(round2(toDecimal(montantAvant).plus(delta)));
       const pourcentage =
         montantInitial > 0
@@ -904,6 +1070,7 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
           pourcentageVariation: String(pourcentage),
           modifications: input.modifications ?? [],
           prixNouveaux: input.prixNouveaux ?? [],
+          bordereauImpact: impact,
           observations: input.observations,
         })
         .returning();
@@ -915,56 +1082,56 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
   async updateAvenant(
     projectId: string,
     avenantId: string,
-    patch: Partial<{
-      objet: string;
-      reference: string;
-      typeAvenant: string;
-      dateAvenant: Date | null;
-      dateNotification: Date | null;
-      montantDeltaMad: number;
-      delaiDeltaMois: number;
-      modifications: unknown[];
-      prixNouveaux: unknown[];
-      observations: string;
-    }>,
+    patch: Parameters<BtpRegistresRepository['updateAvenant']>[2],
   ): Promise<AvenantBtpRecord | null> {
-    const [existing] = await this.db
-      .select()
-      .from(avenants)
-      .where(
-        and(
-          eq(avenants.id, avenantId),
-          eq(avenants.projectId, projectId),
-          isNull(avenants.deletedAt),
-        ),
-      )
-      .limit(1);
-    if (!existing) return null;
-    const statut = mapAvenant(existing).statut;
-    if (statut === 'approuve') {
-      throw new BtpTransitionError('Avenant approuvé — modification impossible');
+    return this.db.transaction(async (tx) => {
+      if (!await lockBtpProject(tx, projectId)) return null;
+      const [existing] = await tx.select().from(avenants).where(and(
+        eq(avenants.id, avenantId), eq(avenants.projectId, projectId), isNull(avenants.deletedAt),
+      )).limit(1).for('update');
+      if (!existing) return null;
+      const statut = mapAvenant(existing).statut;
+      if (statut === 'approuve') throw new BtpTransitionError('Avenant approuvé — modification impossible');
+      const impact = readAvenantImpact(patch.bordereauImpact === undefined ? existing.bordereauImpact : patch.bordereauImpact);
+      if (statut !== 'brouillon' && (impact || existing.bordereauImpact)) {
+        throw new BtpTransitionError('Un avenant soumis avec des postes de bordereau doit revenir en brouillon avant modification.');
+      }
+      const set: Partial<typeof avenants.$inferInsert> = { updatedAt: new Date() };
+      if (patch.objet !== undefined) set.objet = patch.objet;
+      if (patch.reference !== undefined) set.reference = patch.reference;
+      if (patch.typeAvenant !== undefined) set.typeAvenant = patch.typeAvenant;
+      if (patch.dateAvenant !== undefined) set.dateAvenant = patch.dateAvenant;
+      if (patch.dateNotification !== undefined) set.dateNotification = patch.dateNotification;
+      const delta = impact
+        ? (await this.reviewBordereauImpact(tx, projectId, impact, patch.montantDeltaMad)).delta
+        : patch.montantDeltaMad ?? (patch.bordereauImpact === null && existing.bordereauImpact ? 0 : undefined);
+      if (delta !== undefined) {
+        set.montantDeltaMad = String(delta);
+        const base = optNum(existing.montantInitialMad) ?? 0;
+        set.montantNouveauMad = String(toNumber(round2(toDecimal(base).plus(delta))));
+      }
+      if (patch.delaiDeltaMois !== undefined) set.delaiDeltaMois = String(patch.delaiDeltaMois);
+      if (patch.modifications !== undefined) set.modifications = patch.modifications;
+      if (patch.prixNouveaux !== undefined) set.prixNouveaux = patch.prixNouveaux;
+      if (patch.bordereauImpact !== undefined) set.bordereauImpact = impact;
+      if (patch.observations !== undefined) set.observations = patch.observations;
+      const [row] = await tx.update(avenants).set(set).where(and(
+        eq(avenants.id, avenantId), isNull(avenants.deletedAt), sql`not ${approvedAvenant}`,
+      )).returning();
+      if (!row) throw new BtpTransitionError('Avenant modifié entre-temps. Actualiser la page.');
+      return mapAvenant(row);
+    });
+  }
+
+  private async reviewBordereauImpact(tx: BtpTransaction, projectId: string, impact: AvenantBordereauImpact, supplied?: number) {
+    const original = await this.execution.getBordereauTx(tx, projectId, null);
+    if (!original?.lignes.length) throw new BtpTransitionError('Enregistrer le bordereau initial avant de saisir les postes de l’avenant.');
+    const approved = await listApprovedBordereauImpacts(tx, projectId);
+    const delta = priceAvenantBordereau(original.lignes, approved, impact);
+    if (supplied !== undefined && !round2(toDecimal(supplied)).eq(delta)) {
+      throw new BtpTransitionError('Le montant TTC renseigné ne correspond pas aux postes signés de l’avenant.');
     }
-    const set: Record<string, unknown> = { updatedAt: new Date() };
-    if (patch.objet !== undefined) set.objet = patch.objet;
-    if (patch.reference !== undefined) set.reference = patch.reference;
-    if (patch.typeAvenant !== undefined) set.typeAvenant = patch.typeAvenant;
-    if (patch.dateAvenant !== undefined) set.dateAvenant = patch.dateAvenant;
-    if (patch.dateNotification !== undefined) set.dateNotification = patch.dateNotification;
-    if (patch.montantDeltaMad !== undefined) {
-      set.montantDeltaMad = String(patch.montantDeltaMad);
-      const base = optNum(existing.montantInitialMad) ?? 0;
-      set.montantNouveauMad = String(toNumber(round2(toDecimal(base).plus(patch.montantDeltaMad))));
-    }
-    if (patch.delaiDeltaMois !== undefined) set.delaiDeltaMois = String(patch.delaiDeltaMois);
-    if (patch.modifications !== undefined) set.modifications = patch.modifications;
-    if (patch.prixNouveaux !== undefined) set.prixNouveaux = patch.prixNouveaux;
-    if (patch.observations !== undefined) set.observations = patch.observations;
-    const [row] = await this.db
-      .update(avenants)
-      .set(set)
-      .where(eq(avenants.id, avenantId))
-      .returning();
-    return row ? mapAvenant(row) : null;
+    return { delta, approved };
   }
 
   async transitionAvenant(
@@ -973,32 +1140,70 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
     to: string,
     dateApprobation?: Date,
   ): Promise<AvenantBtpRecord | null> {
-    const [existing] = await this.db
-      .select()
-      .from(avenants)
-      .where(
-        and(
-          eq(avenants.id, avenantId),
-          eq(avenants.projectId, projectId),
-          isNull(avenants.deletedAt),
-        ),
-      )
-      .limit(1);
-    if (!existing) return null;
-    const current = mapAvenant(existing).statut;
-    const next = assertAvenantTransition(current, to);
-    const set: Record<string, unknown> = { statut: next, updatedAt: new Date() };
-    if (next === 'approuve') {
-      const approvedOn = dateApprobation ?? new Date();
-      set.dateApprobation = approvedOn;
-      set.approvedAt = approvedOn;
-    }
-    const [row] = await this.db
-      .update(avenants)
-      .set(set)
-      .where(eq(avenants.id, avenantId))
-      .returning();
-    return row ? mapAvenant(row) : null;
+    return this.db.transaction(async (tx) => {
+      const project = await lockBtpProject(tx, projectId);
+      const [existing] = await tx.select().from(avenants).where(and(
+        eq(avenants.id, avenantId), eq(avenants.projectId, projectId), isNull(avenants.deletedAt),
+      )).for('update');
+      if (!project || !existing) return null;
+      const current = mapAvenant(existing);
+      if (current.statut === 'approuve' && to === 'approuve') return current;
+      const next = assertAvenantTransition(current.statut, to);
+      const now = new Date();
+      const set: Partial<typeof avenants.$inferInsert> = { statut: next, updatedAt: now };
+      if ((next === 'en_attente' || next === 'approuve') && current.typeAvenant === 'prix_nouveaux' &&
+          !current.bordereauImpact?.additions.length) {
+        throw new BtpTransitionError('Le relevé des prix nouveaux est documentaire. Saisissez les postes signés du bordereau pour les mettre en application.');
+      }
+      if (current.bordereauImpact && (next === 'en_attente' || next === 'approuve') && !current.reference?.trim()) {
+        throw new BtpTransitionError('Renseigner la référence de l’avenant signé.');
+      }
+      if (current.bordereauImpact && next === 'en_attente') {
+        await this.reviewBordereauImpact(tx, projectId, current.bordereauImpact, current.montantDeltaMad);
+      }
+      if (next === 'approuve') {
+        let delta = current.montantDeltaMad;
+        if (current.bordereauImpact) {
+          if (!dateApprobation || !Number.isFinite(dateApprobation.getTime())) {
+            throw new BtpTransitionError('Renseigner la date d’approbation de l’avenant signé.');
+          }
+          if (current.bordereauImpact.dateSignatureTitulaire &&
+              revisionDate(dateApprobation) < current.bordereauImpact.dateSignatureTitulaire) {
+            throw new BtpTransitionError('L’approbation ne peut pas précéder la signature du titulaire.');
+          }
+          const [closed] = await tx.select({ id: decomptes.id }).from(decomptes).where(and(
+            eq(decomptes.projectId, projectId), isNull(decomptes.deletedAt), eq(decomptes.isDernier, true),
+            inArray(decomptes.statut, ['validated', 'paid']),
+          )).limit(1);
+          if (closed) throw new BtpTransitionError('Le dernier décompte est validé ou payé. Traiter l’avenant par un décompte rectificatif.');
+          const reviewed = await this.reviewBordereauImpact(tx, projectId, current.bordereauImpact, delta);
+          const formulaIds = [...new Set(current.bordereauImpact.additions.flatMap(({ formuleId }) => formuleId ? [formuleId] : []))];
+          if (formulaIds.length) {
+            const formulas = await tx.select({
+              id: revisionFormulas.id, name: revisionFormulas.name, fixedPart: revisionFormulas.fixedPart, weights: revisionFormulas.weights,
+            }).from(revisionFormulas).where(inArray(revisionFormulas.id, formulaIds));
+            if (formulas.length !== formulaIds.length) throw new BtpTransitionError('Une formule prévue par l’avenant n’est pas enregistrée.');
+            const snapshots = new Map(formulas.map((item) => [item.id, {
+              id: item.id, name: item.name, fixedPart: num(item.fixedPart), weights: item.weights as Record<string, number>,
+            }]));
+            set.bordereauImpact = readAvenantImpact({
+              ...current.bordereauImpact,
+              additions: current.bordereauImpact.additions.map((line) => line.formuleId
+                ? { ...line, formuleSnapshot: snapshots.get(line.formuleId) } : line),
+            }, true);
+          }
+          delta = reviewed.delta;
+          set.bordereauImpactOrder = (reviewed.approved.at(-1)?.order ?? 0) + 1;
+          set.montantDeltaMad = String(delta);
+        }
+        Object.assign(set, await applyApprovedAvenantAmount(tx, projectId, project, delta));
+        set.dateApprobation = dateApprobation ?? now;
+        set.approvedAt = set.dateApprobation;
+      }
+      const [row] = await tx.update(avenants).set(set).where(eq(avenants.id, avenantId)).returning();
+      if (next === 'approuve') await this.execution.rebuildChainTx(tx, projectId);
+      return row ? mapAvenant(row) : null;
+    });
   }
 
   async deleteAvenant(projectId: string, avenantId: string): Promise<boolean> {
@@ -1014,19 +1219,30 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
       )
       .limit(1);
     if (!existing) return false;
-    if (mapAvenant(existing).statut === 'approuve') {
+    const statut = mapAvenant(existing).statut;
+    if (statut === 'approuve') {
       throw new BtpTransitionError('Avenant approuvé — suppression impossible');
     }
-    await this.db
+    if (statut === 'en_attente' && existing.bordereauImpact) {
+      throw new BtpTransitionError('Annuler l’avenant soumis depuis le registre pour conserver son historique.');
+    }
+    const [removed] = await this.db
       .update(avenants)
       .set({ deletedAt: new Date(), updatedAt: new Date() })
-      .where(eq(avenants.id, avenantId));
+      .where(and(
+        eq(avenants.id, avenantId), isNull(avenants.deletedAt),
+        sql`not ${approvedAvenant}`,
+        sql`(${avenants.statut} <> 'en_attente' OR ${avenants.bordereauImpact} IS NULL)`,
+      ))
+      .returning({ id: avenants.id });
+    if (!removed) throw new BtpTransitionError('Avenant modifié entre-temps. Actualiser la page.');
     return true;
   }
 
   async avenantSummary(projectId: string) {
     const [project] = await this.db
-      .select({ montant: projects.montantMarcheMad, delai: projects.delaiMois })
+      .select({ montantMarcheMad: projects.montantMarcheMad, montantMarcheInitialMad: projects.montantMarcheInitialMad,
+        montantActuel: currentContractAmountSql, delai: projects.delaiMois })
       .from(projects)
       .where(eq(projects.id, projectId))
       .limit(1);
@@ -1037,16 +1253,25 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
       0,
     );
     const delaiSupp = approuves.reduce((sum, a) => sum + a.delaiDeltaMois, 0);
-    const montantInitial = num(project?.montant) - totalAvenants;
+    const montantInitial = optNum(project?.montantMarcheInitialMad ?? project?.montantMarcheMad);
     return {
       montantInitial,
       totalAvenants,
-      montantActuel: num(project?.montant),
+      montantActuel: num(project?.montantActuel),
       delaiInitialMois: num(project?.delai),
       delaiSupplementaireMois: delaiSupp,
       count: all.length,
       approuves: approuves.length,
     };
+  }
+
+  async approvedExtensions(projectIds: string[]) {
+    if (projectIds.length === 0) return new Map<string, number>();
+    const rows = await this.db.select({ projectId: avenants.projectId,
+      months: sql<string>`sum(${avenants.delaiDeltaMois})`,
+    }).from(avenants).where(and(inArray(avenants.projectId, projectIds), isNull(avenants.deletedAt), approvedAvenant))
+      .groupBy(avenants.projectId);
+    return new Map(rows.map((row) => [row.projectId, num(row.months)]));
   }
 
   // ── ODS ────────────────────────────────────────────────────────────────────
@@ -1062,6 +1287,10 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
 
   async createOds(projectId: string, input: Parameters<BtpRegistresRepository['createOds']>[1]) {
     return this.db.transaction(async (tx) => {
+      await lockBtpProject(tx, projectId);
+      if (input.type === 'arret' && !input.arretScope) {
+        throw new BtpTransitionError('Préciser si l’arrêt est total ou partiel.');
+      }
       const [aggregate] = await tx
         .select({ maxNumero: sql<number>`coalesce(max(${ordresService.numero}), 0)::int` })
         .from(ordresService)
@@ -1079,6 +1308,8 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
           motif: input.motif,
           dateEmission: input.dateEmission ?? new Date(),
           dateEffet: input.dateEffet,
+          arretScope: input.arretScope,
+          repriseArretId: input.repriseArretId,
           dateFin: input.dateFin,
           delaiJours: input.delaiJours,
           impactFinancierMad: String(input.impactFinancierMad ?? 0),
@@ -1122,6 +1353,8 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
       'motif',
       'dateEmission',
       'dateEffet',
+      'arretScope',
+      'repriseArretId',
       'dateFin',
       'delaiJours',
       'emetteur',
@@ -1138,7 +1371,7 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
     const [row] = await this.db
       .update(ordresService)
       .set(set)
-      .where(eq(ordresService.id, odsId))
+      .where(and(eq(ordresService.id, odsId), eq(ordresService.statut, 'brouillon'), isNull(ordresService.deletedAt)))
       .returning();
     return row ? mapOds(row) : null;
   }
@@ -1147,33 +1380,84 @@ export class DrizzleBtpRegistresRepository implements BtpRegistresRepository {
     projectId: string,
     odsId: string,
     action: OdsAction,
-    meta?: { accusePar?: string },
+    meta?: Parameters<BtpRegistresRepository['actionOds']>[3],
   ): Promise<OdsRecord | null> {
-    const [existing] = await this.db
-      .select()
-      .from(ordresService)
-      .where(
-        and(
-          eq(ordresService.id, odsId),
-          eq(ordresService.projectId, projectId),
-          isNull(ordresService.deletedAt),
-        ),
-      )
-      .limit(1);
-    if (!existing) return null;
-    const next = assertOdsTransition(existing.statut, action);
-    const set: Record<string, unknown> = { statut: next, updatedAt: new Date() };
-    if (action === 'notify') set.dateNotification = new Date();
-    if (action === 'acknowledge') {
-      set.dateAccuseReception = new Date();
-      if (meta?.accusePar) set.accusePar = meta.accusePar;
-    }
-    const [row] = await this.db
-      .update(ordresService)
-      .set(set)
-      .where(eq(ordresService.id, odsId))
-      .returning();
-    return row ? mapOds(row) : null;
+    return this.db.transaction(async (tx) => {
+      const project = await lockBtpProject(tx, projectId);
+      const [existing] = await tx.select().from(ordresService).where(and(
+        eq(ordresService.id, odsId), eq(ordresService.projectId, projectId), isNull(ordresService.deletedAt),
+      )).for('update');
+      if (!project || !existing) return null;
+      if (action === 'notify' && ['notifie', 'accuse', 'execute', 'cloture'].includes(existing.statut)) {
+        return mapOds(existing);
+      }
+      const now = new Date();
+      const set: Partial<typeof ordresService.$inferInsert> = {
+        statut: assertOdsTransition(existing.statut, action), updatedAt: now,
+      };
+      let calendarChanged = false;
+      if (action === 'notify') {
+        set.dateNotification = meta?.dateNotification ?? now;
+        const type = existing.type;
+        if (type === 'commencement' || type === 'arret' || type === 'reprise') {
+          if (meta?.dateEffet && existing.dateEffet && meta.dateEffet.getTime() !== existing.dateEffet.getTime()) {
+            throw new BtpTransitionError('La date d’effet doit correspondre à l’ordre émis.');
+          }
+          const effective = existing.dateEffet ?? meta?.dateEffet;
+          if (!effective) throw new BtpTransitionError('Renseigner la date d’effet de l’ordre de service.');
+          set.dateEffet = effective;
+          set.calendarEffectAppliedAt = now;
+          const stops = withStopIds((project.arrets ?? []) as ArretTravaux[]);
+          if (type === 'commencement') {
+            const previousStart = chantierStart(project);
+            if (previousStart?.getTime() !== effective.getTime()) {
+              await this.execution.assertEditableChain(tx, projectId, 1);
+              await this.execution.assertTerrainWindowsPreserved(tx, projectId, previousStart, { executionStart: effective });
+            }
+            await tx.update(projects).set({ executionStartDate: effective, updatedAt: now })
+              .where(eq(projects.id, projectId));
+            calendarChanged = true;
+          } else if (type === 'arret') {
+            if (meta?.arretScope && existing.arretScope && meta.arretScope !== existing.arretScope) {
+              throw new BtpTransitionError('La portée doit correspondre à l’ordre émis.');
+            }
+            const scope = existing.arretScope ?? meta?.arretScope;
+            if (!scope) throw new BtpTransitionError('Préciser si l’arrêt est total ou partiel.');
+            set.arretScope = scope;
+            if (scope === 'total') {
+              await tx.update(projects).set({ arrets: [...stops, {
+                id: odsId, sourceOdsId: odsId, dateArret: revisionDate(effective), motif: existing.motif,
+              }], updatedAt: now }).where(eq(projects.id, projectId));
+              calendarChanged = true;
+            }
+          } else {
+            if (meta?.repriseArretId && existing.repriseArretId && meta.repriseArretId !== existing.repriseArretId) {
+              throw new BtpTransitionError('L’arrêt sélectionné doit correspondre à l’ordre de reprise émis.');
+            }
+            const selected = existing.repriseArretId ?? meta?.repriseArretId;
+            const open = stops.filter((stop) => !stop.dateReprise);
+            const stop = selected ? open.find((candidate) => candidate.id === selected) : open.length === 1 ? open[0] : undefined;
+            if (!stop) throw new BtpTransitionError('Sélectionner un arrêt total en cours pour la reprise.');
+            const resumeDate = revisionDate(effective);
+            if (resumeDate < stop.dateArret.slice(0, 10)) {
+              throw new BtpTransitionError('La date de reprise est antérieure à l’arrêt.');
+            }
+            set.repriseArretId = stop.id;
+            await tx.update(projects).set({ arrets: stops.map((entry) => entry === stop
+              ? { ...entry, dateReprise: resumeDate, repriseOdsId: odsId } : entry), updatedAt: now })
+              .where(eq(projects.id, projectId));
+            calendarChanged = true;
+          }
+        }
+      }
+      if (action === 'acknowledge') {
+        set.dateAccuseReception = now;
+        if (meta?.accusePar) set.accusePar = meta.accusePar;
+      }
+      const [row] = await tx.update(ordresService).set(set).where(eq(ordresService.id, odsId)).returning();
+      if (calendarChanged) await this.execution.rebuildChainTx(tx, projectId);
+      return row ? mapOds(row) : null;
+    });
   }
 
   async deleteOds(projectId: string, odsId: string): Promise<boolean> {

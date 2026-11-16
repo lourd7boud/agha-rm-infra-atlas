@@ -10,6 +10,7 @@ import {
   fmtQty,
   type BtpProjectDetail,
   type Decompte,
+  type RevisionTrace,
 } from '@/lib/btp';
 import { patchDecompte } from '../../actions';
 
@@ -28,10 +29,13 @@ const NEXT_DECOMPTE_STATUS: Record<string, { to: string; label: string; tone: st
 
 export default async function DecompteDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string; decompteId: string }>;
+  searchParams?: Promise<Record<string, string | undefined>>;
 }) {
   const { id, decompteId } = await params;
+  const query = await searchParams;
   const [project, decompte] = await Promise.all([
     apiGet<BtpProjectDetail>(`/btp/projects/${id}`),
     apiGet<Decompte>(`/btp/projects/${id}/decomptes/${decompteId}`),
@@ -41,6 +45,9 @@ export default async function DecompteDetailPage({
     classes: 'bg-sand text-muted',
   };
   const statusActions = NEXT_DECOMPTE_STATUS[decompte.statut] ?? [];
+  const revision = decompte.revision?.details as Partial<RevisionTrace> | null | undefined;
+  const trace = revision?.version === 1 ? revision as RevisionTrace : null;
+  const hasRevision = trace?.status === 'calculated' || decompte.revisionMontantMad !== 0;
   const title = decompte.isDernier
     ? `Décompte n°${decompte.numero} et dernier`
     : `Décompte provisoire n°${decompte.numero}`;
@@ -50,13 +57,14 @@ export default async function DecompteDetailPage({
       ? [{ label: 'Travaux terminés (TTC)', value: decompte.totalTtcMad }]
       : [{ label: 'Travaux non terminés (TTC)', value: decompte.totalTtcMad }]),
     { label: 'Total HT cumulé', value: decompte.totalHtMad },
-    ...(decompte.revisionMontantMad !== 0
+    ...(hasRevision
       ? [
           {
-            label: 'Révision des prix (+HT)',
+            label: 'Révision des prix cumulée (HT)',
             value: decompte.revisionMontantMad,
             tone: 'text-cyan',
           },
+          { label: 'HT après révision', value: decompte.totalHtMad + decompte.revisionMontantMad },
         ]
       : []),
     { label: `TVA ${decompte.tauxTva}%`, value: decompte.montantTvaMad },
@@ -94,7 +102,7 @@ export default async function DecompteDetailPage({
           <p className="mt-1 text-xs text-muted">
             {decompte.periode?.libelle ?? '—'} ·{' '}
             {decompte.periode
-              ? `${fmtDate(decompte.periode.dateDebut)} → ${fmtDate(decompte.periode.dateFin)}`
+              ? `Travaux du ${fmtDate(decompte.periode.dateDebut)} au ${fmtDate(decompte.periode.dateFin)} · arrêté repris du métré`
               : ''}
             {decompte.dateDecompte ? ` · établi le ${fmtDate(decompte.dateDecompte)}` : ''}
           </p>
@@ -184,8 +192,7 @@ export default async function DecompteDetailPage({
                   <dd
                     className={`font-mono tabular-nums ${row.strong ? 'font-bold' : ''} ${row.tone ?? ''}`}
                   >
-                    {row.value < 0 ? '− ' : ''}
-                    {fmtMadPrecise(Math.abs(row.value))}
+                    {fmtMadPrecise(row.value)}
                   </dd>
                 </div>
               ))}
@@ -201,31 +208,51 @@ export default async function DecompteDetailPage({
           </section>
 
           {/* Révision */}
-          {decompte.revision && (
+          {trace && (
             <section className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
               <h2 className="text-xs font-semibold uppercase tracking-widest text-faint">
-                Révision des prix appliquée
+                {trace.deferred ? 'Révision reportée au dernier décompte' : trace.status === 'pending' ? 'Révision en attente' : 'Révision des prix'}
               </h2>
               <dl className="mt-3 space-y-1.5 text-xs text-muted">
+                {trace.deferred && <div className="flex justify-between">
+                  <dt>Révision calculée HT</dt>
+                  <dd className="font-mono tabular-nums">{trace.calculatedCumulative == null ? 'En attente' : fmtMadPrecise(trace.calculatedCumulative)}</dd>
+                </div>}
                 <div className="flex justify-between">
-                  <dt>Montant à réviser (HT cumulé)</dt>
+                  <dt>HT exécuté sur la période</dt>
                   <dd className="font-mono tabular-nums">
-                    {fmtMadPrecise(decompte.revision.montantAReviser ?? 0)}
+                    {fmtMadPrecise(trace.period.ht)}
                   </dd>
                 </div>
                 <div className="flex justify-between">
-                  <dt>Coefficient appliqué</dt>
+                  <dt>Révision intégrée cumulée HT</dt>
                   <dd className="font-mono tabular-nums">
-                    {decompte.revision.coefficient?.toFixed(4) ?? '—'}
+                    {fmtMadPrecise(trace.cumulative)}
                   </dd>
                 </div>
                 <div className="flex justify-between font-semibold text-cyan">
-                  <dt>Montant de la révision</dt>
+                  <dt>Variation sur ce décompte</dt>
                   <dd className="font-mono tabular-nums">
-                    {fmtMadPrecise(decompte.revision.montantRevision ?? 0)}
+                    {fmtMadPrecise(trace.movement)}
                   </dd>
                 </div>
               </dl>
+              <p className="mt-2 text-xs text-muted">
+                {trace.status === 'pending' && (decompte.isDernier
+                  ? 'Compléter les éléments de révision avant la validation.'
+                  : 'Les montants en attente pourront être régularisés sur le prochain décompte.')}
+              </p>
+              <Link className="mt-2 inline-block text-xs font-semibold text-cyan underline" href={`/projects/${id}?section=admin&tab=revision#revision-${decompteId}`}>
+                Ouvrir le calcul mensuel
+              </Link>
+            </section>
+          )}
+          {!trace && !['validated', 'paid'].includes(decompte.statut) && (
+            <section className="rounded-xl border border-line bg-paper-2 p-5 shadow-sm">
+              <h2 className="text-sm font-semibold">Révision des prix</h2>
+              <Link className="mt-2 inline-block text-xs font-semibold text-cyan underline" href={`/projects/${id}?section=admin&tab=revision#revision-config`}>
+                Vérifier la formule du CPS
+              </Link>
             </section>
           )}
 
@@ -234,44 +261,57 @@ export default async function DecompteDetailPage({
             <h2 className="text-xs font-semibold uppercase tracking-widest text-faint">
               Circuit du décompte
             </h2>
-            <div className="mt-3 space-y-2">
+            {query?.error && (
+              <p role="alert" className="mt-3 rounded-lg border border-clay-soft bg-clay-soft/20 px-3 py-2 text-xs text-clay">
+                Action non enregistrée. {query.code === 'conflict'
+                  ? 'Vérifiez la date, la révision et l’état des décomptes précédents avant de réessayer.'
+                  : query.code === 'invalid' ? 'Vérifiez les données saisies avant de réessayer.'
+                    : 'Le service n’a pas pu enregistrer cette action. Réessayez.'}
+              </p>
+            )}
+            <form action={patchDecompte} className="mt-3 space-y-3">
+              <input type="hidden" name="projectId" value={id} />
+              <input type="hidden" name="decompteId" value={decompteId} />
+              {!decompte.dateDecompte && !['validated', 'paid'].includes(decompte.statut) && (
+                <p className="text-xs text-muted">La date d’établissement sera enregistrée à la soumission.</p>
+              )}
               {statusActions.map((action) => (
-                <form key={action.to} action={patchDecompte}>
-                  <input type="hidden" name="projectId" value={id} />
-                  <input type="hidden" name="decompteId" value={decompteId} />
-                  <input type="hidden" name="statut" value={action.to} />
-                  <button
-                    className={`w-full rounded-lg px-3 py-2 text-xs font-bold transition hover:opacity-80 ${action.tone}`}
-                  >
-                    {action.label}
-                  </button>
-                </form>
+                <button
+                  key={action.to}
+                  type="submit"
+                  name="statut" value={action.to}
+                  className={`w-full rounded-lg px-3 py-2 text-xs font-bold transition hover:opacity-80 ${action.tone}`}
+                >
+                  {action.label}
+                </button>
               ))}
+              {decompte.isDernier && trace?.status === 'pending' && !['validated', 'paid'].includes(decompte.statut) && (
+                <p className="text-xs text-ochre">
+                  Le dernier décompte doit intégrer les montants en attente avant validation.{' '}
+                  <Link className="font-semibold underline" href={`/projects/${id}?section=admin&tab=revision`}>Vérifier les éléments en attente →</Link>
+                </p>
+              )}
               {['validated', 'paid'].includes(decompte.statut) && (
                 <p className="text-[11px] text-faint">
                   Décompte {badge.label.toLowerCase()} — le métré de sa période est verrouillé.
+                  {!decompte.dateDecompte && <span className="mt-1 block">Date historique non renseignée.</span>}
                 </p>
               )}
-            </div>
-            <form
-              action={patchDecompte}
-              className="mt-4 flex items-end gap-2 border-t border-line pt-3"
-            >
-              <input type="hidden" name="projectId" value={id} />
-              <input type="hidden" name="decompteId" value={decompteId} />
-              <label className="flex-1 text-[11px] font-semibold uppercase tracking-widest text-faint">
-                Date du décompte
-                <input
-                  type="date"
-                  name="dateDecompte"
-                  defaultValue={decompte.dateDecompte?.slice(0, 10) ?? ''}
-                  className="mt-1 block w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm"
-                />
-              </label>
-              <button className="rounded-lg bg-sand px-3 py-2 text-xs font-bold text-ink-2 hover:bg-line">
-                Dater
-              </button>
             </form>
+            {!['validated', 'paid'].includes(decompte.statut) && (
+              <details className="mt-3 border-t border-line pt-3 text-xs">
+                <summary className="cursor-pointer font-semibold text-muted">Décompte établi hors ATLAS</summary>
+                <form action={patchDecompte} className="mt-3 grid gap-2">
+                  <input type="hidden" name="projectId" value={id} />
+                  <input type="hidden" name="decompteId" value={decompteId} />
+                  <label className="text-muted">Date sur la pièce officielle
+                    <input type="date" name="dateDecompte" required defaultValue={decompte.dateDecompte?.slice(0, 10) ?? ''}
+                      className="mt-1 block w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm" />
+                  </label>
+                  <button type="submit" className="rounded-lg border border-line px-3 py-2 font-semibold text-muted hover:bg-sand">Reprendre la date officielle</button>
+                </form>
+              </details>
+            )}
           </section>
         </div>
       </div>

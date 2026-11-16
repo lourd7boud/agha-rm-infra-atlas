@@ -26,6 +26,7 @@ const portalVisiteSchema = z.object({
 /** Lenient: tolerate older/partial detail blocks (nullish everywhere) so a v1
  *  stub or a page that omits a field never fails the whole projection. */
 const portalDetailSchema = z.object({
+  objet: z.string().nullish(),
   v: z.number().nullish(),
   fetchedAt: z.string().nullish(),
   buyerEntity: z.string().nullish(),
@@ -34,6 +35,9 @@ const portalDetailSchema = z.object({
   modePassation: z.string().nullish(),
   location: z.string().nullish(),
   deadline: z.string().nullish(),
+  publishedAt: z.string().nullish(),
+  dceComplement: z.enum(['listed', 'not_listed']).optional(),
+  responseMode: z.string().nullish(),
   estimationMad: z.number().nullish(),
   cautionProvisoireMad: z.number().nullish(),
   domainesActivite: z.string().nullish(),

@@ -21,6 +21,8 @@ import {
   type TenderRepository,
 } from './tender.repository';
 import { DossierService } from './dossier.service';
+import { comparedArchiveSha256, readSavedDossierRevision } from './dossier-revision-check';
+import { readDossierCoverage } from './dossier-fulltext';
 import { CompanyLegalService } from './company-legal.service';
 import {
   INTEL_REPOSITORY,
@@ -69,17 +71,10 @@ export interface ChatReply {
 
 const MAX_HISTORY_MESSAGES = 12;
 const MAX_QUESTION_CHARS = 1500;
-/** Overall cap on the grounded context handed to the model. Raised from 18k once
- *  the DCE text excerpt + archive/competitor + vault blocks were added — a T1
- *  Gemini/Haiku model handles ~12k tokens of context comfortably, and the
- *  higher-value blocks are emitted BEFORE the raw DCE dump so truncation only
- *  ever bites the least-critical prose. */
-const MAX_CONTEXT_CHARS = 120_000;
-/** Sub-budget for the DCE content block. Large so the agent reads the REAL files
- *  (RC/CPS/BPU, full bordereau), not a digest — Opus's context easily holds this
- *  (~30k tokens); the structured blocks above are emitted first so they're never
- *  truncated. Most DCEs fit whole; only the very largest are sliced here. */
-const MAX_DOSSIER_TEXT_CHARS = 100_000;
+/** Bounded source context, including complete OCR text of typical RC/CPS pairs. */
+const MAX_CONTEXT_CHARS = 300_000;
+/** The observed 63-page pilot has 188k characters; its late CPS clauses must survive. */
+const MAX_DOSSIER_TEXT_CHARS = 250_000;
 /** How many rows/lines each archive/vault block prints — bounded for cost. */
 const MAX_PARTICIPANTS_SHOWN = 15;
 const MAX_LIKELY_COMPETITORS_SHOWN = 10;
@@ -121,7 +116,7 @@ export function buildTenderChatSystemPrompt(now: Date): string {
 
 ═══════════ TES ACCÈS (ce que le système te fournit ci-dessous) ═══════════
 Pour CE marché précis, le contexte fourni plus bas contient, quand c'est disponible :
-1. La FICHE du marché + le CONTENU DU DOSSIER (DCE : avis, RC, CPS, bordereau des prix) — tu peux donc lire et citer le dossier, pas seulement un résumé.
+1. La FICHE du marché + les extraits lisibles disponibles de la copie conservée du DCE (avis, RC, CPS, bordereau des prix). La couverture dépend des preuves fournies ; une comparaison de version ne vaut qu'à son horodatage. Cite seulement les éléments effectivement fournis.
 2. L'ARCHIVE des marchés & résultats de cet acheteur — pour ESTIMER le nombre de concurrents probables et le niveau de prix / rabais habituel.
 3. L'IDENTITÉ LÉGALE et les DOCUMENTS de l'entreprise (source /compta/legal — raison sociale, RC, IF, ICE, TP, CNSS, gérant, siège, + le contenu INTÉGRAL des pièces du coffre: attestations, statuts, RC, bail…) — pour renseigner exactement le dossier administratif et dire quelles pièces sont prêtes, lesquelles EXPIRENT ou MANQUENT pour soumissionner. Tu lis le CONTENU réel des documents, pas seulement leurs titres.
 Tu utilises réellement ces données. Ne dis jamais « je n'ai pas accès » ou « je ne peux pas voir le dossier » quand l'information EST présente dans le contexte : elle t'est fournie pour ça.
@@ -130,7 +125,7 @@ La date d'aujourd'hui est le ${today}.
 
 ═══════════ RÈGLES D'ANALYSE ═══════════
 - Fonde CHAQUE réponse sur le contexte fourni (fiche, DCE, archive, coffre-fort). N'invente jamais un chiffre, une référence, une pièce ou une condition qui n'y figure pas.
-- Quand une information manque réellement dans le contexte, dis-le clairement (« ce point n'est pas précisé dans le dossier ») et indique où la trouver (article du RC, séance de questions, contact de l'acheteur).
+- Quand une information manque dans le contexte, indique « non vérifié dans les éléments lisibles fournis » et la pièce à consulter. L'absence dans ces extraits ne prouve JAMAIS l'absence d'une exigence dans le DCE : des fichiers scannés, pages non lues ou textes tronqués peuvent manquer. Ne dis pas « ce point n'est pas précisé dans le dossier » sans preuve explicite couvrant la pièce concernée. Ne déduis ni dispense, ni absence de visite, qualification, caution ou autre condition de ce silence. Ne présente pas une copie conservée comme la dernière version officielle sans preuve de mise à jour.
 - CONCURRENCE / NOMBRE DE SOUMISSIONNAIRES : présente-les comme des ESTIMATIONS fondées sur l'historique de l'acheteur (« d'après l'historique de cet acheteur… »), jamais comme des certitudes. Nomme les concurrents récurrents et leur fréquence quand ils sont fournis.
 - PRIX : sers-toi du rabais médian gagnant de l'acheteur et du bordereau (BPU) comme repères ; propose une fourchette raisonnée, jamais un prix « garanti ».
 - PIÈCES MANQUANTES : croise l'état du coffre-fort AGHA RM INFRA avec les qualifications/pièces exigées au DCE, et liste précisément ce qui manque ou est à renouveler.
@@ -282,6 +277,7 @@ export interface TenderChatContextExtras {
    *  — preferred over the persisted excerpt so the agent reads the actual files,
    *  not a digest. Null when it can't be built (falls back to the raw excerpt). */
   fullDossierMarkdown?: string | null;
+  comparedDossierArchiveActive?: boolean;
   /** Company legal identity + documents WITH full content (from /compta/legal). */
   companyLegalMarkdown?: string | null;
   /** Injected "now" so readiness/lifecycle stay request-accurate + testable. */
@@ -399,13 +395,21 @@ function buildTenderContext(
   }
 
   // DCE content LAST (largest, least critical if truncated) with its own
-  // sub-budget so the structured blocks above are always fully present. Prefer
-  // the FULL dossier Markdown (the real files, built from the archive) so the
-  // agent reads the actual documents, not the persisted summary excerpt.
+  // sub-budget so the structured blocks above are always fully present. Archive
+  // Markdown has more source text than the persisted excerpt, but can still omit
+  // scanned files or exceed extraction budgets; neither path proves full coverage.
   const dossierText = extras.fullDossierMarkdown ?? readDossierText(tender.raw);
   if (dossierText) {
+    const revision = readSavedDossierRevision(tender.raw, tender.sourceUrl, extras.now);
+    const version = revision && extras.comparedDossierArchiveActive
+      ? `Copie comparée au DCE officiel le ${revision.checkedAt} (${revision.officialIdentity}). Cette preuve ne couvre pas les modifications ultérieures.`
+      : 'Version officielle actuelle non confirmée.';
+    const remaining = Math.max(0, MAX_CONTEXT_CHARS - lines.join('\n').length - 1_000);
+    const budget = Math.min(MAX_DOSSIER_TEXT_CHARS, remaining);
+    const truncated = dossierText.length > budget;
+    if (truncated) lines.unshift('EXTRAIT DCE TRONQUÉ : toutes les pages ne sont pas présentes dans ce contexte. Un élément absent reste non vérifié.');
     lines.push(
-      `\n=== CONTENU DU DOSSIER (DCE — fichiers réels lus du dossier officiel) ===\n${dossierText.slice(0, MAX_DOSSIER_TEXT_CHARS)}`,
+      `\n=== CONTENU DU DOSSIER (DCE — extraits lisibles de la copie conservée) ===\nCouverture des fichiers et des pages non vérifiée. ${version} Une condition absente de ces extraits reste à vérifier dans sa pièce source.\n${dossierText.slice(0, budget)}`,
     );
   }
 
@@ -485,10 +489,17 @@ export class TenderChatService {
         this.loadFullDossier(tender),
         this.loadCompanyLegal(),
       ]);
+    const comparedSha256 = comparedArchiveSha256(readSavedDossierRevision(tender.raw, tender.sourceUrl, now));
+    let comparedDossierArchiveActive = false;
+    if (this.dossierService && comparedSha256 && fullDossierMarkdown && readDossierCoverage(fullDossierMarkdown, comparedSha256)) {
+      const archive = await this.dossierService.inspectCachedArchive(tender.id, tender.raw, comparedSha256);
+      comparedDossierArchiveActive = archive.state === 'available' && archive.integrity === 'matched';
+    }
     return buildTenderContext(tender, {
       competitorIntel,
       vaultDocs,
       fullDossierMarkdown,
+      comparedDossierArchiveActive,
       companyLegalMarkdown,
       now,
     });
@@ -535,12 +546,16 @@ export class TenderChatService {
   ): Promise<TenderCompetitorIntel | null> {
     if (!this.intel) return null;
     try {
-      const bids = await this.intel.findBidsForBuyer(tender.buyerName);
+      const [bids, ambiguousResultReference] = await Promise.all([
+        this.intel.findBidsForBuyer(tender.buyerName),
+        tender.deadlineAt < now ? this.tenders.hasAmbiguousResultReference(tender) : false,
+      ]);
       return buildTenderCompetitorIntel(
         {
           reference: tender.reference,
           buyerName: tender.buyerName,
           deadlineAt: tender.deadlineAt,
+          ambiguousResultReference,
         },
         bids,
         now,

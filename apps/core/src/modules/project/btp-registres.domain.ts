@@ -14,9 +14,25 @@ export class BtpTransitionError extends Error {
 
 export interface ArretTravaux {
   id?: string;
+  sourceOdsId?: string;
+  repriseOdsId?: string;
   dateArret: string; // ISO date
   dateReprise?: string | null;
   motif?: string | null;
+}
+
+export function withStopIds(stops: ArretTravaux[]): ArretTravaux[] {
+  const usedIds = new Set(stops.map((stop) => stop.id));
+  let nextIndex = 0;
+  return stops.map((stop) => {
+    if (stop.id) return stop;
+    let id: string;
+    do {
+      id = `legacy-stop-${nextIndex++}`;
+    } while (usedIds.has(id));
+    usedIds.add(id);
+    return { ...stop, id };
+  });
 }
 
 export type DelaiStatus = 'completed' | 'overdue' | 'critical' | 'warning' | 'normal' | 'unknown';
@@ -36,8 +52,12 @@ export interface DelaiInfo {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+function utcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
 function diffDays(later: Date, earlier: Date): number {
-  return Math.floor((later.getTime() - earlier.getTime()) / DAY_MS);
+  return Math.round((later.getTime() - earlier.getTime()) / DAY_MS);
 }
 
 function addDays(base: Date, days: number): Date {
@@ -47,40 +67,60 @@ function addDays(base: Date, days: number): Date {
 function addMonthsFractional(base: Date, months: number): Date {
   const whole = Math.trunc(months);
   const fraction = months - whole;
-  const result = new Date(base);
-  result.setMonth(result.getMonth() + whole);
-  // Source app used integer months; fractional délais map to 30-day months.
+  const targetMonth = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + whole, 1));
+  const lastDay = new Date(Date.UTC(targetMonth.getUTCFullYear(), targetMonth.getUTCMonth() + 1, 0)).getUTCDate();
+  const result = new Date(Date.UTC(targetMonth.getUTCFullYear(), targetMonth.getUTCMonth(), Math.min(base.getUTCDate(), lastDay)));
+  // Preserve the legacy 30-day conversion only for explicitly fractional months.
   return fraction ? addDays(result, Math.round(fraction * 30)) : result;
 }
 
-/** DelaisPage.calculateDelaiInfo — OSC + délai (mois×30) + arrêts. */
+/** UTC calendar months from the effective start, plus the union of total stops.
+ * No holiday adjustment is possible without an authoritative working-day calendar.
+ */
 export function computeDelaiInfo(params: {
   ordreServiceDate: Date | null;
+  executionStartDate?: Date | null;
   delaiMois: number | null;
+  extraDelaiMois?: number;
   arrets: ArretTravaux[];
   receptionProvisoire: Date | null;
   receptionDefinitive: Date | null;
   today?: Date;
 }): DelaiInfo {
   const { ordreServiceDate, delaiMois, arrets, receptionProvisoire, receptionDefinitive } = params;
-  const today = params.today ?? new Date();
+  const today = utcDay(params.today ?? new Date());
+  const executionStart = params.executionStartDate
+    ? utcDay(params.executionStartDate)
+    : ordreServiceDate ? addDays(utcDay(ordreServiceDate), 1) : null;
 
-  let joursArret = 0;
   let enArret = false;
+  const intervals: { start: number; end: number }[] = [];
   for (const arret of arrets ?? []) {
     if (!arret?.dateArret) continue;
-    if (arret.dateReprise) {
-      joursArret += Math.max(0, diffDays(new Date(arret.dateReprise), new Date(arret.dateArret)));
-    } else {
-      enArret = true;
-    }
+    const start = utcDay(new Date(arret.dateArret)).getTime();
+    const end = arret.dateReprise ? utcDay(new Date(arret.dateReprise)).getTime() : Infinity;
+    if (!Number.isFinite(start) || !(end > start)) continue;
+    if (start <= today.getTime() && today.getTime() < end) enArret = true;
+    if (end === Infinity && start > today.getTime()) continue;
+    const effectiveStart = Math.max(start, executionStart?.getTime() ?? start);
+    if (end > effectiveStart) intervals.push({ start: effectiveStart, end });
   }
+  intervals.sort((a, b) => a.start - b.start);
+  const merged: { start: number; end: number }[] = [];
+  for (const interval of intervals) {
+    const previous = merged[merged.length - 1];
+    if (previous && interval.start <= previous.end) previous.end = Math.max(previous.end, interval.end);
+    else merged.push({ ...interval });
+  }
+  const totalMonths = (delaiMois ?? 0) + (params.extraDelaiMois ?? 0);
 
-  if (!ordreServiceDate || !delaiMois) {
+  if (!executionStart || !Number.isFinite(executionStart.getTime()) || !delaiMois || !Number.isFinite(totalMonths) || totalMonths <= 0) {
+    const joursArret = merged.reduce((days, interval) => days + (Number.isFinite(interval.end)
+      ? (interval.end - interval.start) / DAY_MS : 0), 0);
     return {
-      delaiJours: delaiMois ? Math.round(delaiMois * 30) : 0,
+      delaiJours: 0,
       joursArret,
-      delaiTotal: (delaiMois ? Math.round(delaiMois * 30) : 0) + joursArret,
+      delaiTotal: joursArret,
       dateFinInitiale: null,
       dateFinEffective: null,
       joursEcoules: 0,
@@ -91,17 +131,31 @@ export function computeDelaiInfo(params: {
     };
   }
 
-  const delaiJours = Math.round(delaiMois * 30);
-  const dateFinInitiale = addMonthsFractional(ordreServiceDate, delaiMois);
-  const dateFinEffective = addDays(dateFinInitiale, joursArret);
-  const joursEcoules = diffDays(today, ordreServiceDate);
-  const joursRestants = diffDays(dateFinEffective, today);
+  const dateFinInitiale = addMonthsFractional(executionStart, delaiMois);
+  const dateFinProlongee = addMonthsFractional(executionStart, totalMonths);
+  const delaiJours = diffDays(dateFinProlongee, executionStart);
+  let joursArret = 0;
+  let contractualEnd = dateFinProlongee.getTime();
+  for (const interval of merged) {
+    if (interval.start > contractualEnd) break;
+    if (interval.end === Infinity) {
+      contractualEnd = Infinity;
+      break;
+    }
+    const duration = interval.end - interval.start;
+    joursArret += duration / DAY_MS;
+    contractualEnd += duration;
+  }
+  const dateFinEffective = Number.isFinite(contractualEnd) ? new Date(contractualEnd) : null;
+  const joursEcoules = diffDays(today, executionStart);
+  const joursRestants = dateFinEffective ? diffDays(dateFinEffective, today) : 0;
   const delaiTotal = delaiJours + joursArret;
   const pourcentage =
     delaiTotal > 0 ? Math.min(100, Math.max(0, (joursEcoules / delaiTotal) * 100)) : 0;
 
   let status: DelaiStatus = 'normal';
   if (receptionProvisoire || receptionDefinitive) status = 'completed';
+  else if (!dateFinEffective) status = 'unknown';
   else if (joursRestants < 0) status = 'overdue';
   else if (joursRestants <= 15) status = 'critical';
   else if (joursRestants <= 30) status = 'warning';

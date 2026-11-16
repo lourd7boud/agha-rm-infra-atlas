@@ -3,6 +3,7 @@
 // Server Component qui fetch exactement son endpoint /terrain/*.
 import Link from 'next/link';
 import { ExpenseReconciliationPanel } from './ExpenseReconciliationPanel';
+import { TerrainAttachementBatch, type TerrainBatchPeriod } from './TerrainAttachementBatch';
 import { apiGet } from '@/lib/api';
 import type { TerrainJourneeRecord } from '@atlas/contracts';
 import {
@@ -11,7 +12,6 @@ import {
   METEO_LABELS,
   fmtMad,
   type Bordereau,
-  type Periode,
   type BtpProjectDetail,
   type TerrainAttachement,
   type TerrainConsommation,
@@ -34,7 +34,6 @@ import {
   deleteDepenseChantier,
   deleteMaterielChantier,
   deleteRapportChantier,
-  integrerAttachement,
 } from '../actions';
 
 const inputClass =
@@ -1277,17 +1276,26 @@ export async function AttachementsTab({
 }: {
   project: BtpProjectDetail;
 }) {
-  const [attachements, bordereau, periodes] = await Promise.all([
+  const [attachements, bordereau, batchPeriods] = await Promise.all([
     apiGet<TerrainAttachement[]>(
       `/btp/projects/${project.id}/terrain/attachements`,
     ),
     apiGet<Bordereau>(`/btp/projects/${project.id}/bordereau`).catch(
       () => null,
     ),
-    apiGet<Periode[]>(`/btp/projects/${project.id}/periodes`),
+    apiGet<TerrainBatchPeriod[]>(`/btp/projects/${project.id}/terrain/attachements/periodes`),
   ]);
-  const openPeriods = periodes.filter((p) => p.statut === 'en_cours');
   const lignes = bordereau?.lignes ?? [];
+  const unitsByLine = new Map(lignes.map((l) => [l.id ?? String(l.numero), l.unite]));
+  const unitKey = (unit: string) => unit.trim().toUpperCase().replace('3', '³').replace('2', '²');
+  const matchesBordereau = (a: TerrainAttachement) => {
+    const unit = unitsByLine.get(a.ligneId);
+    return unit !== undefined && unitKey(unit) === unitKey(a.unite);
+  };
+  const pendingAttachements = attachements.filter((a) => a.statut === 'saisi' && !a.metreId && a.quantite > 0 && matchesBordereau(a));
+  const batchSources = pendingAttachements.map((source) => ({ ...source,
+    prixDateEffet: lignes.find((line) => line.id === source.ligneId)?.avenant?.dateEffet,
+  }));
   return (
     <div className="space-y-6">
       <form action={createAttachementTerrain} className={cardClass}>
@@ -1307,7 +1315,7 @@ export async function AttachementsTab({
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <label className={labelClass}>
-              Date *
+              Date d’exécution des travaux *
               <input
                 type="date"
                 name="date"
@@ -1358,6 +1366,12 @@ export async function AttachementsTab({
         )}
       </form>
 
+      {(pendingAttachements.length > 0 || batchPeriods.length > 0) && <TerrainAttachementBatch
+        projectId={project.id}
+        periods={batchPeriods}
+        attachements={batchSources}
+      />}
+
       <div className={cardClass}>
         <h3 className="mb-3 text-xs font-semibold uppercase tracking-widest text-faint">
           Attachements saisis ({attachements.length})
@@ -1369,7 +1383,7 @@ export async function AttachementsTab({
             <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="border-b border-line text-left text-[11px] uppercase tracking-widest text-faint">
-                  <th className="py-2 pr-3">Date</th>
+                  <th className="py-2 pr-3">Date déclarée</th>
                   <th className="py-2 pr-3">Prix n°</th>
                   <th className="py-2 pr-3">Désignation</th>
                   <th className="py-2 pr-3 text-right">Quantité</th>
@@ -1384,6 +1398,7 @@ export async function AttachementsTab({
                   <tr key={a.id}>
                     <td className="py-2 pr-3 font-mono text-xs">
                       {fmtDate(a.date)}
+                      {!a.isExecutionDate && <span className="block font-sans text-faint">Exécution non confirmée</span>}
                     </td>
                     <td className="py-2 pr-3 font-mono">
                       {a.numeroPrix ?? '—'}
@@ -1402,7 +1417,8 @@ export async function AttachementsTab({
                         </span>
                       ) : (
                         <span className="rounded-full bg-ochre-soft px-2 py-0.5 text-xs font-semibold text-ochre">
-                          {a.statut === 'integre' ? 'Ancien marquage · lien à vérifier' : 'À intégrer'}
+                          {a.statut === 'integre' ? 'Ancien marquage · lien à vérifier'
+                            : matchesBordereau(a) ? 'À intégrer' : 'Bordereau à vérifier'}
                         </span>
                       )}
                     </td>
@@ -1411,55 +1427,6 @@ export async function AttachementsTab({
                     </td>
                     <td className="py-2 text-right">
                       <div className="flex items-center justify-end gap-3">
-                        {!a.metreId && a.statut !== 'integre' && (
-                          <form
-                            action={integrerAttachement}
-                            className="flex flex-wrap items-center gap-2"
-                          >
-                            <input
-                              type="hidden"
-                              name="projectId"
-                              value={project.id}
-                            />
-                            <input
-                              type="hidden"
-                              name="attachementId"
-                              value={a.id}
-                            />
-                            <label className="text-left text-xs text-muted">
-                              Période de métré
-                              <select
-                                name="periodeId"
-                                required
-                                defaultValue=""
-                                className={`${inputClass} min-h-11`}
-                                aria-label={`Période pour ${a.designation}`}
-                              >
-                                <option value="">Choisir une période</option>
-                                {openPeriods.map((p) => (
-                                  <option key={p.id} value={p.id}>
-                                    N°{p.numero} · {p.libelle ?? 'En cours'}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <button
-                              type="submit"
-                              disabled={openPeriods.length === 0}
-                              className="min-h-11 rounded-lg border border-line px-3 text-xs font-semibold text-cyan focus-visible:outline-2 focus-visible:outline-cyan disabled:opacity-50"
-                            >
-                              Intégrer au métré
-                            </button>
-                            {openPeriods.length === 0 && (
-                              <Link
-                                href={`/projects/${project.id}?tab=metres`}
-                                className="text-xs text-cyan underline"
-                              >
-                                Créer une période en cours
-                              </Link>
-                            )}
-                          </form>
-                        )}
                         {a.statut === 'integre' ? (
                           <Link
                             href={`/projects/${project.id}?tab=metres`}

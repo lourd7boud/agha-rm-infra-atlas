@@ -200,7 +200,7 @@ describe('PortalAuthSession login', () => {
 });
 
 describe('PortalAuthSession session expiry', () => {
-  test('a login-form response triggers exactly one re-login, then succeeds', async () => {
+  test.each([false, true])('a login-form response triggers exactly one re-login (redirect=%s)', async redirect => {
     let logins = 0;
     let protectedHits = 0;
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
@@ -212,9 +212,9 @@ describe('PortalAuthSession session expiry', () => {
       if (url.includes('protected')) {
         protectedHits += 1;
         // First protected GET has expired (login form); second succeeds.
-        return protectedHits === 1
-          ? htmlResponse(LOGIN_PAGE)
-          : htmlResponse(PROTECTED_PAGE);
+        if (protectedHits !== 1) return htmlResponse(PROTECTED_PAGE);
+        if (redirect) return new Response(null, { status: 302, headers: { Location: '/index.php?page=entreprise.EntrepriseHome', 'Set-Cookie': 'PHPSESSID=anonymous-redirect; Path=/' } });
+        return htmlResponse(LOGIN_PAGE, ['PHPSESSID=anonymous-renewal; Path=/']);
       }
       return htmlResponse(LOGIN_PAGE, ['PHPSESSID=get; Path=/']);
     });
@@ -251,5 +251,87 @@ describe('PortalAuthSession session expiry', () => {
     await expect(
       session.authedFetch('https://portal.test/protected'),
     ).rejects.toThrow(/session expired/i);
+  });
+});
+
+describe('PortalAuthSession authenticated transport', () => {
+  const origin = 'https://www.marchespublics.gov.ma';
+
+  test('shares the authenticated cookie across a form, postback and binary response', async () => {
+    const bytes = Uint8Array.of(0x50, 0x4b, 0x03, 0x04);
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(LOGIN_PAGE, { headers: { 'Set-Cookie': 'PHPSESSID=before' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: {
+        Location: '/landing', 'Set-Cookie': 'PHPSESSID=signed-in',
+      } }))
+      .mockResolvedValueOnce(new Response(AUTHED_PAGE))
+      .mockResolvedValueOnce(new Response(PROTECTED_PAGE, { headers: { 'Set-Cookie': 'PHPSESSID=form' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: {
+        Location: '/file', 'Set-Cookie': 'PHPSESSID=file',
+      } }))
+      .mockResolvedValueOnce(new Response(bytes))
+      .mockResolvedValueOnce(new Response(PROTECTED_PAGE));
+    const session = new PortalAuthSession({ ...CREDS, fetchImpl });
+    const transport = await session.authenticatedTransport();
+    await transport(`${origin}/dce`);
+    const redirect = await transport(`${origin}/dce`, { method: 'POST', body: 'validate=1', redirect: 'follow', headers: { Cookie: 'PHPSESSID=caller' } });
+    expect(redirect.status).toBe(302);
+    const response = await transport(new URL(redirect.headers.get('location')!, origin));
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+    await session.authedFetch(`${origin}/protected`);
+
+    expect(fetchImpl.mock.calls.map(([url, init]) => [String(url), init?.method ?? 'GET', init?.redirect])).toEqual([
+      [`${origin}/index.php?page=entreprise.EntrepriseHome`, 'GET', 'manual'],
+      [`${origin}/index.php?page=entreprise.EntrepriseHome`, 'POST', 'manual'],
+      [`${origin}/landing`, 'GET', 'manual'],
+      [`${origin}/dce`, 'GET', 'manual'],
+      [`${origin}/dce`, 'POST', 'manual'],
+      [`${origin}/file`, 'GET', 'manual'],
+      [`${origin}/protected`, 'GET', 'manual'],
+    ]);
+    expect(fetchImpl.mock.calls.slice(2).map(([, init]) => new Headers(init?.headers).get('cookie'))).toEqual([
+      'PHPSESSID=signed-in', 'PHPSESSID=signed-in', 'PHPSESSID=form', 'PHPSESSID=file', 'PHPSESSID=file',
+    ]);
+  });
+
+  test.each(['http://www.marchespublics.gov.ma/steal', 'https://www.marchespublics.gov.ma:444/steal', 'https://user:pw@www.marchespublics.gov.ma/steal', 'https://evil.example/steal'])(
+    'refuses a disallowed authenticated URL before login and transport requests (%s)', async (url) => {
+      const fetchImpl = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(LOGIN_PAGE))
+        .mockResolvedValueOnce(new Response(AUTHED_PAGE, { headers: { 'Set-Cookie': 'PHPSESSID=signed-in' } }));
+      const session = new PortalAuthSession({ ...CREDS, fetchImpl });
+      await expect(session.authedFetch(url)).rejects.toThrow(/off-origin/i);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      const transport = await session.authenticatedTransport();
+      await expect(transport(url)).rejects.toThrow(/off-origin/i);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  test('rejects an unsafe login redirect without sending credentials or cookies to it', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(LOGIN_PAGE, { headers: { 'Set-Cookie': 'PHPSESSID=before' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 307, headers: {
+        Location: 'https://evil.example/steal', 'Set-Cookie': 'PHPSESSID=signed-in',
+      } }));
+    const session = new PortalAuthSession({ ...CREDS, fetchImpl });
+    await expect(session.authedFetch(`${origin}/protected`)).rejects.toThrow(/^Portal request refused: off-origin or invalid URL$/);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('rejects an unsafe withdrawal redirect before accepting its session cookie', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(LOGIN_PAGE))
+      .mockResolvedValueOnce(new Response(AUTHED_PAGE, { headers: { 'Set-Cookie': 'PHPSESSID=signed-in' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: {
+        Location: 'https://evil.example/steal', 'Set-Cookie': 'PHPSESSID=rejected',
+      } }))
+      .mockResolvedValueOnce(new Response(PROTECTED_PAGE));
+    const session = new PortalAuthSession({ ...CREDS, fetchImpl });
+    const transport = await session.authenticatedTransport();
+    await expect(transport(`${origin}/dce`, { method: 'POST' })).rejects.toThrow(/off-origin/i);
+    await transport(`${origin}/protected`);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(new Headers(fetchImpl.mock.calls[3]?.[1]?.headers).get('cookie')).toBe('PHPSESSID=signed-in');
   });
 });

@@ -40,7 +40,7 @@ interface Column {
 const COLUMNS: readonly Column[] = [
   { key: 'buyer', label: 'Acheteur', sortKey: 'buyer', width: 230 },
   { key: 'objet', label: 'Titre', sortKey: null, width: 340 },
-  { key: 'publication', label: 'Date de publication', sortKey: 'publication', width: 150 },
+  { key: 'publication', label: 'Détection ATLAS', sortKey: 'publication', width: 150 },
   { key: 'deadline', label: 'Date limite', sortKey: 'deadline', width: 140 },
   { key: 'category', label: 'Catégorie', sortKey: null, width: 120 },
   { key: 'secteur', label: 'Secteur', sortKey: null, width: 180 },

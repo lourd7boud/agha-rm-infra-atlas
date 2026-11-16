@@ -19,6 +19,7 @@ import {
 import { InMemoryVaultRepository } from '../vault/vault.repository';
 import type { PublishedResult } from '../intel/intel.parser';
 import { buildTenderCompetitorIntel } from './competitor-intel.domain';
+import { DOSSIER_COVERAGE_MARKER } from './dossier-fulltext';
 
 const BUYER = 'REGION DE GUELMIM - OUED NOUN';
 
@@ -346,9 +347,68 @@ describe('TenderChatService.ask — agent capabilities', () => {
     await service.ask(id, 'la visite est-elle obligatoire ?');
 
     const prompt = llm.requests[0]!.prompt!;
-    expect(prompt).toContain('fichiers réels lus du dossier officiel');
+    expect(prompt).toContain('extraits lisibles de la copie conservée');
+    expect(prompt).toContain('Couverture des fichiers et des pages non vérifiée');
+    expect(prompt).toContain('ne prouve JAMAIS');
+    expect(prompt).toContain('non vérifié dans les éléments lisibles fournis');
     expect(prompt).toContain('visite des lieux OBLIGATOIRE');
     expect(prompt).not.toContain('ancien extrait résumé'); // excerpt not used when full files exist
+  });
+
+  test('retains a late CPS source clause in a real-sized long dossier', async () => {
+    const id = await seedTender(repo);
+    const llm = new FakeLlmClient(['ok']);
+    const dossierService = { getDossierMarkdown: async () =>
+      `## RC.pdf\n${'r'.repeat(60_000)}\n## CPS.pdf\n${'c'.repeat(125_000)}\n[Page 40 — OCR local]\nArticle 25 : réception définitive sur procès-verbal.`,
+    } as unknown as import('./dossier.service').DossierService;
+    const service = new TenderChatService(repo, llm, null, null, null, dossierService);
+    await service.ask(id, 'Quelles sont les conditions de réception définitive ?');
+    expect(llm.requests[0]!.prompt?.includes('[Page 40 — OCR local]')).toBe(true);
+    expect(llm.requests[0]!.prompt?.includes('Article 25 : réception définitive sur procès-verbal.')).toBe(true);
+  });
+
+  test('labels only the active archive text with its dated official comparison', async () => {
+    const tender = await repo.create({ reference: 'TEST/DCE', buyerName: 'Test', procedure: 'AOO', objet: 'Travaux',
+      deadlineAt: new Date('2027-01-01T10:00:00Z'),
+      sourceUrl: 'https://www.marchespublics.gov.ma/index.php?refConsultation=123&orgAcronyme=abc' });
+    const sha = 'a'.repeat(64);
+    await repo.updateEnrichment(tender.id, {}, { dossierRevision: {
+      version: 1, officialIdentity: '123/abc', state: 'unchanged', checkedAt: '2026-11-13T20:00:00Z',
+      previousArchiveSha256: sha, sourceArchiveSha256: 'b'.repeat(64), documentsIdentical: true,
+      changedFiles: [], addedFiles: [], removedFiles: [],
+    } });
+    const llm = new FakeLlmClient(['ok', 'ok', 'ok']);
+    let integrity = 'matched';
+    let textSha = sha;
+    const dossierService = {
+      getDossierMarkdown: async () => `${DOSSIER_COVERAGE_MARKER}\n${JSON.stringify({
+        version: 1, archiveSha256: textSha, completeDce: false, latestRevisionVerified: false,
+        manifestTruncated: false, candidateCount: 1, files: [{ name: 'RC.pdf', state: 'readable', usedChars: 20 }],
+      })}\n-->\n## RC.pdf\nPrestations du dossier.`,
+      inspectCachedArchive: async () => ({ state: 'available', integrity }),
+    } as unknown as import('./dossier.service').DossierService;
+    const service = new TenderChatService(repo, llm, null, null, null, dossierService);
+    await service.ask(tender.id, 'Quelles prestations ?');
+    integrity = 'mismatch';
+    await service.ask(tender.id, 'Quelles prestations ?');
+    integrity = 'matched';
+    textSha = 'c'.repeat(64);
+    await service.ask(tender.id, 'Quelles prestations ?');
+    expect(llm.requests[0]?.prompt).toContain('Copie comparée au DCE officiel');
+    expect(llm.requests[1]?.prompt).toContain('Version officielle actuelle non confirmée.');
+    expect(llm.requests[2]?.prompt).toContain('Version officielle actuelle non confirmée.');
+  });
+
+  test('over-budget source text is explicitly described as a truncated excerpt', async () => {
+    const id = await seedTender(repo);
+    const llm = new FakeLlmClient(['ok']);
+    const dossierService = { getDossierMarkdown: async () => 'x'.repeat(260_000) + 'TAIL_NOT_IN_CONTEXT' } as unknown as import('./dossier.service').DossierService;
+    const service = new TenderChatService(repo, llm, null, null, null, dossierService);
+    await service.ask(id, 'résumé');
+    const prompt = llm.requests[0]!.prompt!;
+    expect(prompt.includes('EXTRAIT DCE TRONQUÉ')).toBe(true);
+    expect(prompt.includes('TAIL_NOT_IN_CONTEXT')).toBe(false);
+    expect(prompt.length).toBeLessThan(310_000);
   });
 
   test('prefers the dedicated strong chat client (Opus) over the default llm', async () => {

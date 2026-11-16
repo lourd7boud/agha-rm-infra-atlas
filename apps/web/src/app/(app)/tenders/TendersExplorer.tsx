@@ -9,6 +9,8 @@ import type { PipelineState, TenderProcedure } from '@atlas/contracts';
 import type { TenderInventory, TenderItem } from '@/lib/tenders';
 import { DataTable, type SortKey, type SortState } from './DataTable';
 import { DetailDrawer } from './DetailDrawer';
+import { RadarHealth } from './RadarHealth';
+import { TenderReviewList } from './TenderReviewList';
 import {
   EMPTY_FILTERS,
   FilterSidebar,
@@ -22,6 +24,17 @@ import {
 } from './tenders-query';
 
 const SEEN_KEY = 'atlas.tenders.seen.v1';
+
+const REVIEW_SORTS = [
+  { key: 'publication', dir: 'desc', label: 'Dernières détectées' },
+  { key: 'publication', dir: 'asc', label: 'Détection la plus ancienne' },
+  { key: 'deadline', dir: 'asc', label: 'Échéance la plus proche' },
+  { key: 'deadline', dir: 'desc', label: 'Échéance la plus éloignée' },
+  { key: 'budget', dir: 'desc', label: 'Estimation décroissante' },
+  { key: 'budget', dir: 'asc', label: 'Estimation croissante' },
+  { key: 'buyer', dir: 'asc', label: 'Acheteur de A à Z' },
+  { key: 'buyer', dir: 'desc', label: 'Acheteur de Z à A' },
+] as const;
 
 /** Poll cadence for the live silent refresh (ms). React Query re-runs the CURRENT
  *  page query on this cadence — correct with pagination and far simpler than the
@@ -90,7 +103,7 @@ function downloadCsv(items: readonly TenderItem[], filename: string): void {
     ['Secteur', (i) => i.secteur],
     ['Région', (i) => i.region],
     ['Lieu d\'exécution', (i) => i.location ?? i.ville ?? ''],
-    ['Date publication', (i) => i.publishedAt],
+    ['Date de détection ATLAS', (i) => i.publishedAt],
     ['Date limite', (i) => i.deadlineAt],
     ['Budget (MAD)', (i) => i.estimationMad ?? ''],
     ['Caution (MAD)', (i) => i.cautionProvisoireMad ?? ''],
@@ -203,6 +216,14 @@ export function TendersExplorer({
   // Publication DESC default — newest postings on top (datao parity). Seeded from
   // the same value the SSR page fetched with so the initial cache key matches.
   const [sort, setSort] = useState<SortState>(initialParams.sort);
+  const [view, setView] = useState<'review' | 'table'>('review');
+  const [reviewNow, setReviewNow] = useState<number | null>(null);
+  useEffect(() => {
+    const updateClock = () => setReviewNow(Date.now());
+    updateClock();
+    const timer = window.setInterval(updateClock, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const [page, setPage] = useState(initialParams.page);
   // Raw search drives the input; the debounced value drives the query so we
   // don't refetch on every keystroke.
@@ -305,6 +326,10 @@ export function TendersExplorer({
   }, [resetPage]);
 
   const closeDrawer = useCallback(() => setSelected(null), []);
+  const selectTender = (item: TenderItem) => {
+    markSeen(item.id);
+    setSelected(item);
+  };
 
   const onSortChange = useCallback(
     (key: SortKey) => {
@@ -426,6 +451,7 @@ export function TendersExplorer({
 
   return (
     <div>
+      <RadarHealth />
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-display text-[2rem] font-semibold tracking-tight">
@@ -546,18 +572,44 @@ export function TendersExplorer({
         )}
 
         <div className="min-w-0">
-          <div className="rounded-xl border border-line bg-paper-2 shadow-card">
-            <DataTable
-              items={pageItems}
-              sort={sort}
-              onSortChange={onSortChange}
-              selectedId={selected?.id ?? null}
-              onSelect={(item) => {
-                markSeen(item.id);
-                setSelected(item);
-              }}
-              isSeen={isSeen}
-            />
+          <div className="overflow-hidden rounded-xl border border-line bg-paper-2 shadow-card">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2.5">
+              <div role="group" aria-label="Affichage des résultats" className="flex gap-1 rounded-lg border border-line bg-sand/40 p-0.5">
+                {([{ key: 'review', label: 'Opportunités' }, { key: 'table', label: 'Tableau' }] as const).map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    onClick={() => setView(option.key)}
+                    aria-pressed={view === option.key}
+                    className={`rounded-md px-2.5 py-1.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-cyan ${view === option.key ? 'bg-cyan-soft text-ink' : 'text-muted hover:text-ink'}`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              {view === 'review' && (
+                <label className="flex flex-wrap items-center gap-2 text-xs font-medium text-muted">
+                  Trier par
+                  <select
+                    value={`${sort.key}:${sort.dir}`}
+                    onChange={(event) => {
+                      const option = REVIEW_SORTS.find(({ key, dir }) => `${key}:${dir}` === event.target.value);
+                      if (!option) return;
+                      setSort({ key: option.key, dir: option.dir });
+                      resetPage();
+                    }}
+                    className="max-w-full rounded-md border border-line bg-paper-2 px-2 py-1.5 text-ink focus-visible:outline-2 focus-visible:outline-cyan"
+                  >
+                    {REVIEW_SORTS.map(({ key, dir, label }) => <option key={`${key}:${dir}`} value={`${key}:${dir}`}>{label}</option>)}
+                  </select>
+                </label>
+              )}
+            </div>
+            {view === 'table' ? (
+              <DataTable items={pageItems} sort={sort} onSortChange={onSortChange} selectedId={selected?.id ?? null} onSelect={selectTender} isSeen={isSeen} />
+            ) : pageItems.length > 0 && (
+              <TenderReviewList items={pageItems} selectedId={selected?.id ?? null} onSelect={selectTender} isSeen={isSeen} now={reviewNow} />
+            )}
             {pageItems.length === 0 && (
               <p className="p-10 text-center text-muted">
                 {isError

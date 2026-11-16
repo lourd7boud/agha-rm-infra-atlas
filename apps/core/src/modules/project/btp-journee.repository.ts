@@ -433,7 +433,7 @@ export class DrizzleBtpJourneeRepository implements BtpJourneeRepository {
       if (!v.bpuLigneId) continue;
       const id = randomUUID();
       await tx.execute(
-        sql`INSERT INTO project.chantier_attachement(id,project_id,date,ligne_id,designation,unite,quantite,note,saisi_par) VALUES(${id},${projectId},${p.date},${v.bpuLigneId},${v.designation},${v.unite},${v.quantite},${v.note},${actor})`,
+        sql`INSERT INTO project.chantier_attachement(id,project_id,date,is_execution_date,ligne_id,designation,unite,quantite,note,saisi_par) VALUES(${id},${projectId},${p.date},true,${v.bpuLigneId},${v.designation},${v.unite},${v.quantite},${v.note},${actor})`,
       );
       await source('project.chantier_attachement', id);
     }

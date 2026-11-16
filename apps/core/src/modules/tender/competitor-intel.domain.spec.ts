@@ -51,6 +51,18 @@ describe('buildTenderCompetitorIntel', () => {
     expect(intel.winner).toBeNull();
   });
 
+  test('a shared reference is not evidence of an exact result', () => {
+    const intel = buildTenderCompetitorIntel({
+      reference: '05/2026',
+      buyerName: 'Commune de Rabat',
+      deadlineAt: new Date('2026-05-01T09:00:00Z'),
+      ambiguousResultReference: true,
+    }, [bid({ isWinner: true })], NOW);
+    expect(intel.mode).toBe('open');
+    expect(intel.participants).toEqual([]);
+    expect(intel.winner).toBeNull();
+  });
+
   test('a bid with the same generic reference but a DIFFERENT buyer never marks the tender closed', () => {
     const tender = {
       reference: '05/2026',

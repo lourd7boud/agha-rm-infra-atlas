@@ -77,7 +77,7 @@ export interface FetchedObject {
 export interface ObjectStorage {
   ensureBucket(): Promise<void>;
   put(key: string, body: Buffer, mime: string): Promise<StoredObject>;
-  exists(key: string): Promise<boolean>;
+  exists(key: string, signal?: AbortSignal): Promise<boolean>;
   delete(key: string): Promise<void>;
   presignedGetUrl(key: string, expiresSeconds?: number): Promise<string>;
   /**
@@ -85,7 +85,7 @@ export interface ObjectStorage {
    * publicly: presigned URLs point at the docker-internal host and are
    * unreachable from a browser.
    */
-  getObject(key: string): Promise<FetchedObject>;
+  getObject(key: string, signal?: AbortSignal): Promise<FetchedObject>;
 }
 
 export const OBJECT_STORAGE = Symbol('OBJECT_STORAGE');
@@ -148,9 +148,9 @@ export class S3ObjectStorage implements ObjectStorage {
     );
   }
 
-  async exists(key: string): Promise<boolean> {
+  async exists(key: string, signal?: AbortSignal): Promise<boolean> {
     try {
-      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }), { abortSignal: signal });
       return true;
     } catch (error) {
       const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata
@@ -168,9 +168,10 @@ export class S3ObjectStorage implements ObjectStorage {
     );
   }
 
-  async getObject(key: string): Promise<FetchedObject> {
+  async getObject(key: string, signal?: AbortSignal): Promise<FetchedObject> {
     const result = await this.client.send(
       new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      { abortSignal: signal },
     );
     if (!result.Body) throw new Error(`Objet vide ou introuvable: ${key}`);
     return {

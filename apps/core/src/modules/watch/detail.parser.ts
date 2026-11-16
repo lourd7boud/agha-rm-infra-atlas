@@ -23,15 +23,17 @@
  * whose titre mentions estimation.
  */
 
+import { load } from 'cheerio';
+
 const SUMMARY = 'idEntrepriseConsultationSummary';
 
 /**
  * Schema version of the harvested detail block. Bump whenever parseDetailPage's
  * field set changes so the DB backfill (findDetailBackfillTargets) re-crawls rows
  * that were stamped by an older parser and picks up the newly-added fields.
- * v1 = {reference,objet,categorie,caution,estimation-broken}. v2 = full block.
+ * v1 = basic fields; v2 = summary; v3 = expanded lists/publication; v4 = full subject.
  */
-export const DETAIL_VERSION = 2;
+export const DETAIL_VERSION = 4;
 
 export interface DetailLink {
   refConsultation: string;
@@ -71,6 +73,9 @@ export interface DetailFields {
   modePassation: string | null;
   location: string | null;
   deadline: string | null;
+  publishedAt?: string | null;
+  dceComplement?: 'listed' | 'not_listed';
+  responseMode?: string | null;
   domainesActivite: string | null;
   adresseRetrait: string | null;
   adresseDepot: string | null;
@@ -296,6 +301,27 @@ function parseVisites(html: string): PortalVisite[] {
   return visites;
 }
 
+/** Only records what the public page shows. Private addenda may be separate. */
+function parseDceComplement(html: string): DetailFields['dceComplement'] {
+  if (!html.includes('linkDownloadComplement')) return undefined;
+  const $ = load(html);
+  const control = $('a[id="ctl0_CONTENU_PAGE_linkDownloadComplement"]');
+  if (control.length !== 1) return undefined;
+  const inactive = control.parents().add(control).toArray().some(node => {
+    const element = $(node);
+    return element.is('[hidden], [disabled], [aria-hidden="true"], [aria-disabled="true"]') ||
+      /display\s*:\s*none|visibility\s*:\s*hidden/i.test(element.attr('style') ?? '');
+  });
+  if (inactive) return 'not_listed';
+  const href = control.attr('href')?.trim();
+  if (!href || href.startsWith('#')) return 'not_listed';
+  try {
+    const url = new URL(href, 'https://www.marchespublics.gov.ma/index.php');
+    return url.protocol === 'https:' && ['www.marchespublics.gov.ma', 'marchespublics.gov.ma'].includes(url.hostname) &&
+      !url.port && !url.username && !url.password ? 'listed' : 'not_listed';
+  } catch { return 'not_listed'; }
+}
+
 /** Extract the publishable fields from a consultation detail page. */
 export function parseDetailPage(html: string): DetailFields {
   const modePassationRaw = fieldText(html, 'modePassation');
@@ -314,14 +340,17 @@ export function parseDetailPage(html: string): DetailFields {
       : null,
     location: fieldText(html, 'lieuxExecutions'),
     deadline: fieldText(html, 'dateHeureLimiteRemisePlis'),
-    domainesActivite: fieldRich(html, 'domainesActivite'),
+    publishedAt: fieldText(html, 'dateMiseEnLigne'),
+    dceComplement: parseDceComplement(html),
+    responseMode: fieldText(html, 'modalitesReponse'),
+    domainesActivite: fieldRich(html, 'domainesActiviteComplet') ?? fieldRich(html, 'domainesActivite'),
     adresseRetrait: fieldText(html, 'adresseRetraitDossiers'),
     adresseDepot: fieldText(html, 'adresseDepotOffres'),
     lieuOuverturePlis: fieldText(html, 'lieuOuverturePlis'),
     prixAcquisitionPlansMad: parseMoneyMad(fieldText(html, 'prixAcquisitionPlan')),
     reserveAuxPme: parseReserveAuxPme(html),
-    qualifications: fieldRich(html, 'qualification'),
-    agrements: fieldRich(html, 'agrements'),
+    qualifications: fieldRich(html, 'qualificationComplet') ?? fieldRich(html, 'qualification'),
+    agrements: fieldRich(html, 'agrementsComplet') ?? fieldRich(html, 'agrements'),
     prospectus: fieldText(html, 'dateEchantillons'),
     reunion: fieldText(html, 'dateReunion'),
     variante: parseOuiNon(fieldText(html, 'varianteValeur')),

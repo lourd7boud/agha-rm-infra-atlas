@@ -18,8 +18,14 @@ import {
   Query,
 } from '@nestjs/common';
 import { z } from 'zod';
+import { getDb } from '../../db/client';
+import { OBJECT_STORAGE, type ObjectStorage } from '../vault/storage';
+import { BtpIndexImportService } from './btp-index-import.service';
+import { BtpIndexImportController } from './btp-index-import.controller';
 import { Roles } from '../auth/auth.module';
 import { VaultModule } from '../vault/vault.module';
+import { TenderModule } from '../tender/tender.module';
+import { BtpSourceController } from './btp-source.controller';
 import {
   BTP_EXECUTION_REPOSITORY,
   type BtpExecutionRepository,
@@ -32,8 +38,7 @@ import { BtpAssetsController, BtpRegistresController } from './btp-registres.con
 import { BtpExportService } from './btp-export.service';
 import { toHttp, WRITE_ROLES } from './btp-http.helpers';
 import { computeDelaiInfo } from './btp-registres.domain';
-import { calculateDecompteRevision, type IndexValues } from './btp-revision.domain';
-import { round2, toDecimal, toNumber } from './btp-finance.domain';
+import { resolveRevisionDates } from './btp-workflow.domain';
 import { BtpEntrepriseController, BtpTerrainController } from './btp-terrain.controller';
 import { BtpJourneeModule } from './btp-journee.module';
 import { BtpTerrainReconciliationModule } from './btp-terrain-reconciliation.module';
@@ -48,12 +53,15 @@ import {
 
 const arretSchema = z.object({
   id: z.string().optional(),
+  sourceOdsId: z.string().uuid().optional(),
+  repriseOdsId: z.string().uuid().optional(),
   dateArret: z.string().min(8),
   dateReprise: z.string().nullish(),
   motif: z.string().max(500).nullish(),
 });
 
 const ficheSchema = z.object({
+  tenderId: z.string().uuid().optional(),
   reference: z.string().min(1).max(200),
   name: z.string().min(1).max(500),
   objet: z.string().max(4000).optional(),
@@ -64,8 +72,10 @@ const ficheSchema = z.object({
   typeMarche: z.enum(['normal', 'negocie']).optional(),
   modePassation: z.string().max(200).optional(),
   ordreServiceDate: z.coerce.date().optional(),
+  executionStartDate: z.coerce.date().optional(),
   delaiMois: z.number().positive().max(240).optional(),
   dateOuverture: z.coerce.date().optional(),
+  dateLimiteRemiseOffres: z.coerce.date().optional(),
   assistanceTechnique: z.string().max(300).optional(),
   maitreOeuvre: z.string().max(300).optional(),
   rc: z.string().max(100).optional(),
@@ -89,12 +99,15 @@ const fichePatchSchema = ficheSchema
     receptionDefinitive: z.coerce.date().nullable(),
     achevementTravaux: z.coerce.date().nullable(),
     ordreServiceDate: z.coerce.date().nullable(),
+    executionStartDate: z.coerce.date().nullable(),
     delaiMois: z.number().positive().max(240).nullable(),
     dateOuverture: z.coerce.date().nullable(),
+    dateLimiteRemiseOffres: z.coerce.date().nullable(),
     arrets: z.array(arretSchema),
+    expectedArrets: z.array(arretSchema),
   })
   .partial()
-  .refine((patch) => Object.keys(patch).length > 0, {
+  .refine((patch) => Object.keys(patch).some((key) => key !== 'expectedArrets'), {
     message: 'Au moins un champ à modifier est requis',
   });
 
@@ -112,6 +125,7 @@ const bordereauSchema = z.object({
   designation: z.string().max(1000).optional(),
   lignes: z.array(bordereauLigneSchema).min(1).max(2000),
 });
+const projectCreateSchema = ficheSchema.extend({ creationId: z.string().uuid().optional(), bordereau: bordereauSchema.optional() });
 
 const periodeInputSchema = z.object({
   libelle: z.string().max(200).optional(),
@@ -127,6 +141,7 @@ const periodePatchSchema = z
     libelle: z.string().max(200),
     dateDebut: z.coerce.date().nullable(),
     dateFin: z.coerce.date().nullable(),
+    revisionMonthlyHt: z.record(z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/), z.number()).nullable(),
     tauxTva: z.number().min(0).max(100),
     tauxRetenue: z.number().min(0).max(100),
     isDecompteDernier: z.boolean(),
@@ -194,9 +209,16 @@ const decomptePatchSchema = z
   .refine((patch) => Object.keys(patch).length > 0, { message: 'Aucun champ' });
 
 const revisionConfigSchema = z.object({
-  formulaId: z.string().uuid().nullable().optional(),
-  baseIndexes: z.record(z.string(), z.number()).optional(),
+  formulaId: z.string().regex(/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i).nullable().optional(),
+  formula: z.object({
+    fixedPart: z.number().min(0.15).max(1),
+    weights: z.record(z.string().trim().min(1).max(50), z.number().positive().max(1)),
+  }).optional(),
+  baseIndexes: z.record(z.string().trim().min(1), z.number().positive()).optional(),
   baseDate: z.coerce.date().nullable().optional(),
+  contractDeadline: z.coerce.date().nullable().optional(),
+  delayAttributable: z.boolean().nullable().optional(),
+  postingMode: z.enum(['each_decompte', 'final_only']).optional(),
   isEnabled: z.boolean().optional(),
   notes: z.string().max(2000).nullable().optional(),
 });
@@ -241,7 +263,7 @@ export class BtpProjectsController {
   @Roles(...WRITE_ROLES)
   @Post('projects')
   async create(@Body() body: unknown) {
-    const parsed = ficheSchema.safeParse(body);
+    const parsed = projectCreateSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const mode: ModeObtention = parsed.data.modeObtention ?? 'ao_direct';
     const acquisition = parseAcquisition(mode, parsed.data.acquisition);
@@ -249,15 +271,19 @@ export class BtpProjectsController {
     // NOUS sommes l'attributaire (direct/BC) → identité de notre société,
     // sauf si la fiche fournit explicitement d'autres valeurs.
     const nous = mode === 'ao_direct' || mode === 'bon_commande';
-    return this.execution.createProject({
-      ...parsed.data,
-      modeObtention: mode,
-      acquisition: acquisition.value,
-      societe: parsed.data.societe ?? (nous ? NOTRE_ENTREPRISE.societe : undefined),
-      rc: parsed.data.rc ?? (nous ? NOTRE_ENTREPRISE.rc : undefined),
-      cnss: parsed.data.cnss ?? (nous ? NOTRE_ENTREPRISE.cnss : undefined),
-      patente: parsed.data.patente ?? (nous ? NOTRE_ENTREPRISE.patente : undefined),
-    });
+    try {
+      return await this.execution.createProject({
+        ...parsed.data,
+        modeObtention: mode,
+        acquisition: acquisition.value,
+        societe: parsed.data.societe ?? (nous ? NOTRE_ENTREPRISE.societe : undefined),
+        rc: parsed.data.rc ?? (nous ? NOTRE_ENTREPRISE.rc : undefined),
+        cnss: parsed.data.cnss ?? (nous ? NOTRE_ENTREPRISE.cnss : undefined),
+        patente: parsed.data.patente ?? (nous ? NOTRE_ENTREPRISE.patente : undefined),
+      });
+    } catch (error) {
+      toHttp(error);
+    }
   }
 
   /** Autocomplete data for société / AT / MOE (derived from existing fiches). */
@@ -276,6 +302,7 @@ export class BtpProjectsController {
   @Get('projects/delais')
   async delais() {
     const { items } = await this.execution.listPortfolio({ page: 1, limit: 100 });
+    const extensions = await this.registres.approvedExtensions(items.map((project) => project.id));
     return items.map((project) => ({
       project: {
         id: project.id,
@@ -289,6 +316,8 @@ export class BtpProjectsController {
       },
       delai: computeDelaiInfo({
         ordreServiceDate: project.ordreServiceDate,
+        executionStartDate: project.executionStartDate,
+        extraDelaiMois: extensions.get(project.id) ?? 0,
         delaiMois: project.delaiMois,
         arrets: project.arrets,
         receptionProvisoire: project.receptionProvisoire,
@@ -313,6 +342,8 @@ export class BtpProjectsController {
       ...project,
       delai: computeDelaiInfo({
         ordreServiceDate: project.ordreServiceDate,
+        executionStartDate: project.executionStartDate,
+        extraDelaiMois: avenants.delaiSupplementaireMois,
         delaiMois: project.delaiMois,
         arrets: project.arrets,
         receptionProvisoire: project.receptionProvisoire,
@@ -335,6 +366,7 @@ export class BtpProjectsController {
             statut: dernier.statut,
           }
         : null,
+      montantMarcheMad: avenants.montantActuel,
       situationContractuelle: avenants,
     };
   }
@@ -354,9 +386,13 @@ export class BtpProjectsController {
       patch.modeObtention = mode;
       patch.acquisition = acquisition.value;
     }
-    const updated = await this.execution.updateFiche(id, patch as never);
-    if (!updated) throw new NotFoundException(`Marché introuvable: ${id}`);
-    return updated;
+    try {
+      const updated = await this.execution.updateFiche(id, patch as never);
+      if (!updated) throw new NotFoundException(`Marché introuvable: ${id}`);
+      return updated;
+    } catch (error) {
+      toHttp(error);
+    }
   }
 
   @Roles('direction', 'admin-si')
@@ -394,8 +430,14 @@ export class BtpExecutionController {
 
   // Bordereau
   @Get('bordereau')
-  async getBordereau(@Param('projectId') projectId: string) {
-    return (await this.execution.getBordereau(projectId)) ?? { projectId, lignes: [] };
+  async getBordereau(@Param('projectId') projectId: string, @Query('asOf') asOf?: string) {
+    let end: Date | undefined;
+    if (asOf !== undefined) {
+      const parsed = z.iso.date().safeParse(asOf);
+      if (!parsed.success) throw new BadRequestException('Renseigner une date au format AAAA-MM-JJ.');
+      end = new Date(`${parsed.data}T00:00:00Z`);
+    }
+    return (await this.execution.getBordereau(projectId, end)) ?? { projectId, lignes: [] };
   }
 
   @Roles(...WRITE_ROLES)
@@ -542,75 +584,33 @@ export class BtpExecutionController {
   // Révision des prix (per-marché view: config + analysis table)
   @Get('revision')
   async revision(@Param('projectId') projectId: string) {
-    const [config, formulas, indexes, decomptes, periodes, project] = await Promise.all([
-      this.registres.getRevisionConfig(projectId),
-      this.registres.listFormulas(),
+    const configPromise = this.registres.getRevisionConfig(projectId);
+    const [config, formulas, indexes, decomptes, periodes, project, summary, report] = await Promise.all([
+      configPromise,
+      configPromise.then((config) => this.registres.listFormulas(config?.formulaId)),
       this.registres.listIndexes(),
       this.execution.listDecomptes(projectId),
       this.execution.listPeriodes(projectId),
       this.execution.getProject(projectId),
+      this.registres.avenantSummary(projectId),
+      this.execution.getRevisionReport(projectId),
     ]);
     const formula = config?.formulaId
       ? (formulas.find((f) => f.id === config.formulaId) ?? null)
       : null;
-    const monthlyIndexes = new Map<string, IndexValues>(
-      indexes.map((i) => [
-        `${i.monthDate.getFullYear()}-${String(i.monthDate.getMonth() + 1).padStart(2, '0')}`,
-        i.indexValues,
-      ]),
-    );
     const periodeById = new Map(periodes.map((p) => [p.id, p]));
-    // Source (RevisionTab): la chaîne d'analyse démarre à l'O.S.C, chaque
-    // décompte couvre [fin du décompte précédent → sa date de fin] — la date
-    // de début des périodes est ignorée (souvent laissée au jour de saisie).
-    let previousEnd: Date | null = project?.ordreServiceDate ?? null;
-    let previousHt = 0;
-    const table = decomptes.map((decompte) => {
-      const periode = decompte.periodeId ? periodeById.get(decompte.periodeId) : undefined;
-      // Montant à réviser = HT de la période (delta, non cumulatif).
-      const montantAReviser = toNumber(round2(toDecimal(decompte.totalHtMad).minus(previousHt)));
-      previousHt = decompte.totalHtMad;
-      const dateFin = periode?.dateFin ?? null;
-      if (!config || !formula || !previousEnd || !dateFin) {
-        return {
-          decompteId: decompte.id,
-          numero: decompte.numero,
-          periodeLibelle: decompte.periodeLibelle,
-          montantAReviser,
-          coefficient: null,
-          montantRevision: null,
-          missingMonths: [] as string[],
-          details: [],
-          applied: decompte.isDernier && decompte.revisionMontantMad !== 0,
-        };
-      }
-      const result = calculateDecompteRevision({
-        montantAReviser,
-        periodStart: previousEnd,
-        periodEnd: dateFin,
-        baseIndexes: config.baseIndexes,
-        monthlyIndexes,
-        formula: {
-          name: formula.name,
-          fixedPart: formula.fixedPart,
-          weights: formula.weights,
-        },
-      });
-      previousEnd = dateFin;
-      return {
-        decompteId: decompte.id,
-        numero: decompte.numero,
-        periodeLibelle: decompte.periodeLibelle,
-        montantAReviser,
-        coefficient: result.coefficient,
-        montantRevision: result.montantRevision,
-        totalDays: result.totalDays,
-        details: result.details,
-        missingMonths: result.missingMonths,
-        applied: decompte.isDernier && decompte.revisionMontantMad !== 0,
-      };
-    });
-    return { config, formulas, formula, indexes, table };
+    const table = decomptes.map((decompte) => ({
+      decompteId: decompte.id,
+      numero: decompte.numero,
+      periode: decompte.periodeId ? periodeById.get(decompte.periodeId) ?? null : null,
+      statut: decompte.statut,
+      isDernier: decompte.isDernier,
+      dateDecompte: decompte.dateDecompte,
+      cumulative: decompte.revisionMontantMad,
+      trace: decompte.revisionTrace,
+    }));
+    return { config, formulas, formula, indexes, table, report,
+      defaults: project ? resolveRevisionDates(project, config, summary.delaiSupplementaireMois) : null };
   }
 
   @Roles(...WRITE_ROLES)
@@ -618,13 +618,24 @@ export class BtpExecutionController {
   async saveRevisionConfig(@Param('projectId') projectId: string, @Body() body: unknown) {
     const parsed = revisionConfigSchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
-    const config = await this.registres.saveRevisionConfig(projectId, parsed.data);
-    // The révision feeds the dernier décompte — recompute the chain.
-    await this.execution.rebuildProjectChain(projectId);
-    return config;
+    try {
+      return await this.registres.saveRevisionConfig(projectId, parsed.data);
+    } catch (error) {
+      toHttp(error);
+    }
   }
 
   // Export Excel
+  @Get('export/revision.xlsx')
+  async exportRevisionXlsx(@Param('projectId') projectId: string) {
+    return this.exports.revision(projectId, 'xlsx');
+  }
+
+  @Get('export/revision.pdf')
+  async exportRevisionPdf(@Param('projectId') projectId: string) {
+    return this.exports.revision(projectId, 'pdf');
+  }
+
   @Get('export/bordereau')
   async exportBordereau(@Param('projectId') projectId: string) {
     return this.exports.bordereau(projectId);
@@ -684,16 +695,24 @@ export class BtpExecutionController {
 }
 
 @Module({
-  imports: [BtpRepositoryModule, VaultModule, BtpJourneeModule, BtpTerrainReconciliationModule],
+  imports: [BtpRepositoryModule, VaultModule, TenderModule, BtpJourneeModule, BtpTerrainReconciliationModule],
   controllers: [
+    BtpIndexImportController,
     BtpProjectsController,
+    BtpSourceController,
     BtpExecutionController,
     BtpRegistresController,
     BtpAssetsController,
     BtpTerrainController,
     BtpEntrepriseController,
   ],
-  providers: [BtpExportService],
+  providers: [BtpExportService, {
+    provide: BtpIndexImportService,
+    inject: [OBJECT_STORAGE],
+    useFactory: (storage: ObjectStorage) => new BtpIndexImportService(
+      process.env.DATABASE_URL ? getDb(process.env.DATABASE_URL) : null, storage,
+    ),
+  }],
   exports: [BtpRepositoryModule],
 })
 export class BtpModule {}

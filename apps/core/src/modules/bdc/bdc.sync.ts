@@ -1,5 +1,6 @@
 // Synchronisation automatique et manuelle du miroir BDC.
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { nextPmmpOpening, PmmpClosedError } from '../../lib/pmmp-hours';
 import { BdcCrawler } from './bdc.crawler';
 import { BDC_REPOSITORY, type BdcRepository } from './bdc.repository';
 
@@ -16,6 +17,7 @@ export interface BdcSweepResult {
   details: number;
   resultatsInseres: number;
   resultatsPages: number;
+  portalReopensAt?: Date;
 }
 
 const positiveInt = (value: number | undefined, fallback: number): number =>
@@ -39,6 +41,12 @@ export class BdcSyncService {
   ) {}
 
   async run(options: BdcSweepOptions = {}): Promise<BdcSweepResult> {
+    const result: BdcSweepResult = {
+      pages: 0, inserted: 0, updated: 0, details: 0, resultatsInseres: 0, resultatsPages: 0,
+    };
+    const reopening = nextPmmpOpening();
+    if (reopening) return { ...result, portalReopensAt: reopening };
+
     const maxPages = positiveInt(options.pages, envInt('BDC_SWEEP_PAGES', 5));
     const maxDetails = Number.isInteger(options.details) && options.details! >= 0
       ? options.details!
@@ -47,60 +55,59 @@ export class BdcSyncService {
       ? options.resultats!
       : envInt('BDC_SWEEP_RESULTATS', 3);
 
-    let inserted = 0;
-    let updated = 0;
-    let pages = 0;
-    for await (const { liste } of this.crawler.crawlListe(maxPages)) {
-      pages += 1;
-      if (liste.items.length === 0) break;
-      const result = await this.repo.upsertAvisFromListe(
-        liste.items.map((item) => ({
-          portalId: item.portalId,
-          reference: item.reference,
-          objet: item.objet,
-          acheteur: item.acheteur,
-          statut: item.statut,
-          datePublication: null,
-          dateLimite: item.dateLimite,
-          lieu: item.lieu,
-        })),
-      );
-      inserted += result.inserted;
-      updated += result.updated;
-    }
-
-    const pending = await this.repo.avisSansDetail(maxDetails);
-    let details = 0;
-    if (pending.length > 0) {
-      const byPortal = await this.crawler.fetchDetailsBatch(pending.map((item) => item.portalId));
-      for (const [portalId, detail] of byPortal) {
-        await this.repo.saveAvisDetail(portalId, {
-          categorie: detail.categorie,
-          naturePrestation: detail.naturePrestation,
-          pieces: detail.pieces,
-          articles: detail.articles,
-          datePublication: detail.datePublication,
-          dateLimite: detail.dateLimite,
-        });
-        details += 1;
+    try {
+      for await (const { liste } of this.crawler.crawlListe(maxPages)) {
+        result.pages += 1;
+        if (liste.items.length === 0) break;
+        const stored = await this.repo.upsertAvisFromListe(
+          liste.items.map((item) => ({
+            portalId: item.portalId,
+            reference: item.reference,
+            objet: item.objet,
+            acheteur: item.acheteur,
+            statut: item.statut,
+            datePublication: null,
+            dateLimite: item.dateLimite,
+            lieu: item.lieu,
+          })),
+        );
+        result.inserted += stored.inserted;
+        result.updated += stored.updated;
       }
-    }
 
-    let resultatsInseres = 0;
-    let resultatsPages = 0;
-    if (maxResultats > 0) {
-      for await (const { resultats } of this.crawler.crawlResultats(maxResultats)) {
-        resultatsPages += 1;
-        if (resultats.items.length === 0) break;
-        resultatsInseres += await this.repo.upsertResultats(resultats.items);
+      const pending = await this.repo.avisSansDetail(maxDetails);
+      if (pending.length > 0) {
+        const byPortal = await this.crawler.fetchDetailsBatch(pending.map((item) => item.portalId));
+        for (const [portalId, detail] of byPortal) {
+          await this.repo.saveAvisDetail(portalId, {
+            categorie: detail.categorie,
+            naturePrestation: detail.naturePrestation,
+            pieces: detail.pieces,
+            articles: detail.articles,
+            datePublication: detail.datePublication,
+            dateLimite: detail.dateLimite,
+          });
+          result.details += 1;
+        }
       }
-      await this.repo.linkResultatsToAvis();
+      if (maxResultats > 0) {
+        for await (const { resultats } of this.crawler.crawlResultats(maxResultats)) {
+          result.resultatsPages += 1;
+          if (resultats.items.length === 0) break;
+          result.resultatsInseres += await this.repo.upsertResultats(resultats.items);
+        }
+        await this.repo.linkResultatsToAvis();
+      }
+    } catch (error) {
+      if (!(error instanceof PmmpClosedError)) throw error;
+      return { ...result, portalReopensAt: error.portalReopensAt };
     }
 
-    const summary = { pages, inserted, updated, details, resultatsInseres, resultatsPages };
+    const endedDuringClosure = nextPmmpOpening();
+    if (endedDuringClosure) return { ...result, portalReopensAt: endedDuringClosure };
     this.logger.log(
-      `BDC sweep: ${pages} pages, +${inserted} avis, ${details} détails, +${resultatsInseres} résultats (${resultatsPages} p.)`,
+      `BDC sweep: ${result.pages} pages, +${result.inserted} avis, ${result.details} détails, +${result.resultatsInseres} résultats (${result.resultatsPages} p.)`,
     );
-    return summary;
+    return result;
   }
 }

@@ -76,14 +76,19 @@ const consommationSchema = z.object({
   note: z.string().max(1000).nullish(),
 });
 
+const executionDay = z.iso.date();
 const attachementSchema = z.object({
-  date: z.coerce.date(),
+  date: z.union([executionDay, z.iso.datetime({ offset: true })]),
+  isExecutionDate: z.boolean().default(false),
   ligneId: z.string().min(1).max(100),
   numeroPrix: z.string().max(50).nullish(),
   designation: z.string().min(1).max(2000),
   unite: z.string().min(1).max(20),
   quantite: z.number().positive().max(1_000_000_000),
   note: z.string().max(1000).nullish(),
+}).refine(({ date, isExecutionDate }) => !isExecutionDate || executionDay.safeParse(date).success, {
+  path: ['date'],
+  message: 'Indiquer le jour d’exécution au format AAAA-MM-JJ.',
 });
 
 const depenseSchema = z.object({
@@ -261,6 +266,11 @@ export class BtpTerrainController {
     return this.terrain.listAttachements(projectId);
   }
 
+  @Get('attachements/periodes')
+  async listIntegrationWindows(@Param('projectId') projectId: string) {
+    return this.execution.listTerrainIntegrationWindows(projectId);
+  }
+
   @Roles(...TERRAIN_ROLES)
   @Post('attachements')
   async createAttachement(
@@ -275,7 +285,8 @@ export class BtpTerrainController {
     if (!ligne) throw new BadRequestException('La ligne du bordereau n’appartient pas à ce projet');
     return this.terrain.createAttachement({
       projectId,
-      date: parsed.data.date,
+      date: new Date(parsed.data.date),
+      isExecutionDate: parsed.data.isExecutionDate,
       ligneId: parsed.data.ligneId,
       numeroPrix: String(ligne.numero),
       designation: ligne.designation,
@@ -287,6 +298,20 @@ export class BtpTerrainController {
   }
 
   /** L'intégration au métré officiel reste un geste du bureau. */
+  @Roles(...WRITE_ROLES)
+  @Post('attachements/integrer')
+  async integrerAttachements(@Param('projectId') projectId: string, @Body() body: unknown, @Req() req: AuthedRequest) {
+    const parsed = z.object({
+      periodeId: z.string().uuid(),
+      attachementIds: z.array(z.string().uuid()).min(1).max(100),
+    }).safeParse(body);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const { attachementIds, periodeId } = parsed.data;
+    try {
+      return await this.execution.integrateTerrainAttachements(projectId, attachementIds, periodeId, actorFrom(req).name);
+    } catch (error) { toHttp(error); }
+  }
+
   @Roles(...WRITE_ROLES)
   @Post('attachements/:id/integrer')
   async integrerAttachement(@Param('projectId') projectId: string, @Param('id') id: string, @Body() body: unknown, @Req() req: AuthedRequest) {

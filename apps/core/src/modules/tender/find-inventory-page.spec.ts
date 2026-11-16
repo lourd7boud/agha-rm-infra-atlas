@@ -138,6 +138,18 @@ describe('write-path classification (InMemory parity with the Drizzle SQL)', () 
 });
 
 describe('findInventoryPage (InMemory, contract parity with the JS pipeline)', () => {
+  test('does not attribute a result by reference and buyer when two portal announcements share them', async () => {
+    const repo = new InMemoryTenderRepository();
+    for (const identity of [123, 124]) {
+      await repo.create(input({ reference: 'SHARED/1', deadlineAt: new Date('2026-06-01T10:00:00Z'),
+        sourceUrl: `https://portal/?page=entreprise.EntrepriseDetailsConsultation&refConsultation=${identity}&orgAcronyme=org` }), 'portal');
+    }
+    const bids: CompetitorBidRecord[] = [{ id: 'bid-shared', reference: 'SHARED/1', buyerName: 'Acheteur',
+      bidderName: 'Concurrent A', competitorId: 'c1', amountMad: 100, isWinner: true,
+      resultDate: NOW, createdAt: NOW }];
+    const page = await repo.findInventoryPage({}, {}, NOW, bids);
+    expect(page.items.map((item) => [item.lifecycleStatus, item.winner])).toEqual([['cloture', null], ['cloture', null]]);
+  });
   test('preserves the exact response shape', async () => {
     const repo = await seed();
     const page = await repo.findInventoryPage({}, {}, NOW, []);

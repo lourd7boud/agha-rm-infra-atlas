@@ -30,7 +30,7 @@ export class PortalBlockedError extends Error {
 
 /** 429/403 = the portal is throttling/blocking us (not a transient glitch). */
 export function isBlockStatus(status: number): boolean {
-  return status === 429 || status === 403;
+  return status === 429 || status === 403 || status === 433;
 }
 
 /**

@@ -41,7 +41,7 @@ export async function GET(
     headers: {
       'Content-Type': 'application/pdf',
       'Content-Disposition': 'inline; filename="apercu-document.pdf"',
-      'Cache-Control': 'private, max-age=600',
+      'Cache-Control': 'private, no-store',
     },
   });
 }

@@ -6,6 +6,8 @@ import { auth } from '@/auth';
 const API_URL = process.env.ATLAS_API_URL ?? 'http://localhost:3000/api';
 
 const KIND_PATHS: Record<string, (projectId: string, query: URLSearchParams) => string | null> = {
+  'revision.xlsx': (projectId) => `/btp/projects/${projectId}/export/revision.xlsx`,
+  'revision.pdf': (projectId) => `/btp/projects/${projectId}/export/revision.pdf`,
   bordereau: (projectId) => `/btp/projects/${projectId}/export/bordereau`,
   attachement: (projectId, query) => {
     const periodeId = query.get('periodeId');

@@ -7,6 +7,8 @@
 
 export interface ArretTravaux {
   id?: string;
+  sourceOdsId?: string;
+  repriseOdsId?: string;
   dateArret: string;
   dateReprise?: string | null;
   motif?: string | null;
@@ -27,11 +29,13 @@ export interface DelaiInfo {
 
 export interface BtpProject {
   id: string;
+  tenderId?: string | null;
   reference: string;
   name: string;
   buyerName: string;
   montantMarcheMad: number;
   ordreServiceDate: string | null;
+  executionStartDate: string | null;
   delaiMois: number | null;
   status: string;
   objet: string | null;
@@ -41,6 +45,7 @@ export interface BtpProject {
   typeMarche: string | null;
   modePassation: string | null;
   dateOuverture: string | null;
+  dateLimiteRemiseOffres?: string | null;
   receptionProvisoire: string | null;
   receptionDefinitive: string | null;
   achevementTravaux: string | null;
@@ -171,6 +176,7 @@ export interface TerrainAttachement {
   integratedBy: string | null;
   id: string;
   date: string;
+  isExecutionDate: boolean;
   ligneId: string;
   numeroPrix: string | null;
   designation: string;
@@ -286,7 +292,7 @@ export interface BtpProjectDetail extends BtpProject {
     statut: string;
   } | null;
   situationContractuelle: {
-    montantInitial: number;
+    montantInitial: number | null;
     totalAvenants: number;
     montantActuel: number;
     delaiInitialMois: number;
@@ -304,9 +310,18 @@ export interface BordereauLigne {
   quantite: number;
   prixUnitaire: number;
   montant: number;
+  avenant?: {
+    id: string;
+    numero: number;
+    reference: string;
+    dateEffet: string;
+    baseDate: string | null;
+    formuleId: string | null;
+  };
 }
 
 export interface Bordereau {
+  modifieParAvenant?: boolean;
   id?: string;
   projectId: string;
   reference?: string | null;
@@ -322,6 +337,7 @@ export interface Periode {
   libelle: string | null;
   dateDebut: string | null;
   dateFin: string | null;
+  revisionMonthlyHt?: Record<string, number> | null;
   tauxTva: number;
   tauxRetenue: number;
   isDecompteDernier: boolean;
@@ -387,6 +403,7 @@ export interface Metre {
 
 export interface MetreContext {
   periode: Periode;
+  decompteId?: string | null;
   bordereau: Bordereau | null;
   metres: Metre[];
   previousByLigne: Record<
@@ -464,6 +481,7 @@ export interface RevisionIndexMonth {
   source: string | null;
   notes: string | null;
   status: string;
+  publishedOn: string | null;
   updatedAt: string;
 }
 
@@ -473,29 +491,120 @@ export interface RevisionConfig {
   formulaId: string | null;
   baseIndexes: Record<string, number>;
   baseDate: string | null;
+  contractDeadline: string | null;
+  delayAttributable: boolean | null;
   isEnabled: boolean;
+  postingMode?: 'each_decompte' | 'final_only';
   notes: string | null;
 }
 
 export interface RevisionTableRow {
   decompteId: string;
   numero: number;
-  periodeLibelle: string | null;
-  montantAReviser: number;
-  coefficient: number | null;
-  montantRevision: number | null;
-  totalDays?: number;
-  details: { month: string; days: number; coefficient: number; missingIndexes?: boolean }[];
-  missingMonths: string[];
-  applied: boolean;
+  periode: Periode | null;
+  statut: string;
+  isDernier: boolean;
+  dateDecompte: string | null;
+  cumulative: number;
+  trace: RevisionTrace | null;
+}
+
+export interface RevisionPeriod {
+  ht: number;
+  amount: number | null;
+  start: string | null;
+  end: string | null;
+  method: 'monthly' | 'calendar';
+  allocationSource?: 'attachements';
+  issues: string[];
+  months: {
+    month: string;
+    days: number;
+    ht: number;
+    coefficient: number | null;
+    amount: number | null;
+    publication: { values: Record<string, number>; status: string; source: string; publishedOn: string } | null;
+    breakdown?: { indexContributions: Record<string, { currentValue: number; baseValue: number }> } | null;
+    missing: string[];
+    contractCoefficient?: number;
+    contractPublication?: { values: Record<string, number>; status: string; source: string | null; publishedOn: string | null };
+    priceBasis?: {
+      label: string;
+      date: string | null;
+      formula: string | null;
+      publication: { values: Record<string, number>; status: string; source: string; publishedOn: string } | null;
+      method: 'monthly' | 'calendar';
+      allocationSource?: 'attachements';
+    };
+  }[];
+}
+
+export interface RevisionTrace {
+  version: 1;
+  cutoff: string;
+  period: RevisionPeriod;
+  cumulative: number;
+  movement: number;
+  status: 'pending' | 'calculated';
+  postingMode?: 'each_decompte' | 'final_only';
+  deferred?: boolean;
+  calculatedCumulative?: number | null;
+  pendingPeriods: { numero: number; period: RevisionPeriod }[];
 }
 
 export interface RevisionView {
+  report?: RevisionReport | null;
+  defaults?: { baseDate: string | null; baseSource: string | null; contractDeadline: string | null; deadlineSource: string | null } | null;
   config: RevisionConfig | null;
   formulas: RevisionFormula[];
   formula: RevisionFormula | null;
   indexes: RevisionIndexMonth[];
   table: RevisionTableRow[];
+}
+
+export interface RevisionReport {
+  project: { reference: string; name: string; objet?: string | null; ordreServiceDate?: string | null };
+  mode: 'each_decompte' | 'final_only';
+  cutoff: string;
+  baseDate: string | null;
+  coefficientGroups: {
+    id: string;
+    label: string;
+    formula: string;
+    baseDate: string | null;
+    baseValues: Record<string, number>;
+    basePublication: { values: Record<string, number>; publishedOn: string | null; source: string | null; status: string } | null;
+    indices: string[];
+    manualBaseIndices?: string[];
+    months: { month: string; values: Record<string, number>; ratios: Record<string, number>; coefficient: number | null;
+      publication: { publishedOn: string | null; source: string | null; status: string } | null; statementNumeros: number[] }[];
+  }[];
+  rows: {
+    decompteId: string; numero: number; isDernier: boolean; dateDecompte: string | null; statut: string;
+    origin: 'recorded' | 'reconstituted' | 'draft'; cutoff: string;
+    start: string | null; end: string | null; totalDays: number | null; ht: number | null;
+    appliedCoefficient: number | null; amount: number | null; postedCumulative: number;
+    months: RevisionPeriod['months']; issues: string[]; warnings: string[];
+  }[];
+  warnings: string[];
+  summary: { calculatedTotal: number | null; availableTotal: number; postedTotal: number; balance: number | null; pendingCount: number; final: boolean };
+}
+
+export interface AvenantBordereauImpact {
+  version: 1;
+  tauxTva: number;
+  dateEffet: string;
+  dateSignatureTitulaire?: string | null;
+  quantities: { ligneId: string; ancienneQuantite: number; nouvelleQuantite: number }[];
+  additions: {
+    numero: number;
+    designation: string;
+    unite: string;
+    quantite: number;
+    prixUnitaire: number;
+    origine: 'marche' | 'negocie';
+    formuleId?: string | null;
+  }[];
 }
 
 export interface Avenant {
@@ -515,6 +624,7 @@ export interface Avenant {
   montantNouveauMad: number | null;
   pourcentageVariation: number | null;
   observations: string | null;
+  bordereauImpact?: AvenantBordereauImpact | null;
 }
 
 export interface AvenantsView {
@@ -523,6 +633,9 @@ export interface AvenantsView {
 }
 
 export interface Ods {
+  arretScope?: 'total' | 'partiel' | null;
+  repriseArretId?: string | null;
+  calendarEffectAppliedAt?: string | null;
   id: string;
   projectId: string;
   numero: number;

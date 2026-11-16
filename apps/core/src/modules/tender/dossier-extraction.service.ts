@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -8,12 +7,9 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { LLM_CLIENT, type LlmClient } from '../brain/llm.client';
-import {
-  dceIdentityFromEnv,
-  downloadDce,
-  parsePortalRef,
-} from '../watch/dossier.crawler';
+import { downloadAnonymousDossierForExtraction } from './dossier-revision-check';
 import {
   extractDossierText,
   MIN_READABLE_FILE_CHARS,
@@ -159,8 +155,8 @@ export class DossierExtractionService {
     @Inject(TENDER_REPOSITORY) private readonly repository: TenderRepository,
     @Optional() @Inject(LLM_CLIENT) private readonly llm: LlmClient | null,
     // Object storage for the DCE-archive cache: read the cached zip first (so a
-    // dead portal link on an OLD tender is not fatal), and persist newly
-    // downloaded archives so re-extraction never depends on the portal again.
+    // dead portal link on an OLD tender is not fatal). Downloads originating in
+    // extraction are retained as immutable history, never published canonically.
     // @Optional() so extraction still works (portal-only) when storage is absent.
     @Optional() @Inject(OBJECT_STORAGE) private readonly storage: ObjectStorage | null = null,
   ) {}
@@ -196,19 +192,16 @@ export class DossierExtractionService {
     const llm = this.requireLlm();
     const tender = await this.repository.findById(id);
     if (!tender) throw new NotFoundException(`Tender not found: ${id}`);
+    const expectedDossier: unknown = JSON.parse(JSON.stringify(tender.raw?.dossier ?? null));
 
     const existing = readDossierExtraction(tender.raw);
     if (existing && !opts.force) {
       return this.toResult(tender.id, tender.reference, false, existing);
     }
 
-    const ref = parsePortalRef(tender.sourceUrl);
-
-    // Source the DCE archive. Prefer the MinIO-cached copy (from a prior
-    // extraction or a "Télécharger le dossier"): OLD/closed tenders often have a
-    // DEAD portal link, so re-downloading 404s — the cache lets us (re-)extract
-    // anyway. Only hit the portal when there is no cache, and persist what we
-    // download so the next run never depends on the portal again.
+    // Prefer the cached DCE, which remains available after the portal closes
+    // access to old tenders. Only DossierService and revision checks publish
+    // the canonical archive.
     const cachedKey =
       tender.raw && typeof tender.raw === 'object'
         ? ((tender.raw as Record<string, unknown>).dossier as
@@ -219,28 +212,16 @@ export class DossierExtractionService {
     if (typeof cachedKey === 'string' && this.storage) {
       rawBytes = await this.readObjectBytes(cachedKey);
     } else {
-      if (!ref) {
-        throw new BadRequestException(
-          'Aucun lien portail exploitable pour ce marché (sourceUrl manquant)',
-        );
-      }
-      const dossier = await downloadDce(ref, dceIdentityFromEnv());
+      const dossier = await downloadAnonymousDossierForExtraction(tender.sourceUrl);
       rawBytes = dossier.bytes;
-      // Persist the archive so a later re-run (or a now-dead portal link) reuses
-      // it instead of re-downloading. Best-effort: a cache failure never fails
-      // the extraction (we already hold the bytes in memory for this run).
+      // Retain provenance without mutating the shared canonical ZIP or dossier
+      // metadata. The result below is conditional on the original generation
+      // still being active, including null when no canonical archive existed.
       if (this.storage) {
         try {
-          const objectKey = `dossiers/${id}.zip`;
+          const sha = createHash('sha256').update(rawBytes).digest('hex');
+          const objectKey = `dossiers/${id}/revisions/${sha}.zip`;
           await this.storage.put(objectKey, Buffer.from(rawBytes), dossier.mime);
-          await this.repository.updateEnrichment(id, {}, {
-            dossier: {
-              objectKey,
-              filename: dossier.filename,
-              sizeBytes: rawBytes.length,
-              downloadedAt: new Date().toISOString(),
-            },
-          });
         } catch (e) {
           this.logger.warn(
             `dossier cache put failed (${tender.reference}): ${(e as Error).message}`,
@@ -470,11 +451,12 @@ export class DossierExtractionService {
     // for the bordereau) — what the chat agent reads best. Larger budget than the
     // plain excerpt since it is the primary dossier context for the agent.
     const dossierMarkdown = toDossierMarkdown(text).slice(0, DOSSIER_MARKDOWN_CHARS);
-    await this.repository.updateEnrichment(id, amounts, {
+    const saved = await this.repository.updateEnrichment(id, amounts, {
       dossierExtraction: extraction,
       ...(dossierTextExcerpt.length > 0 ? { dossierText: dossierTextExcerpt } : {}),
       ...(dossierMarkdown.length > 0 ? { dossierMarkdown } : {}),
-    });
+    }, { expectedDossier });
+    if (!saved) throw new ConflictException('Le DCE a changé pendant l’extraction — relancez la lecture de la version actuelle');
 
     this.logger.log(
       `dossier.extract[${mode}] ${tender.reference} → budget ${extraction.estimationMad ?? '—'} MAD, ` +
@@ -554,10 +536,11 @@ export class DossierExtractionService {
           );
           // Stamp the attempt so this row drops out of the candidate set for
           // the cooldown window instead of being re-picked first next sweep.
+          // A failure from an older candidate must not cool down its replacement.
           try {
             await this.repository.updateEnrichment(t.id, {}, {
               dossierExtractAttempt: { at: new Date().toISOString() },
-            });
+            }, { expectedDossier: JSON.parse(JSON.stringify(t.raw?.dossier ?? null)) });
           } catch {
             /* a marker write failure must not fail the batch */
           }

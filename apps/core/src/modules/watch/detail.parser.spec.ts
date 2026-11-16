@@ -17,6 +17,23 @@ const REAL_DETAIL = readFileSync(
   'utf8',
 );
 
+it('reads full expanded activity domains rather than the truncated preview', () => {
+  const prefix = 'ctl0_CONTENU_PAGE_idEntrepriseConsultationSummary';
+  const parsed = parseDetailPage(`<span id="${prefix}_domainesActivite">Travaux</span><span id="${prefix}_domainesActiviteComplet"><ul><li>Travaux</li><li>Transformateurs MT/BT</li></ul></span>`);
+  expect(parsed.domainesActivite).toContain('Transformateurs MT/BT');
+});
+
+it('records the published DCE complement control without retaining its URL', () => {
+  const control = 'id="ctl0_CONTENU_PAGE_linkDownloadComplement"';
+  expect(parseDetailPage(`<a ${control} href="index.php?page=download">Complément</a>`).dceComplement).toBe('listed');
+  expect(parseDetailPage(`<li style="display: none"><a ${control} href="index.php?page=download">Complément</a></li>`).dceComplement).toBe('not_listed');
+  expect(parseDetailPage(`<a ${control} aria-disabled="true" href="index.php?page=download">Complément</a>`).dceComplement).toBe('not_listed');
+  expect(parseDetailPage(`<a ${control} href="javascript:;" onclick="void(0)">Complément</a>`).dceComplement).toBe('not_listed');
+  expect(parseDetailPage(`<a ${control}></a>`).dceComplement).toBe('not_listed');
+  expect(parseDetailPage('<a id="other_linkDownloadComplement" href="/file">Autre lien</a>').dceComplement).toBeUndefined();
+  expect(parseDetailPage('<body>Nouveau modèle</body>').dceComplement).toBeUndefined();
+});
+
 describe('parseMoneyMad', () => {
   it('parses French-formatted MAD amounts', () => {
     expect(parseMoneyMad('7 000,00 MAD')).toBe(7000);

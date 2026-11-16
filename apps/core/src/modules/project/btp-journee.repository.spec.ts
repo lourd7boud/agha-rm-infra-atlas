@@ -37,6 +37,7 @@ describe.skipIf(!enabled)('journee PostgreSQL transactional workflow', () => {
   CREATE TABLE finance.expense(id uuid PRIMARY KEY,project_id uuid,category text,label text,amount_mad numeric,spent_at date,notes text,justificatif_asset_id uuid,saisi_par text);
   CREATE TABLE project.decompte(id uuid PRIMARY KEY,project_id uuid,statut text,deleted_at timestamptz);`);
     await pool.query(readFileSync('drizzle/0054_terrain_journees.sql', 'utf8'));
+    await pool.query(readFileSync('drizzle/0071_terrain_execution_date.sql', 'utf8'));
     await pool.query('INSERT INTO project.project(id) VALUES($1),($2)', [
       project,
       foreign,
@@ -137,6 +138,9 @@ describe.skipIf(!enabled)('journee PostgreSQL transactional workflow', () => {
     expect(reviewed.version).toBe(3);
     const replay = await repo.transition(project, id, 3, 'review', 'bureau');
     expect(replay.materializedRefs).toEqual(reviewed.materializedRefs);
+    const attachment = reviewed.materializedRefs.find((item) => item.kind === 'project.chantier_attachement');
+    expect((await pool.query('SELECT date::text, is_execution_date FROM project.chantier_attachement WHERE id=$1', [attachment?.id])).rows[0])
+      .toEqual({ date: '2026-10-27', is_execution_date: true });
     expect(
       (await pool.query('SELECT count(*) n FROM project.daily_log')).rows[0].n,
     ).toBe('1');

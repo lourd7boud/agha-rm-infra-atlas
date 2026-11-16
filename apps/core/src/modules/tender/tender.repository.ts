@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   and,
   asc,
@@ -38,10 +39,13 @@ import {
   type InventoryRow,
   type TenderCategory,
 } from './inventory.domain';
-import type { CompetitorBidRecord } from '../intel/intel.repository';
+import { refBuyerKey, type CompetitorBidRecord } from '../intel/intel.repository';
 import type { BuyerObservationRow } from './buyer-observatory.domain';
 import { readAiEnrichment } from './ai-enrichment';
 import { readDossierExtraction } from './dossier-extraction';
+import { DETAIL_VERSION } from '../watch/detail.parser';
+import { pmmpIdentity } from '../watch/watch-audit';
+import { hasMismatchedPortalDetail } from './samir-review';
 
 export interface CreateTender {
   reference: string;
@@ -56,6 +60,25 @@ export interface CreateTender {
   sourceUrl?: string;
 }
 
+type CreateIdentity = 'reference-buyer' | 'portal';
+
+function matchesCreateIdentity(
+  existing: { reference: string; buyerName: string; sourceUrl?: string | null },
+  incoming: CreateTender,
+  portalIdentity: string | null,
+): boolean {
+  if (portalIdentity && existing.sourceUrl) {
+    const existingIdentity = pmmpIdentity(existing.sourceUrl);
+    if (existingIdentity) return existingIdentity === portalIdentity;
+  }
+  return existing.reference === incoming.reference && existing.buyerName === incoming.buyerName;
+}
+
+function resultReferenceSql(reference: AnyPgColumn | SQL | string, buyer: AnyPgColumn | SQL | string): SQL {
+  return sql`btrim(regexp_replace(lower(unaccent(${reference})), '[^a-z0-9]+', ' ', 'g')) || '|' ||
+    btrim(regexp_replace(lower(unaccent(${buyer})), '[^a-z0-9]+', ' ', 'g'))`;
+}
+
 /**
  * Listing-derived fields a re-crawl refreshes in place. The dedup-safe heal key
  * is sourceUrl (carries refConsultation; never changes for a consultation), so
@@ -63,7 +86,7 @@ export interface CreateTender {
  */
 export type ListingFields = Pick<
   CreateTender,
-  'reference' | 'buyerName' | 'procedure' | 'objet' | 'location' | 'deadlineAt'
+  'reference' | 'buyerName' | 'procedure' | 'objet' | 'location' | 'deadlineAt' | 'estimationMad'
 >;
 
 export interface TenderRecord extends CreateTender {
@@ -185,6 +208,11 @@ export interface SuiviBacklogTarget {
   sourceUrl: string;
 }
 
+/** Optional compare-and-set guard for work derived from one saved DCE generation. */
+export interface EnrichmentWriteGuard {
+  expectedDossier: unknown;
+}
+
 export interface EnrichmentAmounts {
   estimationMad?: number;
   cautionProvisoireMad?: number;
@@ -211,7 +239,7 @@ export class DuplicateTenderError extends Error {
 export const TENDER_REPOSITORY = Symbol('TENDER_REPOSITORY');
 
 export interface TenderRepository {
-  create(input: CreateTender): Promise<TenderRecord>;
+  create(input: CreateTender, identity?: CreateIdentity): Promise<TenderRecord>;
   findAll(): Promise<TenderRecord[]>;
   /** Slim full-catalogue read for knowledge aggregation — never ships raw. */
   findAllForKnowledge(): Promise<KnowledgeTenderRow[]>;
@@ -251,6 +279,7 @@ export interface TenderRepository {
    */
   findSuiviBacklogTargets(limit: number): Promise<SuiviBacklogTarget[]>;
   findById(id: string): Promise<TenderRecord | null>;
+  hasAmbiguousResultReference(tender: Pick<TenderRecord, 'id' | 'reference' | 'buyerName'>): Promise<boolean>;
   /**
    * Batch lookup — one round-trip for N ids (the FTS search endpoint feeds up
    * to 50 ids at once). Order is NOT guaranteed; callers re-order by rank.
@@ -355,6 +384,7 @@ export interface TenderRepository {
     id: string,
     amounts: EnrichmentAmounts,
     rawMerge: Record<string, unknown>,
+    guard?: EnrichmentWriteGuard,
   ): Promise<TenderRecord | null>;
   /**
    * Datao-parity dual-lane French FTS lookup. Runs
@@ -382,22 +412,40 @@ function classificationFor(input: {
   buyerName: string;
   objet: string;
   location?: string | null;
+  procedure?: TenderProcedure;
 }): ClassificationColumns {
-  return classifyForStorage({
+  const classified = classifyForStorage({
     buyerName: input.buyerName,
     objet: input.objet,
     location: input.location ?? null,
   });
+  return input.procedure === 'consultation_architecturale' || input.procedure === 'concours_architectural'
+    ? { ...classified, category: 'Services' } : classified;
+}
+
+function publishedCategory(raw: Record<string, unknown> | null | undefined): TenderCategory | undefined {
+  const category = (raw?.detail as { categorie?: unknown } | null | undefined)?.categorie;
+  return category === 'Travaux' || category === 'Fournitures' || category === 'Services' ? category : undefined;
+}
+
+function normalizeDetailMerge(raw: Record<string, unknown>): Record<string, unknown> {
+  if (!Object.hasOwn(raw, 'detail')) return raw;
+  const detail = raw.detail;
+  return detail && typeof detail === 'object' && !Array.isArray(detail) ? raw : { ...raw, detail: {} };
 }
 
 /** Dev/test fallback used when DATABASE_URL is not configured. */
 export class InMemoryTenderRepository implements TenderRepository {
   private records: readonly TenderRecord[] = [];
 
-  async create(input: CreateTender): Promise<TenderRecord> {
-    const duplicate = this.records.some(
-      (r) => r.reference === input.reference && r.buyerName === input.buyerName,
-    );
+  async hasAmbiguousResultReference(tender: Pick<TenderRecord, 'id' | 'reference' | 'buyerName'>): Promise<boolean> {
+    const key = refBuyerKey(tender.reference, tender.buyerName);
+    return this.records.some((row) => row.id !== tender.id && refBuyerKey(row.reference, row.buyerName) === key);
+  }
+
+  async create(input: CreateTender, identity: CreateIdentity = 'reference-buyer'): Promise<TenderRecord> {
+    const portalIdentity = identity === 'portal' && input.sourceUrl ? pmmpIdentity(input.sourceUrl) : null;
+    const duplicate = this.records.some((r) => matchesCreateIdentity(r, input, portalIdentity));
     if (duplicate) throw new DuplicateTenderError(input.reference, input.buyerName);
     const classified = classificationFor(input);
     const record: TenderRecord = {
@@ -629,16 +677,14 @@ export class InMemoryTenderRepository implements TenderRepository {
 
   async findDetailBackfillTargets(limit: number): Promise<DetailBackfillTarget[]> {
     return this.records
-      .filter(
-        (r) =>
-          r.sourceUrl !== undefined &&
-          // Mirror the Drizzle version-aware predicate: target rows whose detail
-          // block is missing or stamped by an older parser (raw.detail.v !== 2).
-          String(
-            (r.raw?.detail as { v?: unknown } | undefined)?.v ?? '',
-          ) !== '2',
-      )
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .filter((r) => {
+        if (r.sourceUrl === undefined) return false;
+        const detail = r.raw?.detail as { v?: unknown; fetchedAt?: string } | undefined;
+        return String(detail?.v ?? '') !== String(DETAIL_VERSION) ||
+          (r.deadlineAt.getTime() >= Date.now() &&
+            String(detail?.fetchedAt ?? '') < new Date(Date.now() - 86_400_000).toISOString());
+      })
+      .sort((a, b) => Number(b.deadlineAt.getTime() >= Date.now()) - Number(a.deadlineAt.getTime() >= Date.now()) || b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, Math.max(0, limit))
       .map((r) => ({
         id: r.id,
@@ -707,6 +753,8 @@ export class InMemoryTenderRepository implements TenderRepository {
     let changed = false;
     this.records = this.records.map((r) => {
       if (r.sourceUrl !== sourceUrl) return r;
+      const architectural = fields.procedure === 'consultation_architecturale' || fields.procedure === 'concours_architectural';
+      const verifiedCategory = publishedCategory(r.raw) ?? (architectural ? 'Services' : undefined);
       // Mirror the DB diff: only a real change counts as a heal.
       const differs =
         r.reference !== fields.reference ||
@@ -714,6 +762,8 @@ export class InMemoryTenderRepository implements TenderRepository {
         r.procedure !== fields.procedure ||
         r.objet !== fields.objet ||
         r.deadlineAt.getTime() !== fields.deadlineAt.getTime() ||
+        (verifiedCategory !== undefined && r.category !== verifiedCategory) ||
+        (fields.estimationMad !== undefined && r.estimationMad !== fields.estimationMad) ||
         (fields.location !== undefined && r.location !== fields.location);
       if (!differs) return r;
       changed = true;
@@ -737,6 +787,7 @@ export class InMemoryTenderRepository implements TenderRepository {
         buyerName: fields.buyerName,
         objet: fields.objet,
         location: fields.location ?? r.location ?? null,
+        procedure: fields.procedure,
       });
       return {
         ...r,
@@ -745,10 +796,11 @@ export class InMemoryTenderRepository implements TenderRepository {
         procedure: fields.procedure,
         objet: fields.objet,
         deadlineAt: fields.deadlineAt,
+        ...(fields.estimationMad !== undefined ? { estimationMad: fields.estimationMad } : {}),
         ...(fields.location !== undefined ? { location: fields.location } : {}),
         region: classified.region,
         ville: classified.ville,
-        category: classified.category,
+        category: verifiedCategory ?? classified.category,
         secteur: classified.secteur,
         lotCount: classified.lotCount,
         raw: scrubbedRaw,
@@ -781,10 +833,22 @@ export class InMemoryTenderRepository implements TenderRepository {
     id: string,
     amounts: EnrichmentAmounts,
     rawMerge: Record<string, unknown>,
+    guard?: EnrichmentWriteGuard,
   ): Promise<TenderRecord | null> {
-    const existing = await this.findById(id);
+    // Keep the in-memory compare-and-set synchronous, like the database UPDATE.
+    const existing = this.records.find(record => record.id === id);
     if (!existing) return null;
-    const mergedRaw = { ...(existing.raw ?? {}), ...rawMerge };
+    if (guard && !isDeepStrictEqual(
+      JSON.parse(JSON.stringify(existing.raw?.dossier ?? null)),
+      JSON.parse(JSON.stringify(guard.expectedDossier ?? null)),
+    )) return null;
+    const payload = normalizeDetailMerge(rawMerge);
+    const mergedRaw = { ...(existing.raw ?? {}), ...payload };
+    const previousCategory = publishedCategory(existing.raw);
+    if (Object.hasOwn(payload, 'detail') && !publishedCategory(payload) && previousCategory) {
+      mergedRaw.detail = { ...(payload.detail as Record<string, unknown>), categorie: previousCategory };
+    }
+    const verifiedCategory = publishedCategory(mergedRaw);
     // Recompute has_bpu from the merged dossier so the bpuOnly filter/facet stays
     // correct after an extraction lands (mirrors the SQL jsonb test).
     const dossier = readDossierExtraction(mergedRaw);
@@ -796,8 +860,9 @@ export class InMemoryTenderRepository implements TenderRepository {
       ...(amounts.cautionProvisoireMad !== undefined
         ? { cautionProvisoireMad: amounts.cautionProvisoireMad }
         : {}),
-      hasBpu: dossier ? dossier.bpu.length > 0 : (existing.hasBpu ?? false),
+      hasBpu: dossier ? dossier.bpu.length > 0 : Object.hasOwn(payload, 'dossierExtraction') ? false : (existing.hasBpu ?? false),
       raw: mergedRaw,
+      ...(verifiedCategory ? { category: verifiedCategory } : {}),
     };
     this.records = this.records.map((r) => (r.id === id ? updated : r));
     return updated;
@@ -815,27 +880,50 @@ export class InMemoryTenderRepository implements TenderRepository {
 export class DrizzleTenderRepository implements TenderRepository {
   constructor(private readonly db: Db) {}
 
-  async create(input: CreateTender): Promise<TenderRecord> {
+  async hasAmbiguousResultReference(tender: Pick<TenderRecord, 'id' | 'reference' | 'buyerName'>): Promise<boolean> {
+    const [match] = await this.db.select({ id: tenders.id }).from(tenders).where(and(
+      ne(tenders.id, tender.id),
+      sql`(${resultReferenceSql(tenders.reference, tenders.buyerName)}) =
+        (${resultReferenceSql(tender.reference, tender.buyerName)})`,
+    )).limit(1);
+    return match !== undefined;
+  }
+
+  async create(input: CreateTender, identity: CreateIdentity = 'reference-buyer'): Promise<TenderRecord> {
+    const portalIdentity = identity === 'portal' && input.sourceUrl ? pmmpIdentity(input.sourceUrl) : null;
+    const sameReferenceBuyer = and(eq(tenders.reference, input.reference), eq(tenders.buyerName, input.buyerName));
     const existing = await this.db
-      .select({ id: tenders.id })
+      .select({ reference: tenders.reference, buyerName: tenders.buyerName, sourceUrl: tenders.sourceUrl })
       .from(tenders)
-      .where(
-        and(
-          eq(tenders.reference, input.reference),
-          eq(tenders.buyerName, input.buyerName),
-        ),
-      )
-      .limit(1);
-    if (existing.length > 0) {
+      .where(portalIdentity && input.sourceUrl ? or(sameReferenceBuyer, eq(tenders.sourceUrl, input.sourceUrl)) : sameReferenceBuyer);
+    if (existing.some((row) => matchesCreateIdentity(row, input, portalIdentity))) {
       throw new DuplicateTenderError(input.reference, input.buyerName);
     }
+    if (portalIdentity) {
+      return this.db.transaction(async (tx) => {
+        const db = tx as unknown as Db;
+        const inserted = await this.insertTender(db, input);
+        // Existing lifecycle stamps were inferred from the shared reference.
+        // The result source records themselves remain available for verification.
+        await db.update(tenders).set({ resultState: null, resultWinnerName: null, resultWinnerAmount: null, resultDate: null })
+          .where(and(
+            isNotNull(tenders.resultState),
+            sql`(${resultReferenceSql(tenders.reference, tenders.buyerName)}) =
+              (${resultReferenceSql(input.reference, input.buyerName)})`,
+          ));
+        return inserted;
+      });
+    }
+    return this.insertTender(this.db, input);
+  }
 
+  private async insertTender(db: Db, input: CreateTender): Promise<TenderRecord> {
     // Classify at WRITE time (P2): store region/ville/category/secteur/lot_count so
     // the list read filters/facets/paginates in the DB instead of classifying the
     // whole catalogue in JS per request. has_bpu starts false (no dossier yet) and
     // is (re)computed in updateEnrichment when an extraction lands.
     const classified = classificationFor(input);
-    const [row] = await this.db
+    const [row] = await db
       .insert(tenders)
       .values({
         reference: input.reference,
@@ -854,8 +942,9 @@ export class DrizzleTenderRepository implements TenderRepository {
         lotCount: classified.lotCount,
         hasBpu: false,
       })
+      .onConflictDoNothing()
       .returning();
-    if (!row) throw new Error('Tender insert returned no row');
+    if (!row) throw new DuplicateTenderError(input.reference, input.buyerName);
     return toRecord(row);
   }
 
@@ -1154,29 +1243,37 @@ export class DrizzleTenderRepository implements TenderRepository {
       const result = await tx.execute(sql`
       WITH mk AS (
         SELECT
-          btrim(regexp_replace(lower(unaccent(reference)), '[^a-z0-9]+', ' ', 'g')) || '|' ||
-          btrim(regexp_replace(lower(unaccent(buyer_name)), '[^a-z0-9]+', ' ', 'g')) AS mkey,
+          ${resultReferenceSql(sql`reference`, sql`buyer_name`)} AS mkey,
           bool_or(is_winner) AS has_winner,
           (array_agg(bidder_name ORDER BY created_at) FILTER (WHERE is_winner))[1] AS winner_name,
           (array_agg(amount_mad ORDER BY created_at) FILTER (WHERE is_winner))[1] AS winner_amount,
           max(result_date) AS result_date
         FROM intel.competitor_bid
         GROUP BY 1
+      ), catalogue_keys AS MATERIALIZED (
+        SELECT id,
+          ${resultReferenceSql(sql`reference`, sql`buyer_name`)} AS mkey
+        FROM tender.tender
+      ), ambiguous AS (
+        SELECT mkey FROM catalogue_keys GROUP BY mkey HAVING count(*) > 1
+      ), stamps AS (
+        SELECT k.id,
+          CASE WHEN a.mkey IS NOT NULL THEN NULL WHEN m.has_winner THEN 'attribue' ELSE 'infructueux' END AS result_state,
+          CASE WHEN a.mkey IS NULL THEN m.winner_name END AS winner_name,
+          CASE WHEN a.mkey IS NULL THEN m.winner_amount END AS winner_amount,
+          CASE WHEN a.mkey IS NULL THEN m.result_date END AS result_date
+        FROM catalogue_keys k
+        LEFT JOIN mk m ON m.mkey = k.mkey
+        LEFT JOIN ambiguous a ON a.mkey = k.mkey
+        WHERE m.mkey IS NOT NULL OR a.mkey IS NOT NULL
       )
       UPDATE tender.tender AS t SET
-        result_state = CASE WHEN m.has_winner THEN 'attribue' ELSE 'infructueux' END,
-        result_winner_name = CASE WHEN m.has_winner THEN m.winner_name ELSE NULL END,
-        result_winner_amount = CASE WHEN m.has_winner THEN m.winner_amount ELSE NULL END,
-        result_date = m.result_date
-      FROM mk m
-      WHERE m.mkey =
-        btrim(regexp_replace(lower(unaccent(t.reference)), '[^a-z0-9]+', ' ', 'g')) || '|' ||
-        btrim(regexp_replace(lower(unaccent(t.buyer_name)), '[^a-z0-9]+', ' ', 'g'))
-        AND (t.result_state, t.result_winner_name, t.result_winner_amount) IS DISTINCT FROM (
-          CASE WHEN m.has_winner THEN 'attribue' ELSE 'infructueux' END,
-          CASE WHEN m.has_winner THEN m.winner_name ELSE NULL END,
-          CASE WHEN m.has_winner THEN m.winner_amount ELSE NULL END
-        )
+        result_state = s.result_state, result_winner_name = s.winner_name,
+        result_winner_amount = s.winner_amount, result_date = s.result_date
+      FROM stamps s
+      WHERE t.id = s.id
+        AND (t.result_state, t.result_winner_name, t.result_winner_amount, t.result_date)
+          IS DISTINCT FROM (s.result_state, s.winner_name, s.winner_amount, s.result_date)
       `);
       return (result as { rowCount?: number }).rowCount ?? 0;
     });
@@ -1320,10 +1417,14 @@ export class DrizzleTenderRepository implements TenderRepository {
           // yield NULL from the path, which IS DISTINCT FROM the current version.
           // Bumping DETAIL_VERSION (detail.parser.ts) re-crawls the whole corpus,
           // self-limiting because each visited row is re-stamped to the new version.
-          sql`(${tenders.raw} #>> '{detail,v}') IS DISTINCT FROM '2'`,
+          or(
+            sql`(${tenders.raw} #>> '{detail,v}') IS DISTINCT FROM ${String(DETAIL_VERSION)}`,
+            and(sql`${tenders.deadlineAt} >= ${new Date()}`,
+              sql`coalesce(${tenders.raw} #>> '{detail,fetchedAt}', '') < ${new Date(Date.now() - 86_400_000).toISOString()}`),
+          ),
         ),
       )
-      .orderBy(sql`${tenders.createdAt} DESC`)
+      .orderBy(sql`(${tenders.deadlineAt} >= ${new Date()}) DESC`, desc(tenders.createdAt))
       .limit(Math.max(0, limit));
     return rows.map((row) => ({
       id: row.id,
@@ -1412,12 +1513,22 @@ export class DrizzleTenderRepository implements TenderRepository {
     // a true no-op on an unchanged re-crawl (no write churn, no updated_at
     // thrashing) and makes the `healed` count reflect real changes. location is
     // included in the diff only when this crawl captured one (matching the SET).
+    const classified = classificationFor({
+      buyerName: fields.buyerName, objet: fields.objet, location: fields.location ?? null,
+      procedure: fields.procedure,
+    });
+    const storedCategory = sql<string>`${tenders.raw}->'detail'->>'categorie'`;
+    const categoryAfterHeal = sql<string>`case when ${storedCategory} in ('Travaux', 'Fournitures', 'Services') then ${storedCategory} else ${classified.category} end`;
     const changed = [
       ne(tenders.reference, fields.reference),
       ne(tenders.buyerName, fields.buyerName),
       ne(tenders.procedure, fields.procedure),
       ne(tenders.objet, fields.objet),
       ne(tenders.deadlineAt, fields.deadlineAt),
+      sql`${tenders.category} IS DISTINCT FROM ${categoryAfterHeal}`,
+      ...(fields.estimationMad !== undefined
+        ? [sql`${tenders.estimationMad} IS DISTINCT FROM ${String(fields.estimationMad)}::numeric`]
+        : []),
       ...(fields.location !== undefined
         ? [sql`${tenders.location} IS DISTINCT FROM ${fields.location}`]
         : []),
@@ -1443,11 +1554,6 @@ export class DrizzleTenderRepository implements TenderRepository {
     // value when present, else the empty signal (region/ville still fall back to
     // buyer+objet text). has_bpu is left untouched — it tracks the dossier, not the
     // listing.
-    const classified = classificationFor({
-      buyerName: fields.buyerName,
-      objet: fields.objet,
-      location: fields.location ?? null,
-    });
     const rows = await this.db
       .update(tenders)
       .set({
@@ -1456,12 +1562,13 @@ export class DrizzleTenderRepository implements TenderRepository {
         procedure: fields.procedure,
         objet: fields.objet,
         deadlineAt: fields.deadlineAt,
+        ...(fields.estimationMad !== undefined ? { estimationMad: String(fields.estimationMad) } : {}),
         // Only overwrite location when this crawl actually captured one, so a
         // transient parse miss never blanks a previously stored value.
         ...(fields.location !== undefined ? { location: fields.location } : {}),
         region: classified.region,
         ville: classified.ville,
-        category: classified.category,
+        category: categoryAfterHeal,
         secteur: classified.secteur,
         lotCount: classified.lotCount,
         raw: rawAfterScrub,
@@ -1498,6 +1605,7 @@ export class DrizzleTenderRepository implements TenderRepository {
     id: string,
     amounts: EnrichmentAmounts,
     rawMerge: Record<string, unknown>,
+    guard?: EnrichmentWriteGuard,
   ): Promise<TenderRecord | null> {
     // Single atomic statement: the JSONB merge runs server-side, so two
     // concurrent writers (auto-extract + manual trigger on the same tender)
@@ -1505,7 +1613,15 @@ export class DrizzleTenderRepository implements TenderRepository {
     // The merged jsonb is reused for both the raw column and the has_bpu recompute
     // so has_bpu stays consistent with the dossier that just landed — all in the
     // SAME statement (no read-then-write window; the spec pins zero selects).
-    const mergedRaw = sql`COALESCE(${tenders.raw}, '{}'::jsonb) || ${JSON.stringify(rawMerge)}::jsonb`;
+    const payload = normalizeDetailMerge(rawMerge);
+    const baseMerge = sql`COALESCE(${tenders.raw}, '{}'::jsonb) || ${JSON.stringify(payload)}::jsonb`;
+    // An incomplete read must not erase the last valid published category.
+    // Keep the guard in the same atomic merge, including for legacy rows.
+    const previousCategory = sql<string>`${tenders.raw}->'detail'->>'categorie'`;
+    const mergedRaw = Object.hasOwn(payload, 'detail') && !publishedCategory(payload)
+      ? sql`case when ${previousCategory} in ('Travaux', 'Fournitures', 'Services') then jsonb_set((${baseMerge}), '{detail,categorie}', ${tenders.raw}->'detail'->'categorie', true) else (${baseMerge}) end`
+      : baseMerge;
+    const mergedCategory = sql<string>`(${mergedRaw})->'detail'->>'categorie'`;
     const [row] = await this.db
       .update(tenders)
       .set({
@@ -1516,12 +1632,16 @@ export class DrizzleTenderRepository implements TenderRepository {
           ? { cautionProvisoireMad: amounts.cautionProvisoireMad.toString() }
           : {}),
         raw: mergedRaw,
+        category: sql<string>`case when ${mergedCategory} in ('Travaux', 'Fournitures', 'Services') then ${mergedCategory} else ${tenders.category} end`,
         // Denormalized has_bpu (P2): true iff the merged dossierExtraction.bpu is a
         // non-empty array — the same jsonb test the projected read computes.
         hasBpu: sql<boolean>`case when jsonb_typeof((${mergedRaw})->'dossierExtraction'->'bpu') = 'array' then jsonb_array_length((${mergedRaw})->'dossierExtraction'->'bpu') > 0 else false end`,
         updatedAt: new Date(),
       })
-      .where(eq(tenders.id, id))
+      .where(guard ? and(
+        eq(tenders.id, id),
+        sql`COALESCE(${tenders.raw}->'dossier', 'null'::jsonb) = ${JSON.stringify(guard.expectedDossier ?? null)}::jsonb`,
+      ) : eq(tenders.id, id))
       .returning();
     return row ? toRecord(row) : null;
   }
@@ -1638,6 +1758,9 @@ const INVENTORY_PAGE_COLUMNS = {
   resultDate: tenders.resultDate,
   hasBpu: sql<boolean>`case when jsonb_typeof(${tenders.raw}->'dossierExtraction'->'bpu') = 'array' then jsonb_array_length(${tenders.raw}->'dossierExtraction'->'bpu') > 0 else false end`,
   bpuCount: sql<number>`case when jsonb_typeof(${tenders.raw}->'dossierExtraction'->'bpu') = 'array' then jsonb_array_length(${tenders.raw}->'dossierExtraction'->'bpu') else 0 end`,
+  dossierExtractedAt: sql<string | null>`case when jsonb_typeof(${tenders.raw}->'dossierExtraction'->'extractedAt') = 'string' then ${tenders.raw}->'dossierExtraction'->>'extractedAt' end`,
+  portalDetailDeadline: sql<string | null>`${tenders.raw}->'detail'->>'deadline'`,
+  portalDetailUrl: sql<string | null>`${tenders.raw}->'detail'->>'url'`,
   aiResume: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'resume'`,
   aiSecteur: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'secteur'`,
   aiEnrichedAt: sql<string | null>`${tenders.raw}->'aiEnrichment'->>'enrichedAt'`,
@@ -1670,6 +1793,9 @@ function mapInventoryPageRow(row: {
   resultDate: Date | null;
   hasBpu: boolean;
   bpuCount: number;
+  dossierExtractedAt: string | null;
+  portalDetailDeadline: string | null;
+  portalDetailUrl?: string | null;
   aiResume: string | null;
   aiSecteur: string | null;
   aiEnrichedAt: string | null;
@@ -1692,6 +1818,9 @@ function mapInventoryPageRow(row: {
     updatedAt: row.updatedAt,
     hasBpu: row.hasBpu,
     bpuCount: Number(row.bpuCount),
+    dossierExtractedAt: row.dossierExtractedAt ?? undefined,
+    portalDetailDeadline: hasMismatchedPortalDetail(row.sourceUrl, { detail: { url: row.portalDetailUrl } })
+      ? undefined : row.portalDetailDeadline ?? undefined,
     aiResume: row.aiResume ?? undefined,
     aiSecteur: row.aiSecteur ?? undefined,
     aiEnrichedAt: row.aiEnrichedAt ?? undefined,
