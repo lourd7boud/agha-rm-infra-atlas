@@ -92,13 +92,13 @@ export function parseMoneyMad(text: string | null | undefined): number | null {
   if (!text) return null;
   // Drop currency words and any non [digit , . space] noise, keep separators.
   const cleaned = text
-    .replace(/ /g, ' ')
+    .replace(/[\u00A0\u202F]/g, ' ')
     .replace(/mad|dhs?|dirhams?|ttc|ht/gi, '')
     .trim();
   const m = /\d[\d .]*(?:,\d+)?/.exec(cleaned);
   if (!m) return null;
   // French format: space = thousands separator, comma = decimal.
-  const normalized = m[0].replace(/[ ]/g, '').replace(',', '.');
+  const normalized = m[0].replace(/[ \u00A0\u202F]/g, '').replace(',', '.');
   const value = Number(normalized);
   return Number.isFinite(value) ? value : null;
 }
