@@ -90,9 +90,12 @@ export interface DetailFields {
 /** "7 000,00 MAD" / "1 250 000,50 Dhs" → number (MAD), or null. */
 export function parseMoneyMad(text: string | null | undefined): number | null {
   if (!text) return null;
-  // Drop currency words and any non [digit , . space] noise, keep separators.
+  // Normalize NBSP (U+00A0) and narrow NBSP (U+202F) thousands separators to a
+  // regular space — French amounts group as "7 700,00" and the portal emits the
+  // grouping as &nbsp;, which would otherwise halt the digit/space/comma matcher
+  // below at the first group (e.g. "7 700,00" → 7). Then drop currency words.
   const cleaned = text
-    .replace(/ /g, ' ')
+    .replace(/[  ]/g, ' ')
     .replace(/mad|dhs?|dirhams?|ttc|ht/gi, '')
     .trim();
   const m = /\d[\d .]*(?:,\d+)?/.exec(cleaned);

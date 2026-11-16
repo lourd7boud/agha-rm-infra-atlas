@@ -71,7 +71,7 @@ function stackedCellText(cell: CheerioSelection): string {
     .load(withBreaks)
     .root()
     .text()
-    .replace(/ /g, ' ')
+    .replace(/[  ]/g, ' ')
     .split('\n')
     .map((line) => line.replace(/[ \t]+/g, ' ').trim())
     .filter((line) => line.length > 0)
