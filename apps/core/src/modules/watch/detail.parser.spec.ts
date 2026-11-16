@@ -24,6 +24,15 @@ describe('parseMoneyMad', () => {
     expect(parseMoneyMad('350 000')).toBe(350000);
   });
 
+  it('parses NBSP and narrow-NBSP thousands separators', () => {
+    // Built from char codes: literal NBSPs in source get flattened to plain
+    // spaces by local tooling — exactly the regression this guards against.
+    const nbsp = String.fromCharCode(0x00a0);
+    const nnbsp = String.fromCharCode(0x202f);
+    expect(parseMoneyMad(`7${nbsp}700,00 MAD`)).toBe(7700);
+    expect(parseMoneyMad(`1${nnbsp}250${nnbsp}000,50 Dhs`)).toBe(1250000.5);
+  });
+
   it('returns null when there is no number', () => {
     expect(parseMoneyMad('—')).toBeNull();
     expect(parseMoneyMad('Estimation (en Dhs TTC)')).toBeNull();

@@ -90,9 +90,9 @@ export interface DetailFields {
 /** "7 000,00 MAD" / "1 250 000,50 Dhs" → number (MAD), or null. */
 export function parseMoneyMad(text: string | null | undefined): number | null {
   if (!text) return null;
-  // Drop currency words and any non [digit , . space] noise, keep separators.
+  // NBSP variants (U+00A0/U+202F) → space, drop currency words; separators kept.
   const cleaned = text
-    .replace(/ /g, ' ')
+    .replace(/[\u00A0\u202F]/g, ' ')
     .replace(/mad|dhs?|dirhams?|ttc|ht/gi, '')
     .trim();
   const m = /\d[\d .]*(?:,\d+)?/.exec(cleaned);

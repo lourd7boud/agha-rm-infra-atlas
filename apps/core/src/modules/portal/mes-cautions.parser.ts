@@ -59,8 +59,9 @@ function labelled(text: string, label: RegExp): string | undefined {
  * Cell text with each stacked line preserved as its own line: cheerio's `.text()`
  * concatenates <br>-separated lines without a separator, so we read the cell's
  * HTML and turn <br> (and block-close tags) into newlines before stripping tags.
- * Lets `labelled()` stop at the next line. Non-breaking spaces are normalised so
- * "7 700,00" reads as "7 700,00" for parseMoneyMad.
+ * Lets `labelled()` stop at the next line. NBSP variants (U+00A0/U+202F) are
+ * normalised to plain spaces so an NBSP-separated "7 700,00" reads as a
+ * space-separated "7 700,00" for parseMoneyMad.
  */
 function stackedCellText(cell: CheerioSelection): string {
   const html = cell.html() ?? '';
@@ -71,7 +72,7 @@ function stackedCellText(cell: CheerioSelection): string {
     .load(withBreaks)
     .root()
     .text()
-    .replace(/ /g, ' ')
+    .replace(/[\u00A0\u202F]/g, ' ')
     .split('\n')
     .map((line) => line.replace(/[ \t]+/g, ' ').trim())
     .filter((line) => line.length > 0)

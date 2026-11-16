@@ -39,7 +39,8 @@ describe('parseMesReponses', () => {
     // Arrange
     const [first] = parseMesReponses(FIXTURE);
 
-    // Act / Assert
+    // Act / Assert — the fixture's "Direction&nbsp;Régionale" NBSP must be
+    // normalised to the plain space asserted here.
     expect(first!.objet).toBe(
       "Travaux de construction d'un mur de soutènement RN8 PK 12+300",
     );
